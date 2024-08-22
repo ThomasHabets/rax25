@@ -86,13 +86,12 @@ pub enum ReturnEvent {
 
 impl ReturnEvent {
     pub fn serialize(&self) -> Option<Vec<u8>> {
-	Some(match self {
-	    ReturnEvent::Sabm(_p) => vec![1,2,3], // TODO
-	    _ => todo!(),
-	})
+        Some(match self {
+            ReturnEvent::Sabm(_p) => vec![1, 2, 3], // TODO
+            _ => todo!(),
+        })
     }
 }
-
 
 #[derive(Debug)]
 pub enum DlError {
@@ -133,7 +132,7 @@ pub enum Action {
 impl Event {
     fn addrs(&self) -> (&Addr, &Addr) {
         match self {
-            Event::Connect(addr) => (&addr, &addr),
+            Event::Connect(addr) => (addr, addr),
 
             Event::Sabm(sabm) => (&sabm.src, &sabm.dst),
             Event::Sabme(p) => (&p.src, &p.dst),
@@ -297,7 +296,7 @@ impl Disconnected {
 
 impl State for Disconnected {
     fn for_me(&self, _src: &Addr, dst: &Addr) -> bool {
-	dbg!("BBBBBBBBBB");
+        dbg!("BBBBBBBBBB");
         self.addr == *dst
     }
 
@@ -354,7 +353,9 @@ impl Connected {
     }
 }
 impl State for Connected {
-    fn connect(&self, _data: &mut Data) -> Vec<Action> {todo!()}
+    fn connect(&self, _data: &mut Data) -> Vec<Action> {
+        todo!()
+    }
     fn for_me(&self, src: &Addr, dst: &Addr) -> bool {
         self.me == *dst && *src == self.peer
     }
@@ -434,12 +435,12 @@ pub fn handle(
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let (src, dst) = packet.addrs();
     match packet {
-	Event::Connect(_) => {},
-	_ => {
-	    if !state.for_me(src, dst) {
-		return (None, vec![]);
-	    }
-	},
+        Event::Connect(_) => {}
+        _ => {
+            if !state.for_me(src, dst) {
+                return (None, vec![]);
+            }
+        }
     }
     let actions = match packet {
         Event::Connect(_addr) => state.connect(data),
@@ -524,7 +525,7 @@ mod tests {
                 poll: true,
             }),
         );
-	let con = con.unwrap();
+        let con = con.unwrap();
         assert_all(
             &[ReturnEvent::Ua(Ua {
                 src: Addr::new("M0THC-1"),
@@ -546,7 +547,7 @@ mod tests {
                 command_response: true,
             }),
         );
-	assert!(matches![c2, None]);
+        assert!(matches![c2, None]);
         assert_all(
             &[ReturnEvent::Data(Res::Some(vec![1, 2, 3]))],
             &events,
@@ -563,7 +564,7 @@ mod tests {
                 poll: true,
             }),
         );
-	//let con = con.unwrap();
+        //let con = con.unwrap();
         assert_all(
             &[
                 ReturnEvent::Data(Res::EOF),
