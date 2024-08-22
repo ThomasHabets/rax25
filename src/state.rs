@@ -81,6 +81,8 @@ pub enum ReturnEvent {
     Disc(Disc),
     Iframe(Iframe),
     Ua(Ua),
+
+    DlError(DlError),
     Data(Res),
 }
 
@@ -93,7 +95,7 @@ impl ReturnEvent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DlError {
     A,
     B,
@@ -459,9 +461,7 @@ pub fn handle(
         use Action::*;
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
-            DlError(code) => {
-                dbg!("Dlerror: {:?}", code);
-            }
+            DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             SendUa(poll) => ret.push(ReturnEvent::Ua(Ua {
                 src: dst.clone(),
                 dst: src.clone(),

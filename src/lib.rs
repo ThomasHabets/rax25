@@ -51,6 +51,10 @@ impl Client {
             let _ = std::mem::replace(&mut self.state, state);
         }
         for act in actions {
+            if let state::ReturnEvent::DlError(e) = act {
+                eprintln!("DLError: {e:?}");
+            }
+
             if let Some(frame) = act.serialize() {
                 self.kiss.send(&frame).unwrap();
             }
