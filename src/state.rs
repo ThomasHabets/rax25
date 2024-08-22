@@ -429,7 +429,7 @@ pub enum Res {
 }
 
 pub fn handle(
-    state: &Box<dyn State>,
+    state: &dyn State,
     data: &mut Data,
     packet: &Event,
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
@@ -517,7 +517,7 @@ mod tests {
 
         // Connect.
         let (con, events) = handle(
-            &con,
+            &*con,
             &mut data,
             &Event::Sabm(Sabm {
                 src: Addr::new("M0THC-2"),
@@ -538,7 +538,7 @@ mod tests {
 
         // Receive info.
         let (c2, events) = handle(
-            &con,
+            &*con,
             &mut data,
             &Event::Iframe(Iframe {
                 src: Addr::new("M0THC-2"),
@@ -556,7 +556,7 @@ mod tests {
 
         // Disconnect.
         let (_con, events) = handle(
-            &con,
+            &*con,
             &mut data,
             &Event::Disc(Disc {
                 src: Addr::new("M0THC-2"),

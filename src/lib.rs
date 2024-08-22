@@ -46,7 +46,7 @@ impl Client {
         }
     }
     pub fn actions(&mut self, event: state::Event) {
-        let (state, actions) = state::handle(&self.state, &mut self.data, &event);
+        let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
         }
