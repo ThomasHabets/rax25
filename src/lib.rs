@@ -1,7 +1,68 @@
 pub mod state;
 
 use anyhow::{Error, Result};
-use state::Addr;
+
+/// Source or dst addr.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Addr {
+    t: String,
+}
+
+impl Addr {
+    pub fn new(s: &str) -> Self {
+        Self { t: s.to_string() }
+    }
+    //fn as_str(&self) -> &str {&self.t }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Sabm {
+    src: Addr,
+    dst: Addr,
+    poll: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Sabme {
+    src: Addr,
+    dst: Addr,
+    poll: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Ua {
+    src: Addr,
+    dst: Addr,
+    poll: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Iframe {
+    src: Addr,
+    dst: Addr,
+    payload: Vec<u8>,
+    command_response: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Ui {
+    src: Addr,
+    dst: Addr,
+    push: bool,
+    command_response: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Dm {
+    src: Addr,
+    dst: Addr,
+}
+#[derive(Debug, PartialEq)]
+pub struct Disc {
+    src: Addr,
+    dst: Addr,
+    poll: bool,
+}
 
 pub struct Kiss {}
 
@@ -59,6 +120,7 @@ impl Client {
                 self.kiss.send(&frame).unwrap();
             }
         }
+        // TODO: check timers.
     }
 }
 
