@@ -29,7 +29,9 @@ pub enum ReturnEvent {
 impl ReturnEvent {
     pub fn serialize(&self) -> Option<Vec<u8>> {
         Some(match self {
-            ReturnEvent::Sabm(_p) => vec![1, 2, 3], // TODO
+            ReturnEvent::Sabm(p) => p.serialize(),
+            ReturnEvent::Iframe(p) => p.serialize(),
+            ReturnEvent::Disc(p) => p.serialize(),
             _ => todo!(),
         })
     }

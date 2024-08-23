@@ -10,7 +10,38 @@ pub struct Addr {
 
 impl Addr {
     pub fn new(s: &str) -> Self {
+        // TODO: check format
         Self { t: s.to_string() }
+    }
+    pub fn serialize(
+        &self,
+        lowbit: bool,
+        highbit: bool,
+        rbit_ext: bool,
+        rbit_dama: bool,
+    ) -> Vec<u8> {
+        // TODO: confirm format.
+        let mut ret = vec![b' ' << 1; 7];
+        for (i, ch) in self.t.chars().take(6).enumerate() {
+            if ch == '-' {
+                break;
+            }
+            ret[i] = (ch as u8) << 1;
+        }
+        let ssid = {
+            let s: Vec<_> = self.t.split('-').collect();
+            if s.len() == 1 {
+                0
+            } else {
+                s[1].parse::<u8>().unwrap()
+            }
+        };
+        ret[6] = (ssid << 1)
+            | (if rbit_ext { 0 } else { 0b0100_0000 })
+            | (if rbit_dama { 0 } else { 0b0010_0000 })
+            | (if lowbit { 1 } else { 0 })
+            | (if highbit { 0x80 } else { 0 });
+        ret
     }
     //fn as_str(&self) -> &str {&self.t }
 }
@@ -22,11 +53,41 @@ pub struct Sabm {
     poll: bool,
 }
 
+// TODO: add digipeater stuff.
+fn packet_start(src: &Addr, dst: &Addr, control: u8, reserve: usize) -> Vec<u8> {
+    let mut ret = Vec::with_capacity(reserve + 8 + 8 + 1);
+    let digipeaters: Vec<u8> = vec![];
+    ret.extend(dst.serialize(false, false, false, false));
+    ret.extend(src.serialize(false, digipeaters.is_empty(), false, false));
+    ret.push(control);
+    ret
+}
+
+#[allow(clippy::unusual_byte_groupings)]
+const CONTROL_SABM: u8 = 0b001_0_11_11;
+
+impl Sabm {
+    pub fn serialize(&self) -> Vec<u8> {
+        packet_start(
+            &self.src,
+            &self.dst,
+            CONTROL_SABM | if self.poll { 0b0001_0000 } else { 0 },
+            0,
+        )
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Sabme {
     src: Addr,
     dst: Addr,
     poll: bool,
+}
+
+impl Sabme {
+    pub fn serialize(&self) -> Vec<u8> {
+        todo!()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -42,6 +103,12 @@ pub struct Iframe {
     dst: Addr,
     payload: Vec<u8>,
     command_response: bool,
+}
+
+impl Iframe {
+    pub fn serialize(&self) -> Vec<u8> {
+        todo!()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -62,6 +129,12 @@ pub struct Disc {
     src: Addr,
     dst: Addr,
     poll: bool,
+}
+
+impl Disc {
+    pub fn serialize(&self) -> Vec<u8> {
+        todo!()
+    }
 }
 
 pub struct Kiss {}
@@ -133,5 +206,51 @@ mod tests {
         let mut c = Client::new();
         assert![matches![c.connect(&Addr::new("M0THC-2")), Err(_)]];
         Ok(())
+    }
+
+    #[test]
+    fn addr_serial() -> Result<()> {
+        // TODO: test invalid calls.
+        assert_eq!(
+            Addr::new("M0THC-1").serialize(true, false, false, false),
+            vec![154, 96, 168, 144, 134, 64, 99]
+        );
+        assert_eq!(
+            Addr::new("M0THC-2").serialize(false, true, false, false),
+            vec![154, 96, 168, 144, 134, 64, 100 + 0x80]
+        );
+        assert_eq!(
+            Addr::new("M0THC-3").serialize(false, false, true, false),
+            vec![154, 96, 168, 144, 134, 64, 38]
+        );
+        assert_eq!(
+            Addr::new("M0THC-4").serialize(false, false, false, true),
+            vec![154, 96, 168, 144, 134, 64, 72]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_sabm() {
+        let src = Addr::new("M0THC-1");
+        let dst = Addr::new("M0THC-2");
+        assert_eq!(
+            Sabm {
+                src: src.clone(),
+                dst: dst.clone(),
+                poll: true
+            }
+            .serialize(),
+            vec![154, 96, 168, 144, 134, 64, 100, 154, 96, 168, 144, 134, 64, 226, 63]
+        );
+        assert_eq!(
+            Sabm {
+                src,
+                dst,
+                poll: false
+            }
+            .serialize(),
+            vec![154, 96, 168, 144, 134, 64, 100, 154, 96, 168, 144, 134, 64, 226, 47]
+        );
     }
 }
