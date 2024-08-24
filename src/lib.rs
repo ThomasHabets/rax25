@@ -186,9 +186,9 @@ impl Client {
             if self.data.t3_expired() {
                 self.actions(state::Event::T3);
             }
-            if self.data.t1_expired() {
+            // TODO: stop using string comparison.
+            if self.state.name() == "Disconnected" {
                 dbg!("connection timeout");
-                // TODO: actually trigger TimerT1Expiry event
                 return Err(Error::msg("connection timeout"));
             }
         }
