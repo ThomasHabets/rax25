@@ -729,13 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn bleh() {
+    fn disconnect() {
         let mut data = Data::new(Addr::new("M0THC-1"));
         data.peer = Some(Addr::new("M0THC-2"));
         let con = Connected::new();
-        // Disconnect.
-        let (_con, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
-        //let con = con.unwrap();
+        let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
+        assert_eq!(c2.unwrap().name(), "Disconnected");
         assert_all(
             &[
                 ReturnEvent::Data(Res::EOF),
