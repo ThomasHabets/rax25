@@ -216,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_timout() -> Result<()> {
+    fn client_timeout() -> Result<()> {
         let mut c = Client::new(Addr::new("M0THC-1"));
         c.data.srt_default = std::time::Duration::from_millis(1);
         assert![matches![c.connect(&Addr::new("M0THC-2")), Err(_)]];
