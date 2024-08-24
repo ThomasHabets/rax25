@@ -153,14 +153,15 @@ impl Kiss {
         eprintln!("TODO: send {frame:?}");
         Ok(())
     }
-    fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Vec<u8>> {
-        Err(Error::msg("connection timeout"))
+    fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        std::thread::sleep(timeout);
+        Ok(None)
     }
 }
 
 pub struct Client {
     kiss: Kiss,
-    data: state::Data,
+    pub(crate) data: state::Data,
     state: Box<dyn state::State>,
 }
 
@@ -174,12 +175,22 @@ impl Client {
     }
     pub fn connect(&mut self, addr: &Addr) -> Result<()> {
         self.actions(state::Event::Connect(addr.clone()));
-        let st = std::time::Instant::now();
-        let deadline = st + std::time::Duration::from_secs(10); // TODO: configurable.
         loop {
+            let dead = self.data.next_timer_remaining();
             let _packet = self
                 .kiss
-                .recv_timeout(deadline - std::time::Instant::now())?;
+                .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)));
+            if self.data.t1_expired() {
+                self.actions(state::Event::T1);
+            }
+            if self.data.t3_expired() {
+                self.actions(state::Event::T3);
+            }
+            if self.data.t1_expired() {
+                dbg!("connection timeout");
+                // TODO: actually trigger TimerT1Expiry event
+                return Err(Error::msg("connection timeout"));
+            }
         }
     }
     pub fn actions(&mut self, event: state::Event) {
@@ -205,8 +216,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client() -> Result<()> {
+    fn client_timout() -> Result<()> {
         let mut c = Client::new(Addr::new("M0THC-1"));
+        c.data.srt_default = std::time::Duration::from_millis(1);
         assert![matches![c.connect(&Addr::new("M0THC-2")), Err(_)]];
         Ok(())
     }
