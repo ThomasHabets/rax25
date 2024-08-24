@@ -1,27 +1,20 @@
-use crate::{Addr, Disc, Dm, Iframe, Sabm, Sabme, Ua, Ui};
+use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Connect(Addr),
-    Sabm(Sabm),
-    Sabme(Sabme),
+    Sabm(Sabm, Addr),
+    Sabme(Sabme, Addr),
     Dm(Dm),
-    Ui(Ui),
+    Ui(Ui, bool),
     Disc(Disc),
-    Iframe(Iframe),
+    Iframe(Iframe, bool),
     Ua(Ua),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum ReturnEvent {
-    Sabm(Sabm),
-    Sabme(Sabme),
-    Dm(Dm),
-    Ui(Ui),
-    Disc(Disc),
-    Iframe(Iframe),
-    Ua(Ua),
-
+    Packet(Packet),
     DlError(DlError),
     Data(Res),
 }
@@ -29,9 +22,7 @@ pub enum ReturnEvent {
 impl ReturnEvent {
     pub fn serialize(&self) -> Option<Vec<u8>> {
         Some(match self {
-            ReturnEvent::Sabm(p) => p.serialize(),
-            ReturnEvent::Iframe(p) => p.serialize(),
-            ReturnEvent::Disc(p) => p.serialize(),
+            ReturnEvent::Packet(p) => p.serialize(),
             _ => todo!(),
         })
     }
@@ -73,22 +64,6 @@ pub enum Action {
     EOF,
 }
 
-impl Event {
-    fn addrs(&self) -> (&Addr, &Addr) {
-        match self {
-            Event::Connect(addr) => (addr, addr),
-
-            Event::Sabm(sabm) => (&sabm.src, &sabm.dst),
-            Event::Sabme(p) => (&p.src, &p.dst),
-            Event::Dm(dm) => (&dm.src, &dm.dst),
-            Event::Ui(p) => (&p.src, &p.dst),
-            Event::Disc(p) => (&p.src, &p.dst),
-            Event::Iframe(p) => (&p.src, &p.dst),
-            Event::Ua(p) => (&p.src, &p.dst),
-        }
-    }
-}
-
 const DEFAULT_SRT: u32 = 3000;
 
 #[derive(Debug, Default)]
@@ -99,8 +74,10 @@ impl Timer {
     fn restart(&mut self) {}
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Data {
+    me: Addr,
+    peer: Option<Addr>,
     // TODO: double check all types.
     layer3_initiated: bool,
     t1: Timer,
@@ -125,10 +102,28 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn new() -> Self {
+    pub fn new(me: Addr) -> Self {
         Self {
+            me,
+            peer: None,
             n1: 65000, // Max number of octets in the information field of a frame.
-            ..Default::default()
+            layer3_initiated: false,
+            t1: Timer::default(),
+            t3: Timer::default(),
+            vs: 0,
+            va: 0,
+            vr: 0,
+            srt: 0,
+            t1v: 0,
+            n2: 0,
+            rc: 0,
+            modulus: 8,
+            peer_receiver_busy: false,
+            reject_exception: false,
+            acknowledge_pending: false,
+            own_receiver_busy: false,
+            iframe_queue: Vec::new(),
+            iframe_resend_queue: Vec::new(),
         }
     }
     fn clear_iframe_queue(&mut self) {
@@ -172,16 +167,17 @@ impl Data {
 }
 
 pub trait State {
-    fn for_me(&self, src: &Addr, dst: &Addr) -> bool;
-
-    fn connect(&self, _data: &mut Data) -> Vec<Action>;
-    fn sabm(&self, data: &mut Data, packet: &Sabm) -> Vec<Action>;
-    fn sabme(&self, data: &mut Data, packet: &Sabme) -> Vec<Action>;
-    fn iframe(&self, _data: &mut Data, _packet: &Iframe) -> Vec<Action> {
+    fn connect(&self, _data: &mut Data, _addr: &Addr) -> Vec<Action> {
+        dbg!("TODO: unexpected DLConnect");
+        vec![]
+    }
+    fn sabm(&self, data: &mut Data, src: &Addr, packet: &Sabm) -> Vec<Action>;
+    fn sabme(&self, data: &mut Data, src: &Addr, packet: &Sabme) -> Vec<Action>;
+    fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
         dbg!("TODO; unexpected iframe");
         vec![]
     }
-    fn ui(&self, _data: &mut Data, _packet: &Ui) -> Vec<Action> {
+    fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
@@ -194,18 +190,17 @@ pub trait State {
 
 // Unnumbered information is pretty uninteresting here.
 // Page 108.
-fn ui_check(command: bool) {
+fn ui_check(command: bool) -> Vec<Action> {
     if !command {
-        // TODO: DlError::Q
-        return;
+        return vec![Action::DlError(DlError::Q)];
     }
     if
     /*packet too long*/
     false {
-        // TODO: DlError::K
-        return;
+        return vec![Action::DlError(DlError::K)];
     }
     dbg!("DL-UNIT_DATA indication");
+    vec![]
 }
 
 /// Disconnected state.
@@ -214,16 +209,14 @@ fn ui_check(command: bool) {
 ///
 /// This is a state diagram for a connection. Any non-listening socket
 /// should in theory cause `SendDm(p.poll)`, but out of scope.
-struct Disconnected {
-    addr: Addr,
-}
+struct Disconnected {}
 impl Disconnected {
-    pub fn new(addr: Addr) -> Self {
-        Self { addr }
+    pub fn new() -> Self {
+        Self {}
     }
 
     // Page 85.
-    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, dst: Addr, poll: bool) -> Vec<Action> {
+    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, poll: bool) -> Vec<Action> {
         data.clear_exception_conditions();
         data.vs = 0;
         data.va = 0;
@@ -231,50 +224,46 @@ impl Disconnected {
         data.srt = DEFAULT_SRT;
         data.t1v = 2 * data.srt;
         data.t3.start();
+        data.peer = Some(src);
         vec![
             Action::SendUa(poll),
-            Action::State(Box::new(Connected::new(src, dst))),
+            Action::State(Box::new(Connected::new())),
         ]
     }
 }
 
 impl State for Disconnected {
-    fn for_me(&self, _src: &Addr, dst: &Addr) -> bool {
-        dbg!("BBBBBBBBBB");
-        self.addr == *dst
-    }
-
     // Page 85.
-    fn connect(&self, data: &mut Data) -> Vec<Action> {
+    fn connect(&self, data: &mut Data, addr: &Addr) -> Vec<Action> {
         // It says "SAT" in the PDF, but surely means SRT?
+        data.peer = Some(addr.clone());
         data.srt = DEFAULT_SRT;
         data.t1v = 2 * data.srt;
         data.layer3_initiated = true;
         vec![
-            // TODO: Action::State(Box::new(AwaitingConnection::new())),
+            // Action::State(Box::new(AwaitingConnection::new())),
             data.establish_data_link(),
         ]
     }
 
     // Page 84.
-    fn ui(&self, _data: &mut Data, packet: &Ui) -> Vec<Action> {
-        ui_check(packet.command_response);
+    fn ui(&self, _data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
+        let mut ret = ui_check(cr);
         if packet.push {
-            vec![Action::SendDm(true)]
-        } else {
-            vec![]
+            ret.push(Action::SendDm(true));
         }
+        ret
     }
 
     // Page 85.
-    fn sabm(&self, data: &mut Data, packet: &Sabm) -> Vec<Action> {
+    fn sabm(&self, data: &mut Data, src: &Addr, sabm: &Sabm) -> Vec<Action> {
         data.set_version_2();
-        self.sabm_and_sabme(data, packet.src.clone(), packet.dst.clone(), packet.poll)
+        self.sabm_and_sabme(data, src.clone(), sabm.poll)
     }
     // Page 85.
-    fn sabme(&self, data: &mut Data, packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, data: &mut Data, src: &Addr, packet: &Sabme) -> Vec<Action> {
         data.set_version_2_2();
-        self.sabm_and_sabme(data, packet.src.clone(), packet.dst.clone(), packet.poll)
+        self.sabm_and_sabme(data, src.clone(), packet.poll)
     }
 
     fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
@@ -286,31 +275,21 @@ impl State for Disconnected {
     }
 }
 
-struct Connected {
-    peer: Addr,
-    me: Addr,
-}
+struct Connected {}
 
 impl Connected {
-    fn new(peer: Addr, me: Addr) -> Self {
-        Self { peer, me }
+    fn new() -> Self {
+        Self {}
     }
 }
 impl State for Connected {
-    fn connect(&self, _data: &mut Data) -> Vec<Action> {
-        todo!()
-    }
-    fn for_me(&self, src: &Addr, dst: &Addr) -> bool {
-        self.me == *dst && *src == self.peer
-    }
-
     // Page 93.
-    fn sabm(&self, _data: &mut Data, _packet: &Sabm) -> Vec<Action> {
+    fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         dbg!("TODO: Connected: sabm not handled");
         vec![]
     }
     // Page 93.
-    fn sabme(&self, _data: &mut Data, _packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
         dbg!("TODO: Connected: sabme not handled");
         vec![]
     }
@@ -324,7 +303,7 @@ impl State for Connected {
         data.t3.stop();
         vec![
             Action::DlError(DlError::E),
-            Action::State(Box::new(Disconnected::new(self.me.clone()))),
+            Action::State(Box::new(Disconnected::new())),
         ]
     }
 
@@ -338,13 +317,13 @@ impl State for Connected {
         vec![
             Action::SendUa(p.poll),
             Action::EOF,
-            Action::State(Box::new(Disconnected::new(self.me.clone()))),
+            Action::State(Box::new(Disconnected::new())),
         ]
     }
 
     // Page 96 & 102.
-    fn iframe(&self, d: &mut Data, p: &Iframe) -> Vec<Action> {
-        if !p.command_response {
+    fn iframe(&self, d: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
+        if !command_response {
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > d.n1.try_into().unwrap() {
@@ -362,7 +341,7 @@ impl State for Connected {
 }
 
 pub fn new() -> Box<dyn State> {
-    Box::new(Disconnected::new(Addr::new("M0THC-1"))) // TODO
+    Box::new(Disconnected::new())
 }
 
 #[derive(Debug, PartialEq)]
@@ -377,23 +356,14 @@ pub fn handle(
     data: &mut Data,
     packet: &Event,
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
-    let (src, dst) = packet.addrs();
-    match packet {
-        Event::Connect(_) => {}
-        _ => {
-            if !state.for_me(src, dst) {
-                return (None, vec![]);
-            }
-        }
-    }
     let actions = match packet {
-        Event::Connect(_addr) => state.connect(data),
-        Event::Sabm(p) => state.sabm(data, p),
-        Event::Sabme(p) => state.sabme(data, p),
+        Event::Connect(addr) => state.connect(data, addr),
+        Event::Sabm(p, src) => state.sabm(data, src, p),
+        Event::Sabme(p, src) => state.sabme(data, src, p),
         Event::Dm(dm) => state.dm(data, dm),
-        Event::Ui(p) => state.ui(data, p),
+        Event::Ui(p, cr) => state.ui(data, *cr, p),
         Event::Disc(p) => state.disc(data, p),
-        Event::Iframe(p) => state.iframe(data, p),
+        Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
         Event::Ua(p) => state.ua(data, p),
     };
     let mut ret = Vec::new();
@@ -404,18 +374,36 @@ pub fn handle(
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
-            SendUa(poll) => ret.push(ReturnEvent::Ua(Ua {
-                src: dst.clone(),
-                dst: src.clone(),
-                poll: *poll,
+            SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Ua(Ua { poll: *poll }),
             })),
-            SendDm(_) => {} // TODO
-            SendSabm(poll) => ret.push(ReturnEvent::Sabm(Sabm {
-                src: dst.clone(),
-                dst: src.clone(),
-                poll: *poll,
+            SendDm(poll) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Dm(Dm { poll: *poll }),
             })),
-
+            SendSabm(poll) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Sabm(Sabm { poll: *poll }),
+            })),
             // TODO: can we avoid the copy?
             Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.to_vec()))),
             EOF => ret.push(ReturnEvent::Data(Res::EOF)),
@@ -454,25 +442,26 @@ mod tests {
 
     #[test]
     fn server() {
-        let mut data = Data::new();
+        let mut data = Data::new(Addr::new("M0THC-1"));
         let con = new();
 
         // Connect.
         let (con, events) = handle(
             &*con,
             &mut data,
-            &Event::Sabm(Sabm {
-                src: Addr::new("M0THC-2"),
-                dst: Addr::new("M0THC-1"),
-                poll: true,
-            }),
+            &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")),
         );
         let con = con.unwrap();
         assert_all(
-            &[ReturnEvent::Ua(Ua {
+            &[ReturnEvent::Packet(Packet {
                 src: Addr::new("M0THC-1"),
                 dst: Addr::new("M0THC-2"),
-                poll: true,
+                command_response: true,
+                command_response_la: false,
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Ua(Ua { poll: true }),
             })],
             &events,
             "connect",
@@ -482,12 +471,12 @@ mod tests {
         let (c2, events) = handle(
             &*con,
             &mut data,
-            &Event::Iframe(Iframe {
-                src: Addr::new("M0THC-2"),
-                dst: Addr::new("M0THC-1"),
-                payload: vec![1, 2, 3],
-                command_response: true,
-            }),
+            &Event::Iframe(
+                Iframe {
+                    payload: vec![1, 2, 3],
+                },
+                true,
+            ),
         );
         assert!(matches![c2, None]);
         assert_all(
@@ -497,23 +486,20 @@ mod tests {
         );
 
         // Disconnect.
-        let (_con, events) = handle(
-            &*con,
-            &mut data,
-            &Event::Disc(Disc {
-                src: Addr::new("M0THC-2"),
-                dst: Addr::new("M0THC-1"),
-                poll: true,
-            }),
-        );
+        let (_con, events) = handle(&*con, &mut data, &Event::Disc(Disc { poll: true }));
         //let con = con.unwrap();
         assert_all(
             &[
                 ReturnEvent::Data(Res::EOF),
-                ReturnEvent::Ua(Ua {
+                ReturnEvent::Packet(Packet {
                     src: Addr::new("M0THC-1"),
                     dst: Addr::new("M0THC-2"),
-                    poll: true,
+                    command_response: true,
+                    command_response_la: false,
+                    digipeater: vec![],
+                    rr_dist1: false,
+                    rr_extseq: false,
+                    packet_type: PacketType::Ua(Ua { poll: true }),
                 }),
             ],
             &events,

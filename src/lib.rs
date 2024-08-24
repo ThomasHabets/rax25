@@ -47,20 +47,32 @@ impl Addr {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Sabm {
+pub struct Packet {
     src: Addr,
     dst: Addr,
-    poll: bool,
+    digipeater: Vec<Addr>,
+    rr_extseq: bool,
+    command_response: bool,
+    command_response_la: bool,
+    rr_dist1: bool,
+    packet_type: PacketType,
 }
 
-// TODO: add digipeater stuff.
-fn packet_start(src: &Addr, dst: &Addr, control: u8, reserve: usize) -> Vec<u8> {
-    let mut ret = Vec::with_capacity(reserve + 8 + 8 + 1);
-    let digipeaters: Vec<u8> = vec![];
-    ret.extend(dst.serialize(false, false, false, false));
-    ret.extend(src.serialize(false, digipeaters.is_empty(), false, false));
-    ret.push(control);
-    ret
+#[derive(Debug, PartialEq)]
+pub enum PacketType {
+    Sabm(Sabm),
+    Ua(Ua),
+    Dm(Dm),
+    Disc(Disc),
+    Iframe(Iframe),
+}
+
+/// SABM - Set Ansynchronous Balanced Mode (4.3.3.1)
+///
+///
+#[derive(Debug, PartialEq)]
+pub struct Sabm {
+    poll: bool,
 }
 
 #[allow(clippy::unusual_byte_groupings)]
@@ -81,76 +93,56 @@ pub const CONTROL_RR: u8 = 0b000_0_00_01;
 pub const CONTROL_REJ: u8 = 0b001_0_10_01;
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_IFRAME: u8 = 0b000_0_00_00;
+pub const CONTROL_POLL: u8 = 0b0001_0000;
 
-impl Sabm {
+impl Packet {
     pub fn serialize(&self) -> Vec<u8> {
-        packet_start(
-            &self.src,
-            &self.dst,
-            CONTROL_SABM | if self.poll { 0b0001_0000 } else { 0 },
-            0,
-        )
+        let mut ret = Vec::with_capacity(8 + 8 + 1); // TODO: reserve more
+        ret.extend(
+            self.dst
+                .serialize(false, self.command_response, self.rr_dist1, false),
+        );
+        ret.extend(self.src.serialize(
+            self.digipeater.is_empty(),
+            self.command_response_la,
+            self.rr_extseq,
+            false,
+        ));
+        match &self.packet_type {
+            PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
+            _ => todo!(),
+        };
+        ret
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Sabme {
-    src: Addr,
-    dst: Addr,
     poll: bool,
-}
-
-impl Sabme {
-    pub fn serialize(&self) -> Vec<u8> {
-        todo!()
-    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Ua {
-    src: Addr,
-    dst: Addr,
     poll: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Iframe {
-    src: Addr,
-    dst: Addr,
     payload: Vec<u8>,
-    command_response: bool,
-}
-
-impl Iframe {
-    pub fn serialize(&self) -> Vec<u8> {
-        todo!()
-    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Ui {
-    src: Addr,
-    dst: Addr,
     push: bool,
-    command_response: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Dm {
-    src: Addr,
-    dst: Addr,
+    poll: bool,
 }
 #[derive(Debug, PartialEq)]
 pub struct Disc {
-    src: Addr,
-    dst: Addr,
     poll: bool,
-}
-
-impl Disc {
-    pub fn serialize(&self) -> Vec<u8> {
-        todo!()
-    }
 }
 
 pub struct Kiss {}
@@ -171,17 +163,12 @@ pub struct Client {
     data: state::Data,
     state: Box<dyn state::State>,
 }
-impl Default for Client {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl Client {
-    pub fn new() -> Self {
+    pub fn new(me: Addr) -> Self {
         Self {
             kiss: Kiss {},
-            data: state::Data::new(),
+            data: state::Data::new(me),
             state: state::new(),
         }
     }
@@ -219,7 +206,7 @@ mod tests {
 
     #[test]
     fn client() -> Result<()> {
-        let mut c = Client::new();
+        let mut c = Client::new(Addr::new("M0THC-1"));
         assert![matches![c.connect(&Addr::new("M0THC-2")), Err(_)]];
         Ok(())
     }
@@ -251,22 +238,32 @@ mod tests {
         let src = Addr::new("M0THC-1");
         let dst = Addr::new("M0THC-2");
         assert_eq!(
-            Sabm {
+            Packet {
                 src: src.clone(),
                 dst: dst.clone(),
-                poll: true
+                command_response: true,
+                command_response_la: false,
+                rr_dist1: false,
+                rr_extseq: false,
+                digipeater: vec![],
+                packet_type: PacketType::Sabm(Sabm { poll: true })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 100, 154, 96, 168, 144, 134, 64, 226, 63]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63]
         );
         assert_eq!(
-            Sabm {
+            Packet {
+                command_response: true,
+                command_response_la: false,
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
                 src,
                 dst,
-                poll: false
+                packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 100, 154, 96, 168, 144, 134, 64, 226, 47]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47]
         );
     }
 }
