@@ -64,7 +64,23 @@ fn packet_start(src: &Addr, dst: &Addr, control: u8, reserve: usize) -> Vec<u8> 
 }
 
 #[allow(clippy::unusual_byte_groupings)]
-const CONTROL_SABM: u8 = 0b001_0_11_11;
+pub const CONTROL_SABM: u8 = 0b001_0_11_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_UI: u8 = 0b000_0_00_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_SABME: u8 = 0b011_0_11_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_DISC: u8 = 0b010_0_00_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_DM: u8 = 0b000_0_11_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_UA: u8 = 0b011_0_00_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_RR: u8 = 0b000_0_00_01;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_REJ: u8 = 0b001_0_10_01;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_IFRAME: u8 = 0b000_0_00_00;
 
 impl Sabm {
     pub fn serialize(&self) -> Vec<u8> {
