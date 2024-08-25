@@ -473,6 +473,7 @@ impl State for Connected {
     }
     // Page 92.
     // TODO: this sends directly, without putting it on any queue.
+    // So really, this is maybe the event "pop iframe".
     fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
         if data.peer_receiver_busy {
             panic!("TODO: we have no tx queue");
@@ -480,10 +481,17 @@ impl State for Connected {
         if data.vs == data.va + data.k {
             panic!("TODO: tx window full!");
         }
+        let ns = data.vs;
+        data.vs += 1;
+        data.acknowledge_pending = false;
+        if data.t1.running {
+            data.t3.stop();
+            data.t1.start(data.srt);
+        }
         vec![Action::SendIframe(Iframe {
-            ns: data.vs,
+            ns,
             nr: data.vr,
-            poll: true, // TODO: should poll be on or off?
+            poll: false,
             pid: 0xF0,
             payload: payload.to_vec(),
         })]
