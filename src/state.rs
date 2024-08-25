@@ -3,6 +3,7 @@ use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Connect(Addr),
+    Data(Vec<u8>),
     T1,
     T3,
     Sabm(Sabm, Addr),
@@ -67,6 +68,7 @@ pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
     SendUa(bool),
+    SendIframe(Iframe),
     SendDm(bool),
     SendSabm(bool),
     Deliver(Vec<u8>),
@@ -141,6 +143,7 @@ pub struct Data {
     reject_exception: bool,
     own_receiver_busy: bool,
     acknowledge_pending: bool,
+    k: u8,
 
     // TODO: not the right type.
     iframe_queue: Vec<Vec<u8>>,
@@ -164,6 +167,7 @@ impl Data {
             t1v: DEFAULT_SRT,
             n2: DEFAULT_N2,
             rc: 0,
+            k: 7,
             modulus: 8,
             peer_receiver_busy: false,
             reject_exception: false,
@@ -256,6 +260,10 @@ pub trait State {
     }
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
         dbg!("TODO: unexpected DLDisconnect");
+        vec![]
+    }
+    fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
+        eprintln!("writing data while not connected!");
         vec![]
     }
     fn t1(&self, _data: &mut Data) -> Vec<Action> {
@@ -463,6 +471,23 @@ impl State for Connected {
     fn name(&self) -> String {
         "Connected".to_string()
     }
+    // Page 92.
+    // TODO: this sends directly, without putting it on any queue.
+    fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
+        if data.peer_receiver_busy {
+            panic!("TODO: we have no tx queue");
+        }
+        if data.vs == data.va + data.k {
+            panic!("TODO: tx window full!");
+        }
+        vec![Action::SendIframe(Iframe {
+            ns: data.vs,
+            nr: data.vr,
+            poll: true, // TODO: should poll be on or off?
+            pid: 0xF0,
+            payload: payload.to_vec(),
+        })]
+    }
     // Page 93.
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         dbg!("TODO: Connected: sabm not handled");
@@ -538,6 +563,7 @@ pub fn handle(
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
         Event::Connect(addr) => state.connect(data, addr),
+        Event::Data(payload) => state.data(data, payload),
         Event::T1 => state.t1(data),
         Event::T3 => state.t3(data),
         Event::Sabm(p, src) => state.sabm(data, src, p),
@@ -556,6 +582,16 @@ pub fn handle(
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
+            SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Iframe(iframe.clone()),
+            })),
             SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
@@ -716,6 +752,10 @@ mod tests {
             &mut data,
             &Event::Iframe(
                 Iframe {
+                    nr: 0,
+                    ns: 0,
+                    poll: true, // TODO: poll or no?
+                    pid: 0xF0,
                     payload: vec![1, 2, 3],
                 },
                 true,

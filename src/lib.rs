@@ -25,6 +25,15 @@ impl Addr {
             rbit_dama: false,
         }
     }
+    pub fn new_bits(s: &str, lowbit: bool, highbit: bool, rbit_ext: bool, rbit_dama: bool) -> Self {
+        Self {
+            t: s.to_string(),
+            lowbit,
+            highbit,
+            rbit_ext,
+            rbit_dama,
+        }
+    }
     pub fn display(&self) -> &str {
         &self.t
     }
@@ -154,6 +163,10 @@ impl Packet {
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Iframe(iframe) => {
+                ret.push(CONTROL_IFRAME);
+                ret.extend(&iframe.payload);
+            }
             _ => todo!(),
         };
         let crc = fcs::fcs(&ret);
@@ -174,7 +187,7 @@ impl Packet {
         let src = Addr::parse(&bytes[7..14])?;
 
         // TODO: parse digipeater.
-
+        let control = bytes[14];
         let poll = bytes[14] & CONTROL_POLL != 0;
         Ok(Packet {
             src: src.clone(),
@@ -184,10 +197,22 @@ impl Packet {
             rr_dist1: dst.rbit_ext,
             rr_extseq: src.rbit_ext,
             digipeater: vec![],
-            packet_type: match 0b1110_1111 & bytes[14] {
-                CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
-                CONTROL_UA => PacketType::Ua(Ua { poll }),
-                c => todo!("Control {c:b} not implemented"),
+            packet_type: if control & 1 == 0 {
+                PacketType::Iframe(Iframe {
+                    ns: (control >> 1) & 7,
+                    nr: (control >> 5) & 7,
+                    poll: ((control >> 1) & 1) == 1,
+                    pid: 0xF0,
+                    payload: bytes[14..].to_vec(),
+                })
+            } else if control & 3 == 1 {
+                todo!()
+            } else {
+                match 0b1110_1111 & bytes[14] {
+                    CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
+                    CONTROL_UA => PacketType::Ua(Ua { poll }),
+                    c => todo!("Control {c:b} not implemented"),
+                }
             },
         })
     }
@@ -203,8 +228,12 @@ pub struct Ua {
     poll: bool,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Iframe {
+    nr: u8,
+    ns: u8,
+    poll: bool,
+    pid: u8,
     payload: Vec<u8>,
 }
 
@@ -235,6 +264,24 @@ struct FakeKiss {
 
 #[cfg(test)]
 impl FakeKiss {
+    fn make_iframe(src: Addr, dst: Addr, payload: Vec<u8>) -> Packet {
+        Packet {
+            src,
+            dst,
+            command_response: true,
+            command_response_la: false,
+            rr_dist1: false,
+            rr_extseq: false,
+            digipeater: vec![],
+            packet_type: PacketType::Iframe(Iframe {
+                nr: 0,
+                pid: 0xF0,
+                ns: 0,
+                poll: true, // TODO: poll or no?
+                payload,
+            }),
+        }
+    }
     fn make_ua(src: Addr, dst: Addr) -> Packet {
         Packet {
             src,
@@ -253,8 +300,19 @@ impl FakeKiss {
 impl Kisser for FakeKiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let packet = Packet::parse(frame)?;
-        self.queue
-            .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
+        match &packet.packet_type {
+            PacketType::Sabm(_) => {
+                self.queue
+                    .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
+            }
+            PacketType::Iframe(_) => {
+                self.queue.push_back(
+                    Self::make_iframe(packet.dst.clone(), packet.src.clone(), vec![3, 2, 1])
+                        .serialize(),
+                );
+            }
+            _ => todo!(),
+        }
         Ok(())
     }
     fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
@@ -324,6 +382,18 @@ impl Client {
             }
         }
     }
+    pub fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.actions(state::Event::Data(data.to_vec()));
+        Ok(())
+    }
+    pub fn try_read(&mut self) -> Result<Packet> {
+        Packet::parse(
+            &self
+                .kiss
+                .recv_timeout(std::time::Duration::from_secs(1))?
+                .unwrap(),
+        )
+    }
     pub fn actions(&mut self, event: state::Event) {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
@@ -347,11 +417,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_timeout() -> Result<()> {
+    fn client() -> Result<()> {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-1"), Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
         c.connect(&Addr::new("M0THC-2"))?;
+        c.write(&vec![1, 2, 3])?;
+        let reply = c.try_read()?;
+        assert_eq!(
+            reply,
+            Packet {
+                // TODO: is this even the bit set we expect
+                src: Addr::new_bits("M0THC-2", true, false, true, true),
+                dst: Addr::new_bits("M0THC-1", false, true, true, true),
+                digipeater: vec![],
+                rr_extseq: true,
+                command_response: true,
+                command_response_la: false,
+                rr_dist1: true,
+                packet_type: PacketType::Iframe(Iframe {
+                    nr: 0,
+                    ns: 0,
+                    poll: false,
+                    pid: 240,
+                    payload: vec![0, 3, 2, 1,],
+                },),
+            }
+        );
         Ok(())
     }
 
