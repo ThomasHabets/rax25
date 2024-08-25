@@ -58,8 +58,8 @@ impl Addr {
 
         Ok(Self {
             t: r,
-            rbit_ext: bytes[6] & 0b0100_0000 != 0,
-            rbit_dama: bytes[6] & 0b0010_0000 != 0,
+            rbit_ext: bytes[6] & 0b0100_0000 == 0,
+            rbit_dama: bytes[6] & 0b0010_0000 == 0,
             lowbit: bytes[6] & 1 != 0,
             highbit: bytes[6] & 0x80 != 0,
         })
@@ -428,13 +428,13 @@ mod tests {
             reply,
             Packet {
                 // TODO: is this even the bit set we expect
-                src: Addr::new_bits("M0THC-2", true, false, true, true),
-                dst: Addr::new_bits("M0THC-1", false, true, true, true),
+                src: Addr::new_bits("M0THC-2", true, false, false, false),
+                dst: Addr::new_bits("M0THC-1", false, true, false, false),
                 digipeater: vec![],
-                rr_extseq: true,
+                rr_extseq: false,
                 command_response: true,
                 command_response_la: false,
-                rr_dist1: true,
+                rr_dist1: false,
                 packet_type: PacketType::Iframe(Iframe {
                     nr: 0,
                     ns: 0,
