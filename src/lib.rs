@@ -15,6 +15,30 @@ impl Addr {
         // TODO: check format
         Self { t: s.to_string() }
     }
+    pub fn display(&self) -> &str {
+        &self.t
+    }
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != 7 {
+            return Err(Error::msg(format!(
+                "invalid serialized callsign: {bytes:?}"
+            )));
+        }
+        let mut r = String::new();
+        for byte in bytes.iter().take(6) {
+            let ch = (byte >> 1) as char;
+            if ch == ' ' {
+                break;
+            }
+            r.push(ch)
+        }
+        let ssid = (bytes[6] >> 1) & 15;
+        if ssid > 0 {
+            r = r + "-" + &ssid.to_string();
+        }
+        Ok(Self { t: r })
+    }
+
     pub fn serialize(
         &self,
         lowbit: bool,
@@ -120,11 +144,21 @@ impl Packet {
         ret.push(crc[1]);
         ret
     }
-    pub fn parse(_bytes: &[u8]) -> Result<Self> {
-        // TODO: actually parse.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 17 {
+            return Err(Error::msg(format!(
+                "packet too short: {} bytes",
+                bytes.len()
+            )));
+        }
+        // TODO: check FCS.
+        let bytes = &bytes[..(bytes.len() - 2)];
+        let dst = Addr::parse(&bytes[0..7])?;
+        let src = Addr::parse(&bytes[7..14])?;
+
         Ok(Packet {
-            src: Addr::new("M0THC-3"),
-            dst: Addr::new("M0THC-5"),
+            src,
+            dst,
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
@@ -176,22 +210,27 @@ struct FakeKiss {
 }
 
 #[cfg(test)]
-impl Kisser for FakeKiss {
-    fn send(&mut self, _frame: &[u8]) -> Result<()> {
-        let ua = Packet {
-            //                src: src.clone(),
-            //               dst: dst.clone(),
-            src: Addr::new("M0THC-3"),
-            dst: Addr::new("M0THC-5"),
+impl FakeKiss {
+    fn make_ua(src: Addr, dst: Addr) -> Packet {
+        Packet {
+            src,
+            dst,
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
             rr_extseq: false,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
-        };
-        dbg!(&ua);
-        self.queue.push_back(ua.serialize());
+        }
+    }
+}
+
+#[cfg(test)]
+impl Kisser for FakeKiss {
+    fn send(&mut self, frame: &[u8]) -> Result<()> {
+        let packet = Packet::parse(frame)?;
+        self.queue
+            .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
         Ok(())
     }
     fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
@@ -295,22 +334,21 @@ mod tests {
     #[test]
     fn addr_serial() -> Result<()> {
         // TODO: test invalid calls.
-        assert_eq!(
-            Addr::new("M0THC-1").serialize(true, false, false, false),
-            vec![154, 96, 168, 144, 134, 64, 99]
-        );
-        assert_eq!(
-            Addr::new("M0THC-2").serialize(false, true, false, false),
-            vec![154, 96, 168, 144, 134, 64, 100 + 0x80]
-        );
-        assert_eq!(
-            Addr::new("M0THC-3").serialize(false, false, true, false),
-            vec![154, 96, 168, 144, 134, 64, 38]
-        );
-        assert_eq!(
-            Addr::new("M0THC-4").serialize(false, false, false, true),
-            vec![154, 96, 168, 144, 134, 64, 72]
-        );
+        let a = Addr::new("M0THC-1").serialize(true, false, false, false);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC-1");
+
+        let a = Addr::new("M0THC-2").serialize(false, true, false, false);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 100 + 0x80]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC-2");
+
+        let a = Addr::new("M0THC-3").serialize(false, false, true, false);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 38]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC-3");
+
+        let a = Addr::new("M0THC-4").serialize(false, false, false, true);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC-4");
         Ok(())
     }
 
