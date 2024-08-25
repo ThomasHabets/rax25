@@ -8,12 +8,22 @@ pub mod state;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
     t: String,
+    rbit_ext: bool,
+    highbit: bool,
+    lowbit: bool,
+    rbit_dama: bool,
 }
 
 impl Addr {
     pub fn new(s: &str) -> Self {
         // TODO: check format
-        Self { t: s.to_string() }
+        Self {
+            t: s.to_string(),
+            rbit_ext: false,
+            highbit: false,
+            lowbit: false,
+            rbit_dama: false,
+        }
     }
     pub fn display(&self) -> &str {
         &self.t
@@ -36,7 +46,14 @@ impl Addr {
         if ssid > 0 {
             r = r + "-" + &ssid.to_string();
         }
-        Ok(Self { t: r })
+
+        Ok(Self {
+            t: r,
+            rbit_ext: bytes[6] & 0b0100_0000 != 0,
+            rbit_dama: bytes[6] & 0b0010_0000 != 0,
+            lowbit: bytes[6] & 1 != 0,
+            highbit: bytes[6] & 0x80 != 0,
+        })
     }
 
     pub fn serialize(
@@ -156,15 +173,22 @@ impl Packet {
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
+        // TODO: parse digipeater.
+
+        let poll = bytes[14] & CONTROL_POLL != 0;
         Ok(Packet {
-            src,
-            dst,
-            command_response: true,
-            command_response_la: false,
-            rr_dist1: false,
-            rr_extseq: false,
+            src: src.clone(),
+            dst: dst.clone(),
+            command_response: dst.highbit,
+            command_response_la: src.highbit,
+            rr_dist1: dst.rbit_ext,
+            rr_extseq: src.rbit_ext,
             digipeater: vec![],
-            packet_type: PacketType::Ua(Ua { poll: true }),
+            packet_type: match 0b1110_1111 & bytes[14] {
+                CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
+                CONTROL_UA => PacketType::Ua(Ua { poll }),
+                c => todo!("Control {c:b} not implemented"),
+            },
         })
     }
 }
