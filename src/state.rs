@@ -11,7 +11,7 @@ pub enum Event {
     Ui(Ui, bool),
     Disc(Disc),
     Iframe(Iframe, bool),
-    Ua(Ua, bool),
+    Ua(Ua),
 }
 
 #[derive(Debug, PartialEq)]
@@ -281,7 +281,7 @@ pub trait State {
     fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
-    fn ua(&self, _data: &mut Data, _pf: bool, _packet: &Ua) -> Vec<Action> {
+    fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
         dbg!("TODO; unexpected UA");
         vec![]
     }
@@ -392,7 +392,7 @@ impl State for Disconnected {
     }
 
     // Page 84.
-    fn ua(&self, _data: &mut Data, _p: bool, _packet: &Ua) -> Vec<Action> {
+    fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
         vec![Action::DlError(DlError::C), Action::DlError(DlError::D)]
     }
 
@@ -432,7 +432,8 @@ impl State for AwaitingConnection {
         }
     }
     // Page 88.
-    fn ua(&self, data: &mut Data, f: bool, _packet: &Ua) -> Vec<Action> {
+    fn ua(&self, data: &mut Data, packet: &Ua) -> Vec<Action> {
+        let f = packet.poll;
         if !f {
             return vec![Action::DlError(DlError::D)];
         }
@@ -545,7 +546,7 @@ pub fn handle(
         Event::Ui(p, cr) => state.ui(data, *cr, p),
         Event::Disc(p) => state.disc(data, p),
         Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
-        Event::Ua(p, pf) => state.ua(data, *pf, p),
+        Event::Ua(p) => state.ua(data, p),
     };
     let mut ret = Vec::new();
 

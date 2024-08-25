@@ -1,7 +1,8 @@
+use anyhow::{Error, Result};
+use log::debug;
+
 mod fcs;
 pub mod state;
-
-use anyhow::{Error, Result};
 
 /// Source or dst addr.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,12 +112,26 @@ impl Packet {
         ));
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             _ => todo!(),
         };
         let crc = fcs::fcs(&ret);
         ret.push(crc[0]);
         ret.push(crc[1]);
         ret
+    }
+    pub fn parse(_bytes: &[u8]) -> Result<Self> {
+        // TODO: actually parse.
+        Ok(Packet {
+            src: Addr::new("M0THC-3"),
+            dst: Addr::new("M0THC-5"),
+            command_response: true,
+            command_response_la: false,
+            rr_dist1: false,
+            rr_extseq: false,
+            digipeater: vec![],
+            packet_type: PacketType::Ua(Ua { poll: true }),
+        })
     }
 }
 
@@ -125,7 +140,7 @@ pub struct Sabme {
     poll: bool,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Ua {
     poll: bool,
 }
@@ -149,10 +164,45 @@ pub struct Disc {
     poll: bool,
 }
 
+pub trait Kisser {
+    fn send(&mut self, frame: &[u8]) -> Result<()>;
+    fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>>;
+}
+
+#[cfg(test)]
+#[derive(Default, Debug)]
+struct FakeKiss {
+    queue: std::collections::VecDeque<Vec<u8>>,
+}
+
+#[cfg(test)]
+impl Kisser for FakeKiss {
+    fn send(&mut self, _frame: &[u8]) -> Result<()> {
+        let ua = Packet {
+            //                src: src.clone(),
+            //               dst: dst.clone(),
+            src: Addr::new("M0THC-3"),
+            dst: Addr::new("M0THC-5"),
+            command_response: true,
+            command_response_la: false,
+            rr_dist1: false,
+            rr_extseq: false,
+            digipeater: vec![],
+            packet_type: PacketType::Ua(Ua { poll: true }),
+        };
+        dbg!(&ua);
+        self.queue.push_back(ua.serialize());
+        Ok(())
+    }
+    fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        Ok(self.queue.pop_front())
+    }
+}
+
 pub struct Kiss {}
 
 // For now this is a KISS interface. But it needs to be changed to allow multiplexing.
-impl Kiss {
+impl Kisser for Kiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         eprintln!("TODO: send {frame:?}");
         Ok(())
@@ -164,15 +214,15 @@ impl Kiss {
 }
 
 pub struct Client {
-    kiss: Kiss,
+    kiss: Box<dyn Kisser>,
     pub(crate) data: state::Data,
     state: Box<dyn state::State>,
 }
 
 impl Client {
-    pub fn new(me: Addr) -> Self {
+    pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
-            kiss: Kiss {},
+            kiss,
             data: state::Data::new(me),
             state: state::new(),
         }
@@ -181,9 +231,23 @@ impl Client {
         self.actions(state::Event::Connect(addr.clone()));
         loop {
             let dead = self.data.next_timer_remaining();
-            let _packet = self
+            let packet = self
                 .kiss
-                .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)));
+                .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)))?;
+            if let Some(packet) = packet {
+                let packet = Packet::parse(&packet)?;
+                dbg!(&packet);
+                // TODO: check addresses.
+                match &packet.packet_type {
+                    PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
+                    _ => panic!(),
+                }
+                if self.state.name() == "Connected" {
+                    debug!("YAY! CONNECTED!");
+                    // TODO: don't compare strings.
+                    return Ok(());
+                }
+            }
             if self.data.t1_expired() {
                 self.actions(state::Event::T1);
             }
@@ -192,7 +256,7 @@ impl Client {
             }
             // TODO: stop using string comparison.
             if self.state.name() == "Disconnected" {
-                dbg!("connection timeout");
+                debug!("connection timeout");
                 return Err(Error::msg("connection timeout"));
             }
         }
@@ -221,9 +285,10 @@ mod tests {
 
     #[test]
     fn client_timeout() -> Result<()> {
-        let mut c = Client::new(Addr::new("M0THC-1"));
+        let k = FakeKiss::default();
+        let mut c = Client::new(Addr::new("M0THC-1"), Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        assert![matches![c.connect(&Addr::new("M0THC-2")), Err(_)]];
+        c.connect(&Addr::new("M0THC-2"))?;
         Ok(())
     }
 
