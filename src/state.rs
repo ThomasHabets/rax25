@@ -510,7 +510,7 @@ impl State for Connected {
             return vec![
                 d.establish_data_link(),
                 Action::DlError(DlError::O),
-                // TODO: Action::State(Box::new(AwaitingConnection::new())),
+                Action::State(Box::new(AwaitingConnection::new())),
             ];
         }
         // TODO: more.

@@ -1,3 +1,4 @@
+mod fcs;
 pub mod state;
 
 use anyhow::{Error, Result};
@@ -112,6 +113,9 @@ impl Packet {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             _ => todo!(),
         };
+        let crc = fcs::fcs(&ret);
+        ret.push(crc[0]);
+        ret.push(crc[1]);
         ret
     }
 }
@@ -261,7 +265,7 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63, 111, 212]
         );
         assert_eq!(
             Packet {
@@ -275,7 +279,7 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47, 238, 196]
         );
     }
 }
