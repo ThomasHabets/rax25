@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Connect(Addr),
+    Disconnect,
     Data(Vec<u8>),
     T1,
     T3,
@@ -109,6 +110,7 @@ pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
     SendUa(bool),
+    SendDisc(bool),
     SendIframe(Iframe),
     SendDm(bool),
     SendSabm(bool),
@@ -542,6 +544,22 @@ impl State for AwaitingConnection {
     }
 }
 
+struct AwaitingRelease {}
+
+impl AwaitingRelease {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+// Starting on page 89.
+impl State for AwaitingRelease {
+    fn name(&self) -> String {
+        "AwaitingRelease".to_string()
+    }
+    // TODO: lots of stuff. At least T1 expiry, DM, & UA
+}
+
 enum ConnectedState {
     Connected,
     _TimerRecovery,
@@ -566,6 +584,19 @@ impl State for Connected {
     fn name(&self) -> String {
         "Connected".to_string()
     }
+
+    // Page 92.
+    fn disconnect(&self, data: &mut Data) -> Vec<Action> {
+        data.iframe_queue.clear();
+        data.rc = 0;
+        data.t1.start(data.srt); // TODO: with what timer?
+        data.t3.stop();
+        vec![
+            Action::SendDisc(true),
+            Action::State(Box::new(AwaitingRelease::new())),
+        ]
+    }
+
     // Page 92.
     // TODO: this sends directly, without putting it on any queue.
     // So really, this is maybe the event "pop iframe".
@@ -714,14 +745,14 @@ impl State for Connected {
             data.acknowledge_pending = false;
             return actions;
         }
-        /*
-        if in_range(ns > vr + 1) {
-        // discard iframe (implicit)
-            actions.push(Action::SendRej(final=poll, data.vr)
-         data.acknowledge_pending = false;
-         return actions;
-         }
-         */
+        // if ns > vr + 1
+        // TODO: Maybe a version of if in_range(p.ns) {
+        if p.ns != (data.vr + 1) % data.modulus {
+            // discard iframe (implicit)
+            // TODO: actions.push(Action::SendRej(p.poll, data.vr));
+            data.acknowledge_pending = false;
+            return actions;
+        }
         data.sreject_exception += 1;
         // TODO: actions.push(Action::SendSrej(final=false, nr=data.vr));
         data.acknowledge_pending = false;
@@ -730,6 +761,8 @@ impl State for Connected {
 }
 
 // Ugly range checker.
+//
+// if va steps forward, will it hit nr before it hits vs?
 fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
     let mut t = va;
     loop {
@@ -761,6 +794,7 @@ pub fn handle(
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
         Event::Connect(addr) => state.connect(data, addr),
+        Event::Disconnect => state.disconnect(data),
         Event::Data(payload) => state.data(data, payload),
         Event::T1 => state.t1(data),
         Event::T3 => state.t3(data),
@@ -789,6 +823,16 @@ pub fn handle(
                 rr_dist1: false,
                 rr_extseq: false,
                 packet_type: PacketType::Iframe(iframe.clone()),
+            })),
+            SendDisc(poll) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Disc(Disc { poll: *poll }),
             })),
             SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),

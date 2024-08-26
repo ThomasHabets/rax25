@@ -1,5 +1,5 @@
 use anyhow::{Error, Result};
-use log::debug;
+use log::{debug, error};
 use std::io::{Read, Write};
 
 mod fcs;
@@ -169,6 +169,9 @@ impl Packet {
                 ret.push(iframe.pid);
                 ret.extend(&iframe.payload);
             }
+            PacketType::Disc(disc) => {
+                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 })
+            }
             _ => todo!(),
         };
         if false {
@@ -220,6 +223,7 @@ impl Packet {
                 match 0b1110_1111 & bytes[14] {
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
                     CONTROL_UA => PacketType::Ua(Ua { poll }),
+                    CONTROL_DISC => PacketType::Disc(Disc { poll }),
                     c => todo!("Control {c:b} not implemented"),
                 }
             },
@@ -320,6 +324,7 @@ impl Kisser for FakeKiss {
                         .serialize(),
                 );
             }
+            PacketType::Disc(_) => {}
             _ => todo!(),
         }
         Ok(())
@@ -460,6 +465,13 @@ pub struct Client {
     incoming: std::collections::VecDeque<u8>,
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        if let Err(e) = self.disconnect() {
+            error!("Error disconnecting on drop: {e}");
+        }
+    }
+}
 impl Client {
     pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
@@ -500,6 +512,10 @@ impl Client {
             }
         }
     }
+    pub fn disconnect(&mut self) -> Result<()> {
+        self.actions(state::Event::Disconnect);
+        Ok(())
+    }
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(state::Event::Data(data.to_vec()));
         Ok(())
@@ -509,7 +525,7 @@ impl Client {
             &self
                 .kiss
                 .recv_timeout(std::time::Duration::from_secs(1))?
-                .unwrap(),
+                .ok_or(Error::msg("did not get a packet in time"))?,
         )
     }
     pub fn read(&mut self) -> Result<Vec<u8>> {
