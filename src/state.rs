@@ -1,6 +1,7 @@
 use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
 use std::collections::VecDeque;
 
+// Incoming events to the state machine.
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Connect(Addr),
@@ -16,6 +17,7 @@ pub enum Event {
     Ua(Ua),
 }
 
+// Return events, that the state machine wants to tell the world. IOW excludes state changes.
 #[derive(Debug, PartialEq)]
 pub enum ReturnEvent {
     Packet(Packet),
@@ -24,6 +26,7 @@ pub enum ReturnEvent {
 }
 
 impl ReturnEvent {
+    // Not very clean. Only packets can serialize.
     pub fn serialize(&self) -> Option<Vec<u8>> {
         match self {
             ReturnEvent::Packet(p) => Some(p.serialize()),
@@ -39,6 +42,7 @@ impl ReturnEvent {
     }
 }
 
+// Errors. TODO: implement stringifications of these.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DlError {
     A,
@@ -65,6 +69,8 @@ pub enum DlError {
     V,
 }
 
+// Actions are like ReturnEvent, except packets are separate.
+// Terminology here is not very great.
 pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
