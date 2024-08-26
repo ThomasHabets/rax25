@@ -324,7 +324,10 @@ impl Kisser for FakeKiss {
                         .serialize(),
                 );
             }
-            PacketType::Disc(_) => {}
+            PacketType::Disc(_) => {
+                self.queue
+                    .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
+            }
             _ => todo!(),
         }
         Ok(())
