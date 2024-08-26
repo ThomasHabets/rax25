@@ -456,6 +456,8 @@ pub struct Client {
     kiss: Box<dyn Kisser>,
     pub(crate) data: state::Data,
     state: Box<dyn state::State>,
+
+    incoming: std::collections::VecDeque<u8>,
 }
 
 impl Client {
@@ -464,6 +466,7 @@ impl Client {
             kiss,
             data: state::Data::new(me),
             state: state::new(),
+            incoming: std::collections::VecDeque::new(),
         }
     }
     pub fn connect(&mut self, addr: &Addr) -> Result<()> {
@@ -510,13 +513,13 @@ impl Client {
         )
     }
     pub fn read(&mut self) -> Result<Vec<u8>> {
-        loop {
+        while self.incoming.is_empty() {
             let p = self.try_read()?;
             self.actions_packet(&p)?;
-            if let PacketType::Iframe(iframe) = p.packet_type {
-                return Ok(iframe.payload.clone());
-            }
         }
+        let ret: Vec<_> = self.incoming.iter().cloned().collect();
+        self.incoming.clear();
+        Ok(ret)
     }
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
@@ -536,8 +539,19 @@ impl Client {
             let _ = std::mem::replace(&mut self.state, state);
         }
         for act in actions {
-            if let state::ReturnEvent::DlError(e) = act {
-                eprintln!("DLError: {e:?}");
+            match &act {
+                state::ReturnEvent::DlError(e) => {
+                    eprintln!("DLError: {e:?}");
+                }
+                state::ReturnEvent::Data(res) => match res {
+                    state::Res::None => {}
+                    state::Res::EOF => eprintln!("EOF!!!!"),
+                    state::Res::Some(d) => {
+                        eprintln!("DATA DELIVERED>>> {:?}", String::from_utf8(d.clone()));
+                        self.incoming.extend(d);
+                    }
+                },
+                _ => {}
             }
 
             if let Some(frame) = act.serialize() {
