@@ -1,4 +1,5 @@
 use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
+use std::collections::VecDeque;
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -129,6 +130,7 @@ pub struct Data {
     layer3_initiated: bool,
     t1: Timer,
     t3: Timer,
+    t3v: std::time::Duration, // TODO: is this where the init value should be?
     vs: u8,
     va: u8,
     vr: u8,
@@ -141,13 +143,15 @@ pub struct Data {
     modulus: u8,
     peer_receiver_busy: bool,
     reject_exception: bool,
+    sreject_exception: u32,
     own_receiver_busy: bool,
     acknowledge_pending: bool,
+    srej_enabled: bool,
     k: u8,
 
     // TODO: not the right type.
     iframe_queue: Vec<Vec<u8>>,
-    iframe_resend_queue: Vec<Vec<u8>>,
+    iframe_resend_queue: VecDeque<Iframe>,
 }
 
 impl Data {
@@ -165,16 +169,19 @@ impl Data {
             srt_default: DEFAULT_SRT,
             srt: DEFAULT_SRT,
             t1v: DEFAULT_SRT,
+            t3v: std::time::Duration::from_secs(1), // TODO
             n2: DEFAULT_N2,
             rc: 0,
             k: 7,
             modulus: 8,
             peer_receiver_busy: false,
             reject_exception: false,
+            sreject_exception: 0,
+            srej_enabled: false,
             acknowledge_pending: false,
             own_receiver_busy: false,
             iframe_queue: Vec::new(),
-            iframe_resend_queue: Vec::new(),
+            iframe_resend_queue: VecDeque::new(),
         }
     }
     pub fn t1_expired(&self) -> bool {
@@ -210,6 +217,37 @@ impl Data {
         } else if self.t1_expired() {
             // TODO: spec unclear, default to exponential.
             self.srt = self.srt + self.srt;
+        }
+    }
+    // Page 107.
+    fn check_iframe_acked(&mut self, nr: u8) {
+        if self.peer_receiver_busy {
+            // Typo in spec. Says "peer busy".
+            self.update_ack(nr);
+            self.t3.start(self.t3v);
+            if !self.t1.running {
+                self.t1.start(self.srt); // srt or t1v?
+            }
+            return;
+        }
+        if nr == self.vs {
+            self.update_ack(nr);
+            self.t1.stop();
+            self.t3.start(self.t3v);
+            self.select_t1_value();
+            return;
+        }
+        if nr != self.va {
+            self.update_ack(nr);
+            self.t1.restart(self.srt);
+        }
+    }
+    fn update_ack(&mut self, nr: u8) {
+        dbg!(self.va, nr);
+        while self.va != nr {
+            assert!(!self.iframe_resend_queue.is_empty());
+            self.iframe_resend_queue.pop_front();
+            self.va = (self.va + 1) % self.modulus;
         }
     }
     fn clear_iframe_queue(&mut self) {
@@ -338,7 +376,7 @@ impl Disconnected {
         data.vr = 0;
         data.srt = data.srt_default;
         data.t1v = data.srt + data.srt;
-        data.t3.start(std::time::Duration::from_secs(1)); // TODO
+        data.t3.start(data.t3v);
         data.peer = Some(src);
         vec![
             Action::SendUa(poll),
@@ -467,6 +505,13 @@ impl Connected {
         Self {}
     }
 }
+
+// Page 106.
+fn nr_error_recovery(data: &mut Data) -> Vec<Action> {
+    data.layer3_initiated = false;
+    vec![Action::DlError(DlError::J), data.establish_data_link()]
+}
+
 impl State for Connected {
     fn name(&self) -> String {
         "Connected".to_string()
@@ -488,13 +533,15 @@ impl State for Connected {
             data.t3.stop();
             data.t1.start(data.srt);
         }
-        vec![Action::SendIframe(Iframe {
+        let i = Iframe {
             ns,
             nr: data.vr,
             poll: false,
             pid: 0xF0,
             payload: payload.to_vec(),
-        })]
+        };
+        data.iframe_resend_queue.push_back(i.clone());
+        vec![Action::SendIframe(i)]
     }
     // Page 93.
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
@@ -535,21 +582,114 @@ impl State for Connected {
     }
 
     // Page 96 & 102.
-    fn iframe(&self, d: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
+    fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
             return vec![Action::DlError(DlError::S)];
         }
-        if p.payload.len() > d.n1.try_into().unwrap() {
-            d.layer3_initiated = false;
+        if p.payload.len() > data.n1.try_into().unwrap() {
+            data.layer3_initiated = false;
             return vec![
-                d.establish_data_link(),
+                data.establish_data_link(),
                 Action::DlError(DlError::O),
                 Action::State(Box::new(AwaitingConnection::new())),
             ];
         }
-        // TODO: more.
+        if !in_range(data.va, p.nr, data.vs, data.modulus) {
+            let mut acts = nr_error_recovery(data);
+            acts.push(Action::State(Box::new(AwaitingConnection::new())));
+            return acts;
+        }
+        if self.name() == "Connected" {
+            dbg!(p);
+            // TODO: don't use the name.
+            data.check_iframe_acked(p.nr);
+        } else {
+            data.update_ack(p.nr);
+        }
+        if data.own_receiver_busy {
+            // discord (implicit)
+            if p.poll {
+                data.acknowledge_pending = false;
+                return vec![
+                //TODO:      Action::SendRnr(true, data.vr)
+                 ];
+            }
+            return vec![];
+        }
 
-        vec![Action::Deliver(p.payload.clone())]
+        let mut actions = vec![];
+        if p.ns == data.vr {
+            data.vr = (data.vr + 1) % data.modulus;
+            // TODO: clear reject exception
+            // TODO: decrement sreject exception if >0
+            actions.push(Action::Deliver(p.payload.clone()));
+            // TODO: check for stored out of order frames
+            while
+            /* i frame stored */
+            false {
+                // retrieve stored vr in frame
+                // Deliver
+                data.vr = (data.vr + 1) % data.modulus;
+            }
+            if p.poll {
+                // TODO: actions.push(Actions::SendRr(/*final*/true, data.vr, false);
+                data.acknowledge_pending = false;
+                return actions;
+            }
+            if !data.acknowledge_pending {
+                // LM seize request (?).
+                data.acknowledge_pending = true;
+            }
+            return actions;
+        }
+        if data.reject_exception {
+            // discard frame (implicit)
+            if p.poll {
+                // TODO: actions.push(Action::SendRr(/*final*/true, data.vr, false);
+                data.acknowledge_pending = false;
+            }
+            return actions;
+        }
+        if data.srej_enabled {
+            // discard iframe (implicit)
+            data.reject_exception = true;
+            // TODO: actions.push(Action::SendRej(final=poll, data.vr)
+            data.acknowledge_pending = false;
+            return actions;
+        }
+        // TODO: save contents of iframe
+        if data.sreject_exception > 0 {
+            data.sreject_exception += 1;
+            // TODO: actions.push(Action::SendSrej(final=false, nr=p.ns));
+            data.acknowledge_pending = false;
+            return actions;
+        }
+        /*
+        if in_range(ns > vr + 1) {
+        // discard iframe (implicit)
+            actions.push(Action::SendRej(final=poll, data.vr)
+         data.acknowledge_pending = false;
+         return actions;
+         }
+         */
+        data.sreject_exception += 1;
+        // TODO: actions.push(Action::SendSrej(final=false, nr=data.vr));
+        data.acknowledge_pending = false;
+        actions
+    }
+}
+
+// Ugly range checker.
+fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
+    let mut t = va;
+    loop {
+        if t == nr {
+            return true;
+        }
+        if t == vs {
+            return false;
+        }
+        t = (t + 1) % modulus;
     }
 }
 
