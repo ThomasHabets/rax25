@@ -12,7 +12,13 @@ fn main() -> Result<()> {
     let opt = Opt::parse();
     let k = Kiss::new(&opt.port)?;
     let mut c = Client::new(Addr::new("M0THC-1"), Box::new(k));
+    eprintln!("==== CONNECTING");
     c.connect(&Addr::new("M0THC-2"))?;
-    c.write(&vec![1, 2, 3])?;
-    Ok(())
+    eprintln!("==== WRITING");
+    c.write("echo hello world".as_bytes())?;
+    loop {
+        let data = c.read()?;
+        eprintln!("====> {data:?}");
+        println!("{}", String::from_utf8(data)?);
+    }
 }

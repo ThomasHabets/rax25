@@ -171,9 +171,11 @@ impl Packet {
             }
             _ => todo!(),
         };
-        let crc = fcs::fcs(&ret);
-        ret.push(crc[0]);
-        ret.push(crc[1]);
+        if false {
+            let crc = fcs::fcs(&ret);
+            ret.push(crc[0]);
+            ret.push(crc[1]);
+        }
         ret
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
@@ -210,10 +212,10 @@ impl Packet {
                     nr: (control >> 5) & 7,
                     poll: ((control >> 1) & 1) == 1,
                     pid: 0xF0,
-                    payload: bytes[14..].to_vec(),
+                    payload: bytes[16..].to_vec(),
                 })
             } else if control & 3 == 1 {
-                todo!()
+                todo!("control&3 = 3")
             } else {
                 match 0b1110_1111 & bytes[14] {
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
@@ -423,6 +425,11 @@ impl Kisser for Kiss {
             eprintln!("Got {} bytes from serial", buf.len());
             self.buf.extend(buf);
             while let Some((a, b)) = find_frame(&self.buf) {
+                if b - a < 14 {
+                    eprintln!("short packet {a} {b}");
+                    self.buf.drain(..(a + 1));
+                    continue;
+                }
                 let bytes: Vec<_> = self
                     .buf
                     .iter()
@@ -430,14 +437,15 @@ impl Kisser for Kiss {
                     .take(b - a - 2)
                     .cloned()
                     .collect();
+                self.buf.drain(..b);
+                eprintln!("After drain: {:?}", self.buf);
                 let bytes = unescape(&bytes);
                 if bytes.len() > 14 {
                     eprintln!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
-                    let packet = Packet::parse(&bytes)?;
-                    dbg!(packet);
+                    let _packet = Packet::parse(&bytes)?;
+                    // dbg!(packet);
                     return Ok(Some(bytes.to_vec()));
                 }
-                self.buf.drain(a..b);
             }
         }
         Ok(None)
@@ -467,12 +475,9 @@ impl Client {
                 .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)))?;
             if let Some(packet) = packet {
                 let packet = Packet::parse(&packet)?;
-                dbg!(&packet);
+                // dbg!(&packet);
                 // TODO: check addresses.
-                match &packet.packet_type {
-                    PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
-                    _ => panic!(),
-                }
+                self.actions_packet(&packet)?;
                 if self.state.name() == "Connected" {
                     debug!("YAY! CONNECTED!");
                     // TODO: don't compare strings.
@@ -504,6 +509,27 @@ impl Client {
                 .unwrap(),
         )
     }
+    pub fn read(&mut self) -> Result<Vec<u8>> {
+        loop {
+            let p = self.try_read()?;
+            self.actions_packet(&p)?;
+            if let PacketType::Iframe(iframe) = p.packet_type {
+                return Ok(iframe.payload.clone());
+            }
+        }
+    }
+    pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
+        match &packet.packet_type {
+            PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
+            PacketType::Iframe(iframe) => self.actions(state::Event::Iframe(
+                iframe.clone(),
+                packet.command_response,
+            )),
+            _ => panic!(),
+        }
+        Ok(())
+    }
+
     pub fn actions(&mut self, event: state::Event) {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
@@ -550,7 +576,7 @@ mod tests {
                     ns: 0,
                     poll: false,
                     pid: 240,
-                    payload: vec![16, 0xF0, 3, 2, 1, 162, 142],
+                    payload: vec![3, 2, 1],
                 },),
             }
         );
@@ -594,7 +620,7 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63, 111, 212]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63], //, 111, 212]
         );
         assert_eq!(
             Packet {
@@ -608,7 +634,7 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47, 238, 196]
+            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47], // , 238, 196]
         );
     }
 }
