@@ -320,12 +320,43 @@ impl Kisser for FakeKiss {
     }
 }
 
-pub struct Kiss {}
+pub struct Kiss {
+    port: Box<dyn serialport::SerialPort>,
+}
+
+impl Kiss {
+    pub fn new(port: &str) -> Result<Self> {
+        Ok(Self {
+            port: serialport::new(port, 9600).open()?,
+        })
+    }
+}
+
+const KISS_FEND: u8 = 0xC0;
+const KISS_FESC: u8 = 0xDB;
+const KISS_TFEND: u8 = 0xDC;
+const KISS_TFESC: u8 = 0xDD;
+
+fn escape(bytes: &[u8]) -> Vec<u8> {
+    let mut ret = Vec::new();
+    ret.push(KISS_FEND);
+    ret.push(0); // TODO: port
+    for b in bytes {
+        match *b {
+            KISS_FEND => ret.extend(vec![KISS_FESC, KISS_TFEND]),
+            KISS_FESC => ret.extend(vec![KISS_FESC, KISS_TFESC]),
+            b => ret.push(b),
+        }
+    }
+    ret.push(KISS_FEND);
+    ret
+}
 
 // For now this is a KISS interface. But it needs to be changed to allow multiplexing.
 impl Kisser for Kiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        eprintln!("TODO: send {frame:?}");
+        eprintln!("Sending frame…");
+        self.port.write_all(&escape(frame))?;
         Ok(())
     }
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
