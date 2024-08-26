@@ -249,6 +249,7 @@ impl Data {
             (None, None) => None,
         }
     }
+
     // Page 109.
     fn select_t1_value(&mut self) {
         if self.rc == 0 {
@@ -259,6 +260,7 @@ impl Data {
             self.srt = self.srt + self.srt;
         }
     }
+
     // Page 107.
     fn check_iframe_acked(&mut self, nr: u8) {
         if self.peer_receiver_busy {
@@ -420,7 +422,7 @@ impl Disconnected {
         data.peer = Some(src);
         vec![
             Action::SendUa(poll),
-            Action::State(Box::new(Connected::new())),
+            Action::State(Box::new(Connected::new(ConnectedState::Connected))),
         ]
     }
 }
@@ -534,15 +536,23 @@ impl State for AwaitingConnection {
         data.vs = 0;
         data.va = 0;
         data.vr = 0;
-        vec![Action::State(Box::new(Connected::new()))]
+        vec![Action::State(Box::new(Connected::new(
+            ConnectedState::Connected,
+        )))]
     }
 }
 
-struct Connected {}
+enum ConnectedState {
+    Connected,
+    _TimerRecovery,
+}
+struct Connected {
+    connected_state: ConnectedState,
+}
 
 impl Connected {
-    fn new() -> Self {
-        Self {}
+    fn new(connected_state: ConnectedState) -> Self {
+        Self { connected_state }
     }
 }
 
@@ -639,7 +649,7 @@ impl State for Connected {
             acts.push(Action::State(Box::new(AwaitingConnection::new())));
             return acts;
         }
-        if self.name() == "Connected" {
+        if let ConnectedState::Connected = self.connected_state {
             dbg!(p);
             // TODO: don't use the name.
             data.check_iframe_acked(p.nr);
@@ -932,7 +942,7 @@ mod tests {
     fn connected() {
         let mut data = Data::new(Addr::new("M0THC-1"));
         data.peer = Some(Addr::new("M0THC-2"));
-        let con = Connected::new();
+        let con = Connected::new(ConnectedState::Connected);
 
         // Receive info.
         let (c2, events) = handle(
@@ -961,7 +971,7 @@ mod tests {
     fn disconnect() {
         let mut data = Data::new(Addr::new("M0THC-1"));
         data.peer = Some(Addr::new("M0THC-2"));
-        let con = Connected::new();
+        let con = Connected::new(ConnectedState::Connected);
         let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
         assert_eq!(c2.unwrap().name(), "Disconnected");
         assert_all(
