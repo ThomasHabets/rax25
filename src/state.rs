@@ -1,4 +1,5 @@
 use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
+use log::debug;
 use std::collections::VecDeque;
 
 // Incoming events to the state machine.
@@ -557,7 +558,42 @@ impl State for AwaitingRelease {
     fn name(&self) -> String {
         "AwaitingRelease".to_string()
     }
-    // TODO: lots of stuff. At least T1 expiry, DM, & UA
+
+    // Page 91.
+    fn dm(&self, data: &mut Data, p: &Dm) -> Vec<Action> {
+        if !p.poll {
+            return vec![];
+        }
+        data.t1.stop();
+        vec![Action::State(Box::new(Disconnected::new()))]
+    }
+
+    // Page 90.
+    fn ua(&self, data: &mut Data, p: &Ua) -> Vec<Action> {
+        if !p.poll {
+            return vec![Action::DlError(DlError::D)];
+        }
+        debug!("DL-DISCONNECT confirm");
+        data.t1.stop();
+        vec![Action::State(Box::new(Disconnected::new()))]
+    }
+
+    // Page 91.
+    fn t1(&self, data: &mut Data) -> Vec<Action> {
+        if data.rc == data.n2 {
+            debug!("DL-DISCONNECT confirm");
+            return vec![
+                Action::DlError(DlError::H),
+                Action::State(Box::new(Disconnected::new())),
+            ];
+        }
+        data.rc += 1;
+        data.select_t1_value();
+        data.t1.start(data.t1v);
+        vec![Action::SendDisc(true)]
+    }
+
+    // TODO: More handlers.
 }
 
 enum ConnectedState {
