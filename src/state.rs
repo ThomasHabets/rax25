@@ -69,6 +69,40 @@ pub enum DlError {
     V,
 }
 
+// Page 81.
+impl std::fmt::Display for DlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "{}",
+            match self {
+                DlError::A => "A: F=1 received but P=1 not outstanding",
+                DlError::B => "B: Unexpected DM with F=1 in states 3,4,5",
+                DlError::C => "C: Unexpected UA in states 3,4,5",
+                DlError::D => "D: UA received without F=1 when SABM or DISC was sent P=1",
+                DlError::E => "E: DM received in states 3,4,5",
+                DlError::F => "F: Data link reset; i.e., SABM received instate 3,4,5",
+                DlError::G => "G: Connection timed out", // TODO: specs don't list ths.
+                DlError::H => "H: Undocumented?",
+                DlError::I => "I: N2 timeouts; unacknowledged data",
+                DlError::J => "J: N(r) sequence error",
+                DlError::K => "K: Undocumented?",
+                DlError::L => "L: Control field invalid or not implemented",
+                DlError::M => "M: Information field was received in a U- or S-type frame",
+                DlError::N => "N: Length of frame incorrect for frame type",
+                DlError::O => "O: I frame exceeded maximum allowed length",
+                DlError::P => "P: N(s) out of the window",
+                DlError::Q => "Q: UI response received, or UI command with P=1 received",
+                DlError::R => "R: UI frame exceeded maximum allowed length",
+                DlError::S => "S: I response received",
+                DlError::T => "T: N2 timeout; no response to enquiry",
+                DlError::U => "U: N2 timeouts; extended pere busy condition",
+                DlError::V => "V: No DL machines available to establish connection",
+            }
+        )
+    }
+}
+
 // Actions are like ReturnEvent, except packets are separate.
 // Terminology here is not very great.
 pub enum Action {
