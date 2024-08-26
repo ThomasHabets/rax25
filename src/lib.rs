@@ -1,5 +1,6 @@
 use anyhow::{Error, Result};
 use log::debug;
+use std::io::{Read, Write};
 
 mod fcs;
 pub mod state;
@@ -164,7 +165,8 @@ impl Packet {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Iframe(iframe) => {
-                ret.push(CONTROL_IFRAME);
+                ret.push(CONTROL_IFRAME | if iframe.poll { CONTROL_POLL } else { 0 });
+                ret.push(iframe.pid);
                 ret.extend(&iframe.payload);
             }
             _ => todo!(),
@@ -175,14 +177,19 @@ impl Packet {
         ret
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 17 {
+        let do_fcs = false;
+        if bytes.len() < if do_fcs { 17 } else { 15 } {
             return Err(Error::msg(format!(
                 "packet too short: {} bytes",
                 bytes.len()
             )));
         }
         // TODO: check FCS.
-        let bytes = &bytes[..(bytes.len() - 2)];
+        let bytes = if do_fcs {
+            &bytes[..(bytes.len() - 2)]
+        } else {
+            bytes
+        };
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
@@ -321,13 +328,17 @@ impl Kisser for FakeKiss {
 }
 
 pub struct Kiss {
+    buf: std::collections::VecDeque<u8>,
     port: Box<dyn serialport::SerialPort>,
 }
 
 impl Kiss {
     pub fn new(port: &str) -> Result<Self> {
+        //            let mut stream = std::net::TcpStream::connect("127.0.0.1:8001")?;
         Ok(Self {
+            buf: std::collections::VecDeque::new(),
             port: serialport::new(port, 9600).open()?,
+            //        port: Box::new(stream),
         })
     }
 }
@@ -352,15 +363,83 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
     ret
 }
 
+fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
+    let mut start_index = None;
+
+    for (i, &value) in vec.iter().enumerate() {
+        if value == 0xC0 {
+            if let Some(start) = start_index {
+                // If start_index is already set and we find another 0xC0
+                return Some((start, i));
+            } else {
+                // Set the start_index when we find the first 0xC0
+                start_index = Some(i);
+            }
+        }
+    }
+
+    None // Return None if no valid subrange is found
+}
+
+fn unescape(data: &[u8]) -> Vec<u8> {
+    let mut unescaped = Vec::with_capacity(data.len());
+    let mut is_escaped = false;
+
+    for &byte in data {
+        if is_escaped {
+            // XOR the byte with 0x20 to revert the escaping
+            unescaped.push(byte ^ 0x20);
+            is_escaped = false;
+        } else if byte == KISS_FESC {
+            // Next byte is escaped, so set the flag
+            is_escaped = true;
+        } else {
+            // Normal byte, just push it to the output
+            unescaped.push(byte);
+        }
+    }
+    unescaped
+}
+
 // For now this is a KISS interface. But it needs to be changed to allow multiplexing.
 impl Kisser for Kiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        eprintln!("Sending frame…");
+        eprintln!("Sending frame… {frame:?}");
         self.port.write_all(&escape(frame))?;
         Ok(())
     }
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
-        std::thread::sleep(timeout);
+        let end = std::time::Instant::now() + timeout;
+        loop {
+            self.port.set_timeout(end - std::time::Instant::now())?;
+            let mut buf = [0u8; 1024];
+            let buf = match self.port.read(&mut buf) {
+                Ok(n) => &buf[..n],
+                Err(e) => {
+                    eprintln!("Read error: {e}, assuming timeout");
+                    break;
+                }
+            };
+            eprintln!("Got {} bytes from serial", buf.len());
+            self.buf.extend(buf);
+            while let Some((a, b)) = find_frame(&self.buf) {
+                let bytes: Vec<_> = self
+                    .buf
+                    .iter()
+                    .skip(a + 2)
+                    .take(b - a - 2)
+                    .cloned()
+                    .collect();
+                let bytes = unescape(&bytes);
+                if bytes.len() > 14 {
+                    eprintln!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
+                    let packet = Packet::parse(&bytes)?;
+                    dbg!(packet);
+                    return Ok(Some(bytes.to_vec()));
+                }
+                self.buf.drain(a..b);
+            }
+        }
         Ok(None)
     }
 }
@@ -471,7 +550,7 @@ mod tests {
                     ns: 0,
                     poll: false,
                     pid: 240,
-                    payload: vec![0, 3, 2, 1,],
+                    payload: vec![16, 0xF0, 3, 2, 1, 162, 142],
                 },),
             }
         );
