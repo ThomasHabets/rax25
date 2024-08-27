@@ -2,6 +2,11 @@
 name = "rax25"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["Thomas Habets <thomas@habets.se>"]
+repository = "https://github.com/ThomasHabets/rax25"
+description = "AX.25 connected mode implementation"
+keywords = ["radio"]
 
 [dependencies]
 anyhow = "1.0.86"
