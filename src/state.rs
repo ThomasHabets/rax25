@@ -717,8 +717,6 @@ impl State for Connected {
             return acts;
         }
         if let ConnectedState::Connected = self.connected_state {
-            dbg!(p);
-            // TODO: don't use the name.
             data.check_iframe_acked(p.nr);
         } else {
             data.update_ack(p.nr);
@@ -767,7 +765,7 @@ impl State for Connected {
             }
             return actions;
         }
-        if data.srej_enabled {
+        if !data.srej_enabled {
             // discard iframe (implicit)
             data.reject_exception = true;
             // TODO: actions.push(Action::SendRej(final=poll, data.vr)
