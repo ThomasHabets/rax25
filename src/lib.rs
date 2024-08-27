@@ -5,6 +5,8 @@ use std::io::{Read, Write};
 mod fcs;
 pub mod state;
 
+const USE_FCS: bool = false;
+
 /// Source or dst addr.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
@@ -174,7 +176,7 @@ impl Packet {
             }
             _ => todo!(),
         };
-        if false {
+        if USE_FCS {
             let crc = fcs::fcs(&ret);
             ret.push(crc[0]);
             ret.push(crc[1]);
@@ -182,7 +184,7 @@ impl Packet {
         ret
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let do_fcs = false;
+        let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
             return Err(Error::msg(format!(
                 "packet too short: {} bytes",
