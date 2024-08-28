@@ -168,6 +168,7 @@ impl Packet {
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Rr(s) => ret.push(
                 CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & 0b1110_0000),
             ),
@@ -182,7 +183,6 @@ impl Packet {
             PacketType::Disc(disc) => {
                 ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 })
             }
-            _ => todo!(),
         };
         if USE_FCS {
             let crc = fcs::fcs(&ret);
