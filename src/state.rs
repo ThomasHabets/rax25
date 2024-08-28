@@ -1001,7 +1001,7 @@ mod tests {
                     break;
                 }
             }
-            assert!(found, "Did not find {w:?}");
+            assert!(found, "Did not find {w:?}\ngot: {got:?}");
         }
         assert_eq!(
             want.len(),
@@ -1126,6 +1126,58 @@ mod tests {
                     rr_dist1: false,
                     rr_extseq: false,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
+                }),
+            ],
+            &events,
+            "iframe",
+        );
+
+        eprintln!("Receive repeated packet");
+        let (c2, events) = handle(
+            &con,
+            &mut data,
+            &Event::Iframe(
+                Iframe {
+                    nr: 0,
+                    ns: 0,
+                    poll: true, // TODO: poll or no?
+                    pid: 0xF0,
+                    payload: vec![1, 2, 3],
+                },
+                true,
+            ),
+        );
+        assert!(matches![c2, None]);
+        assert_all(&[], &events, "iframe");
+
+        eprintln!("Receive next packet");
+        let (c2, events) = handle(
+            &con,
+            &mut data,
+            &Event::Iframe(
+                Iframe {
+                    nr: 0,
+                    ns: 1,
+                    poll: true, // TODO: poll or no?
+                    pid: 0xF0,
+                    payload: vec![11, 22, 33],
+                },
+                true,
+            ),
+        );
+        assert!(matches![c2, None]);
+        assert_all(
+            &[
+                ReturnEvent::Data(Res::Some(vec![11, 22, 33])),
+                ReturnEvent::Packet(Packet {
+                    src: Addr::new("M0THC-1"),
+                    dst: Addr::new("M0THC-2"),
+                    command_response: false,
+                    command_response_la: false,
+                    digipeater: vec![],
+                    rr_dist1: false,
+                    rr_extseq: false,
+                    packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
                 }),
             ],
             &events,
