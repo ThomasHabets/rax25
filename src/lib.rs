@@ -122,6 +122,12 @@ pub enum PacketType {
     Iframe(Iframe),
     Rr(Rr),
     Rnr(Rnr),
+    Rej(Rej),
+    Srej(Srej),
+    Frmr(Frmr),
+    Xid(Xid),
+    Ui(Ui),
+    Test(Test),
 }
 
 /// SABM - Set Ansynchronous Balanced Mode (4.3.3.1)
@@ -132,26 +138,35 @@ pub struct Sabm {
     poll: bool,
 }
 
+// Unnumbered frames. Ending in 11.
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_SABM: u8 = 0b001_0_11_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_UI: u8 = 0b000_0_00_11;
-#[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_SABME: u8 = 0b011_0_11_11;
+#[allow(clippy::unusual_byte_groupings)]
+pub const CONTROL_UI: u8 = 0b000_0_00_11;
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_DISC: u8 = 0b010_0_00_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_DM: u8 = 0b000_0_11_11;
-#[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_UA: u8 = 0b011_0_00_11;
+pub const CONTROL_DM: u8 = 0b0000_1111;
+pub const CONTROL_UA: u8 = 0b0110_0011;
+pub const CONTROL_TEST: u8 = 0b1110_0011;
+pub const CONTROL_XID: u8 = 0b1010_1111;
+pub const CONTROL_FRMR: u8 = 0b1000_0111;
+
+// Supervisor frames. Ending in 01.
 pub const CONTROL_RR: u8 = 0b0000_0001;
 pub const CONTROL_RNR: u8 = 0b0000_0101;
-#[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_REJ: u8 = 0b001_0_10_01;
-#[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_IFRAME: u8 = 0b000_0_00_00;
+pub const CONTROL_REJ: u8 = 0b0000_1001;
+pub const CONTROL_SREJ: u8 = 0b0000_1101;
+
+// Iframes end in 0.
+pub const CONTROL_IFRAME: u8 = 0b0000_0000;
+
+// Masks.
 pub const CONTROL_POLL: u8 = 0b0001_0000;
 pub const NR_MASK: u8 = 0b1110_0000;
+pub const TYPE_MASK: u8 = 0b0000_0011;
 pub const NO_L3: u8 = 0xF0;
 
 impl Packet {
@@ -177,6 +192,18 @@ impl Packet {
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Rej(s) => ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Srej(s) => ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Test(s) => {
+                ret.push(CONTROL_TEST | if s.poll { CONTROL_POLL } else { 0 });
+                ret.extend(&s.payload);
+            }
+            // TODO: XID data too.
+            PacketType::Xid(s) => ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 }),
+            // TODO: UI data too.
+            PacketType::Ui(s) => ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 }),
+            // TODO: FRMR data too.
+            PacketType::Frmr(s) => ret.push(CONTROL_FRMR | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Rr(s) => ret
                 .push(CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK)),
@@ -218,7 +245,9 @@ impl Packet {
 
         // TODO: parse digipeater.
         let control = bytes[14];
-        let poll = bytes[14] & CONTROL_POLL != 0;
+        let poll = control & CONTROL_POLL != 0;
+        let nr = (control >> 5) & 7; // Used for iframe and supervisory.
+        let ns = (control >> 1) & 7; // Used for iframe only.
         Ok(Packet {
             src: src.clone(),
             dst: dst.clone(),
@@ -227,23 +256,37 @@ impl Packet {
             rr_dist1: dst.rbit_ext,
             rr_extseq: src.rbit_ext,
             digipeater: vec![],
-            packet_type: if control & 1 == 0 {
-                PacketType::Iframe(Iframe {
-                    ns: (control >> 1) & 7,
-                    nr: (control >> 5) & 7,
-                    poll: ((control >> 1) & 1) == 1,
+            packet_type: match control & TYPE_MASK {
+                0 | 2 => PacketType::Iframe(Iframe {
+                    ns,
+                    nr,
+                    poll,
                     pid: NO_L3,
                     payload: bytes[16..].to_vec(),
-                })
-            } else if control & 3 == 1 {
-                todo!("control&3 = 3")
-            } else {
-                match !CONTROL_POLL & bytes[14] {
+                }),
+                1 => match control & !NR_MASK & !CONTROL_POLL {
+                    CONTROL_RR => PacketType::Rr(Rr { nr, poll }),
+                    CONTROL_RNR => PacketType::Rnr(Rnr { nr, poll }),
+                    CONTROL_REJ => PacketType::Rej(Rej { nr, poll }),
+                    CONTROL_SREJ => PacketType::Srej(Srej { nr, poll }),
+                    _ => panic!("Impossible logic error: {control} failed to be supervisor"),
+                },
+                3 => match !CONTROL_POLL & bytes[14] {
+                    CONTROL_SABME => PacketType::Sabm(Sabm { poll }),
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
                     CONTROL_UA => PacketType::Ua(Ua { poll }),
                     CONTROL_DISC => PacketType::Disc(Disc { poll }),
+                    CONTROL_DM => PacketType::Dm(Dm { poll }),
+                    CONTROL_FRMR => PacketType::Frmr(Frmr { poll }),
+                    CONTROL_UI => PacketType::Ui(Ui { push: poll }),
+                    CONTROL_XID => PacketType::Xid(Xid { poll }),
+                    CONTROL_TEST => PacketType::Test(Test {
+                        poll,
+                        payload: bytes[15..].to_vec(),
+                    }),
                     c => todo!("Control {c:b} not implemented"),
-                }
+                },
+                _ => panic!("Logic error: {control} & 3 > 3"),
             },
         })
     }
@@ -258,6 +301,34 @@ pub struct Sabme {
 pub struct Rr {
     poll: bool,
     nr: u8,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rej {
+    poll: bool,
+    nr: u8,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Srej {
+    poll: bool,
+    nr: u8,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Frmr {
+    poll: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Test {
+    poll: bool,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Xid {
+    poll: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -637,7 +708,7 @@ mod tests {
                 packet_type: PacketType::Iframe(Iframe {
                     nr: 0,
                     ns: 0,
-                    poll: false,
+                    poll: true,
                     pid: 240,
                     payload: vec![3, 2, 1],
                 },),
