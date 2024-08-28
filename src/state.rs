@@ -1,4 +1,4 @@
-use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Sabm, Sabme, Ua, Ui};
+use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Rnr, Rr, Sabm, Sabme, Ua, Ui};
 use log::debug;
 use std::collections::VecDeque;
 
@@ -111,6 +111,8 @@ pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
     SendUa(bool),
+    SendRr(bool, u8, bool),
+    SendRnr(bool, u8),
     SendDisc(bool),
     SendIframe(Iframe),
     SendDm(bool),
@@ -264,6 +266,16 @@ impl Data {
         }
     }
 
+    // Page 106.
+    fn transmit_enquiry(&mut self) -> Action {
+        self.acknowledge_pending = false;
+        self.t1.start(self.t1v); // TODO: what timer value?
+        if self.own_receiver_busy {
+            Action::SendRnr(true, self.vr)
+        } else {
+            Action::SendRr(true, self.vr, true)
+        }
+    }
     // Page 107.
     fn check_iframe_acked(&mut self, nr: u8) {
         if self.peer_receiver_busy {
@@ -355,6 +367,10 @@ pub trait State {
     }
     fn t3(&self, _data: &mut Data) -> Vec<Action> {
         dbg!("TODO: unexpected T3 expire");
+        vec![]
+    }
+    fn frmr(&self, _data: &mut Data) -> Vec<Action> {
+        dbg!("TODO: unexpected FRMR");
         vec![]
     }
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
@@ -598,7 +614,7 @@ impl State for AwaitingRelease {
 
 enum ConnectedState {
     Connected,
-    _TimerRecovery,
+    TimerRecovery,
 }
 struct Connected {
     connected_state: ConnectedState,
@@ -725,9 +741,7 @@ impl State for Connected {
             // discord (implicit)
             if p.poll {
                 data.acknowledge_pending = false;
-                return vec![
-                //TODO:      Action::SendRnr(true, data.vr)
-                 ];
+                return vec![Action::SendRnr(true, data.vr)];
             }
             return vec![];
         }
@@ -747,7 +761,7 @@ impl State for Connected {
                 data.vr = (data.vr + 1) % data.modulus;
             }
             if p.poll {
-                // TODO: actions.push(Actions::SendRr(/*final*/true, data.vr, false);
+                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
                 data.acknowledge_pending = false;
                 return actions;
             }
@@ -760,7 +774,7 @@ impl State for Connected {
         if data.reject_exception {
             // discard frame (implicit)
             if p.poll {
-                // TODO: actions.push(Action::SendRr(/*final*/true, data.vr, false);
+                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
                 data.acknowledge_pending = false;
             }
             return actions;
@@ -792,6 +806,42 @@ impl State for Connected {
         data.acknowledge_pending = false;
         actions
     }
+    // Page 93.
+    fn t1(&self, data: &mut Data) -> Vec<Action> {
+        data.rc = 1;
+        vec![
+            Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
+            data.transmit_enquiry(),
+        ]
+    }
+    // Page 93.
+    fn t3(&self, data: &mut Data) -> Vec<Action> {
+        data.rc = 0;
+        vec![
+            Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
+            data.transmit_enquiry(),
+        ]
+    }
+    // Page 93.
+    fn ua(&self, data: &mut Data, _ua: &Ua) -> Vec<Action> {
+        data.layer3_initiated = false;
+        vec![
+            Action::DlError(DlError::C),
+            data.establish_data_link(),
+            Action::State(Box::new(AwaitingConnection::new())),
+        ]
+    }
+    // Page 94.
+    fn frmr(&self, data: &mut Data) -> Vec<Action> {
+        data.layer3_initiated = false;
+        vec![
+            Action::DlError(DlError::K),
+            data.establish_data_link(),
+            Action::State(Box::new(AwaitingConnection::new())),
+        ]
+    }
+    // Page 94.
+    // TODO: ui
 }
 
 // Ugly range checker.
@@ -877,6 +927,32 @@ pub fn handle(
                 rr_dist1: false,
                 rr_extseq: false,
                 packet_type: PacketType::Ua(Ua { poll: *poll }),
+            })),
+            SendRr(poll, nr, command) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: *command,
+                command_response_la: false, // TODO: set to what?
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Rr(Rr {
+                    poll: *poll,
+                    nr: *nr,
+                }),
+            })),
+            SendRnr(poll, nr) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: true,     // TODO: what value?
+                command_response_la: false, // TODO: same
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Rnr(Rnr {
+                    poll: *poll,
+                    nr: *nr,
+                }),
             })),
             SendDm(poll) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
@@ -1022,7 +1098,7 @@ mod tests {
         data.peer = Some(Addr::new("M0THC-2"));
         let con = Connected::new(ConnectedState::Connected);
 
-        // Receive info.
+        // Receive data packet.
         let (c2, events) = handle(
             &con,
             &mut data,
@@ -1039,7 +1115,19 @@ mod tests {
         );
         assert!(matches![c2, None]);
         assert_all(
-            &[ReturnEvent::Data(Res::Some(vec![1, 2, 3]))],
+            &[
+                ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
+                ReturnEvent::Packet(Packet {
+                    src: Addr::new("M0THC-1"),
+                    dst: Addr::new("M0THC-2"),
+                    command_response: false,
+                    command_response_la: false,
+                    digipeater: vec![],
+                    rr_dist1: false,
+                    rr_extseq: false,
+                    packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
+                }),
+            ],
             &events,
             "iframe",
         );

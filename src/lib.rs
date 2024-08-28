@@ -120,6 +120,8 @@ pub enum PacketType {
     Dm(Dm),
     Disc(Disc),
     Iframe(Iframe),
+    Rr(Rr),
+    Rnr(Rnr),
 }
 
 /// SABM - Set Ansynchronous Balanced Mode (4.3.3.1)
@@ -142,8 +144,8 @@ pub const CONTROL_DISC: u8 = 0b010_0_00_11;
 pub const CONTROL_DM: u8 = 0b000_0_11_11;
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_UA: u8 = 0b011_0_00_11;
-#[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_RR: u8 = 0b000_0_00_01;
+pub const CONTROL_RR: u8 = 0b0000_0001;
+pub const CONTROL_RNR: u8 = 0b0000_0101;
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_REJ: u8 = 0b001_0_10_01;
 #[allow(clippy::unusual_byte_groupings)]
@@ -166,6 +168,12 @@ impl Packet {
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Rr(s) => ret.push(
+                CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & 0b1110_0000),
+            ),
+            PacketType::Rnr(s) => ret.push(
+                CONTROL_RNR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & 0b1110_0000),
+            ),
             PacketType::Iframe(iframe) => {
                 ret.push(CONTROL_IFRAME | if iframe.poll { CONTROL_POLL } else { 0 });
                 ret.push(iframe.pid);
@@ -236,6 +244,18 @@ impl Packet {
 #[derive(Debug, PartialEq)]
 pub struct Sabme {
     poll: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rr {
+    poll: bool,
+    nr: u8,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rnr {
+    poll: bool,
+    nr: u8,
 }
 
 #[derive(Debug, PartialEq, Clone)]
