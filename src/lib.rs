@@ -151,10 +151,19 @@ pub const CONTROL_REJ: u8 = 0b001_0_10_01;
 #[allow(clippy::unusual_byte_groupings)]
 pub const CONTROL_IFRAME: u8 = 0b000_0_00_00;
 pub const CONTROL_POLL: u8 = 0b0001_0000;
+pub const NR_MASK: u8 = 0b1110_0000;
+pub const NO_L3: u8 = 0xF0;
 
 impl Packet {
     pub fn serialize(&self) -> Vec<u8> {
-        let mut ret = Vec::with_capacity(8 + 8 + 1); // TODO: reserve more
+        let mut ret = Vec::with_capacity(
+            14 + 1
+                + if let PacketType::Iframe(s) = &self.packet_type {
+                    s.payload.len() + 1
+                } else {
+                    0
+                },
+        );
         ret.extend(
             self.dst
                 .serialize(false, self.command_response, self.rr_dist1, false),
@@ -169,11 +178,10 @@ impl Packet {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Rr(s) => ret.push(
-                CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & 0b1110_0000),
-            ),
+            PacketType::Rr(s) => ret
+                .push(CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK)),
             PacketType::Rnr(s) => ret.push(
-                CONTROL_RNR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & 0b1110_0000),
+                CONTROL_RNR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK),
             ),
             PacketType::Iframe(iframe) => {
                 ret.push(CONTROL_IFRAME | if iframe.poll { CONTROL_POLL } else { 0 });
@@ -224,13 +232,13 @@ impl Packet {
                     ns: (control >> 1) & 7,
                     nr: (control >> 5) & 7,
                     poll: ((control >> 1) & 1) == 1,
-                    pid: 0xF0,
+                    pid: NO_L3,
                     payload: bytes[16..].to_vec(),
                 })
             } else if control & 3 == 1 {
                 todo!("control&3 = 3")
             } else {
-                match 0b1110_1111 & bytes[14] {
+                match !CONTROL_POLL & bytes[14] {
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
                     CONTROL_UA => PacketType::Ua(Ua { poll }),
                     CONTROL_DISC => PacketType::Disc(Disc { poll }),
