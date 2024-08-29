@@ -458,10 +458,16 @@ pub struct Kiss {
 impl Kiss {
     pub fn new(port: &str) -> Result<Self> {
         //            let mut stream = std::net::TcpStream::connect("127.0.0.1:8001")?;
-        // TODO: flush serial port on open.
+        let port = serialport::new(port, 9600)
+            .flow_control(serialport::FlowControl::None)
+            .parity(serialport::Parity::None)
+            .data_bits(serialport::DataBits::Eight)
+            .stop_bits(serialport::StopBits::One)
+            .open()?;
+        port.clear(serialport::ClearBuffer::All)?;
         Ok(Self {
             buf: std::collections::VecDeque::new(),
-            port: serialport::new(port, 9600).open()?,
+            port,
             //        port: Box::new(stream),
         })
     }
