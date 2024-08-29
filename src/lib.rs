@@ -644,14 +644,20 @@ impl Client {
                 .ok_or(Error::msg("did not get a packet in time"))?,
         )
     }
-    pub fn read(&mut self) -> Result<Vec<u8>> {
+    pub fn read_until(
+        &mut self,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Option<Vec<u8>>> {
         while self.incoming.is_empty() {
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(None);
+            }
             let p = self.try_read()?;
             self.actions_packet(&p)?;
         }
         let ret: Vec<_> = self.incoming.iter().cloned().collect();
         self.incoming.clear();
-        Ok(ret)
+        Ok(Some(ret))
     }
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
