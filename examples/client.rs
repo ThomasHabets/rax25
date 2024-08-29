@@ -11,9 +11,9 @@ struct Opt {
 fn main() -> Result<()> {
     let opt = Opt::parse();
     let k = Kiss::new(&opt.port)?;
-    let mut c = Client::new(Addr::new("M0THC-1"), Box::new(k));
+    let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
     eprintln!("==== CONNECTING");
-    c.connect(&Addr::new("M0THC-2"))?;
+    c.connect(&Addr::new("M0THC-2")?)?;
     eprintln!("==== WRITING");
     c.write("echo hello world".as_bytes())?;
     loop {

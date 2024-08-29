@@ -1,4 +1,5 @@
 use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Rnr, Rr, Sabm, Sabme, Ua, Ui};
+use anyhow::Result;
 use log::debug;
 use std::collections::VecDeque;
 
@@ -1011,20 +1012,20 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_outgoing_timeout() {
-        let mut data = Data::new(Addr::new("M0THC-1"));
+    fn disconnected_outgoing_timeout() -> Result<()> {
+        let mut data = Data::new(Addr::new("M0THC-1")?);
         let con = Disconnected::new();
 
         // First attempt.
         dbg!("First attempt");
-        let (con, events) = handle(&con, &mut data, &Event::Connect(Addr::new("M0THC-2")));
+        let (con, events) = handle(&con, &mut data, &Event::Connect(Addr::new("M0THC-2")?));
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")));
+        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1"),
-                dst: Addr::new("M0THC-2"),
+                src: Addr::new("M0THC-1")?,
+                dst: Addr::new("M0THC-2")?,
                 command_response: true,
                 command_response_la: false,
                 digipeater: vec![],
@@ -1044,11 +1045,11 @@ mod tests {
                 break;
             } else {
                 assert!(matches![c2, None]);
-                assert_eq!(data.peer, Some(Addr::new("M0THC-2")));
+                assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
                 assert_all(
                     &[ReturnEvent::Packet(Packet {
-                        src: Addr::new("M0THC-1"),
-                        dst: Addr::new("M0THC-2"),
+                        src: Addr::new("M0THC-1")?,
+                        dst: Addr::new("M0THC-2")?,
                         command_response: true,
                         command_response_la: false,
                         digipeater: vec![],
@@ -1061,25 +1062,26 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn disconnected_incoming() {
-        let mut data = Data::new(Addr::new("M0THC-1"));
+    fn disconnected_incoming() -> Result<()> {
+        let mut data = Data::new(Addr::new("M0THC-1")?);
         let con = Disconnected::new();
 
         let (con, events) = handle(
             &con,
             &mut data,
-            &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")),
+            &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")?),
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "Connected");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")));
+        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1"),
-                dst: Addr::new("M0THC-2"),
+                src: Addr::new("M0THC-1")?,
+                dst: Addr::new("M0THC-2")?,
                 command_response: true,
                 command_response_la: false,
                 digipeater: vec![],
@@ -1090,12 +1092,13 @@ mod tests {
             &events,
             "connect",
         );
+        Ok(())
     }
 
     #[test]
-    fn connected() {
-        let mut data = Data::new(Addr::new("M0THC-1"));
-        data.peer = Some(Addr::new("M0THC-2"));
+    fn connected() -> Result<()> {
+        let mut data = Data::new(Addr::new("M0THC-1")?);
+        data.peer = Some(Addr::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
 
         // Receive data packet.
@@ -1118,8 +1121,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1"),
-                    dst: Addr::new("M0THC-2"),
+                    src: Addr::new("M0THC-1")?,
+                    dst: Addr::new("M0THC-2")?,
                     command_response: false,
                     command_response_la: false,
                     digipeater: vec![],
@@ -1170,8 +1173,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![11, 22, 33])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1"),
-                    dst: Addr::new("M0THC-2"),
+                    src: Addr::new("M0THC-1")?,
+                    dst: Addr::new("M0THC-2")?,
                     command_response: false,
                     command_response_la: false,
                     digipeater: vec![],
@@ -1183,12 +1186,13 @@ mod tests {
             &events,
             "iframe",
         );
+        Ok(())
     }
 
     #[test]
-    fn disconnect() {
-        let mut data = Data::new(Addr::new("M0THC-1"));
-        data.peer = Some(Addr::new("M0THC-2"));
+    fn disconnect() -> Result<()> {
+        let mut data = Data::new(Addr::new("M0THC-1")?);
+        data.peer = Some(Addr::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
         let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
         assert_eq!(c2.unwrap().name(), "Disconnected");
@@ -1196,8 +1200,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::EOF),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1"),
-                    dst: Addr::new("M0THC-2"),
+                    src: Addr::new("M0THC-1")?,
+                    dst: Addr::new("M0THC-2")?,
                     command_response: true,
                     command_response_la: false,
                     digipeater: vec![],
@@ -1209,5 +1213,6 @@ mod tests {
             &events,
             "disconnect",
         );
+        Ok(())
     }
 }

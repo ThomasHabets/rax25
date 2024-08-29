@@ -18,24 +18,34 @@ pub struct Addr {
 }
 
 impl Addr {
-    pub fn new(s: &str) -> Self {
-        // TODO: check format
-        Self {
-            t: s.to_string(),
+    pub fn new(s: &str) -> Result<Self> {
+        let s = s.to_uppercase();
+        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))$")
+            .expect("can't happen: Regex compile fail");
+        if !re.is_match(&s) {
+            return Err(Error::msg(format!("invalid callsign: {s}")));
+        }
+        Ok(Self {
+            t: s,
             rbit_ext: false,
             highbit: false,
             lowbit: false,
             rbit_dama: false,
-        }
+        })
     }
-    pub fn new_bits(s: &str, lowbit: bool, highbit: bool, rbit_ext: bool, rbit_dama: bool) -> Self {
-        Self {
-            t: s.to_string(),
-            lowbit,
-            highbit,
-            rbit_ext,
-            rbit_dama,
-        }
+    pub fn new_bits(
+        s: &str,
+        lowbit: bool,
+        highbit: bool,
+        rbit_ext: bool,
+        rbit_dama: bool,
+    ) -> Result<Self> {
+        let mut a = Self::new(s)?;
+        a.lowbit = lowbit;
+        a.highbit = highbit;
+        a.rbit_ext = rbit_ext;
+        a.rbit_dama = rbit_dama;
+        Ok(a)
     }
     pub fn display(&self) -> &str {
         &self.t
@@ -46,26 +56,28 @@ impl Addr {
                 "invalid serialized callsign: {bytes:?}"
             )));
         }
-        let mut r = String::new();
-        for byte in bytes.iter().take(6) {
-            let ch = (byte >> 1) as char;
-            if ch == ' ' {
-                break;
+        let call = {
+            let call = bytes
+                .iter()
+                .take(6)
+                .map(|&c| (c >> 1) as char)
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            let ssid = (bytes[6] >> 1) & 15;
+            if ssid > 0 {
+                call + "-" + &ssid.to_string()
+            } else {
+                call
             }
-            r.push(ch)
-        }
-        let ssid = (bytes[6] >> 1) & 15;
-        if ssid > 0 {
-            r = r + "-" + &ssid.to_string();
-        }
-
-        Ok(Self {
-            t: r,
-            rbit_ext: bytes[6] & 0b0100_0000 == 0,
-            rbit_dama: bytes[6] & 0b0010_0000 == 0,
-            lowbit: bytes[6] & 1 != 0,
-            highbit: bytes[6] & 0x80 != 0,
-        })
+        };
+        Self::new_bits(
+            &call,
+            bytes[6] & 1 != 0,
+            bytes[6] & 0x80 != 0,
+            bytes[6] & 0b0100_0000 == 0,
+            bytes[6] & 0b0010_0000 == 0,
+        )
     }
 
     pub fn serialize(
@@ -689,17 +701,17 @@ mod tests {
     #[test]
     fn client() -> Result<()> {
         let k = FakeKiss::default();
-        let mut c = Client::new(Addr::new("M0THC-1"), Box::new(k));
+        let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        c.connect(&Addr::new("M0THC-2"))?;
+        c.connect(&Addr::new("M0THC-2")?)?;
         c.write(&vec![1, 2, 3])?;
         let reply = c.try_read()?;
         assert_eq!(
             reply,
             Packet {
                 // TODO: is this even the bit set we expect
-                src: Addr::new_bits("M0THC-2", true, false, false, false),
-                dst: Addr::new_bits("M0THC-1", false, true, false, false),
+                src: Addr::new_bits("M0THC-2", true, false, false, false)?,
+                dst: Addr::new_bits("M0THC-1", false, true, false, false)?,
                 digipeater: vec![],
                 rr_extseq: false,
                 command_response: true,
@@ -720,28 +732,28 @@ mod tests {
     #[test]
     fn addr_serial() -> Result<()> {
         // TODO: test invalid calls.
-        let a = Addr::new("M0THC-1").serialize(true, false, false, false);
+        let a = Addr::new("M0THC-1")?.serialize(true, false, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
         assert_eq!(Addr::parse(&a)?.display(), "M0THC-1");
 
-        let a = Addr::new("M0THC-2").serialize(false, true, false, false);
+        let a = Addr::new("M0THC-2")?.serialize(false, true, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 100 + 0x80]);
         assert_eq!(Addr::parse(&a)?.display(), "M0THC-2");
 
-        let a = Addr::new("M0THC-3").serialize(false, false, true, false);
+        let a = Addr::new("M0THC-3")?.serialize(false, false, true, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 38]);
         assert_eq!(Addr::parse(&a)?.display(), "M0THC-3");
 
-        let a = Addr::new("M0THC-4").serialize(false, false, false, true);
+        let a = Addr::new("M0THC-4")?.serialize(false, false, false, true);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
         assert_eq!(Addr::parse(&a)?.display(), "M0THC-4");
         Ok(())
     }
 
     #[test]
-    fn serialize_sabm() {
-        let src = Addr::new("M0THC-1");
-        let dst = Addr::new("M0THC-2");
+    fn serialize_sabm() -> Result<()> {
+        let src = Addr::new("M0THC-1")?;
+        let dst = Addr::new("M0THC-2")?;
         assert_eq!(
             Packet {
                 src: src.clone(),
@@ -770,5 +782,6 @@ mod tests {
             .serialize(),
             vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47], // , 238, 196]
         );
+        Ok(())
     }
 }

@@ -11,6 +11,7 @@ keywords = ["radio"]
 [dependencies]
 anyhow = "1.0.86"
 log = "0.4.22"
+regex = "1.10.6"
 rust-fsm = "0.7.0"
 serialport = "4.5.0"
 
