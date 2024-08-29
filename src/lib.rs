@@ -458,6 +458,7 @@ pub struct Kiss {
 impl Kiss {
     pub fn new(port: &str) -> Result<Self> {
         //            let mut stream = std::net::TcpStream::connect("127.0.0.1:8001")?;
+        // TODO: flush serial port on open.
         Ok(Self {
             buf: std::collections::VecDeque::new(),
             port: serialport::new(port, 9600).open()?,
@@ -662,7 +663,9 @@ impl Client {
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
-            PacketType::Rr(rr) => self.actions(state::Event::Rr(rr.clone())),
+            PacketType::Rr(rr) => {
+                self.actions(state::Event::Rr(rr.clone(), packet.command_response))
+            }
             PacketType::Iframe(iframe) => self.actions(state::Event::Iframe(
                 iframe.clone(),
                 packet.command_response,

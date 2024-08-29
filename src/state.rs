@@ -14,7 +14,7 @@ pub enum Event {
     Sabm(Sabm, Addr),
     Sabme(Sabme, Addr),
     Dm(Dm),
-    Rr(Rr),
+    Rr(Rr, bool),
     Ui(Ui, bool),
     Disc(Disc),
     Iframe(Iframe, bool),
@@ -257,6 +257,33 @@ impl Data {
         }
     }
 
+    // Page 106.
+    fn nr_error_recovery(&mut self) -> Vec<Action> {
+        self.layer3_initiated = false;
+        vec![Action::DlError(DlError::J), self.establish_data_link()]
+    }
+
+    // Page 108.
+    fn check_need_for_response(&mut self, command: bool, pf: bool) -> Vec<Action> {
+        if command && pf {
+            vec![self.enquiry_response(true)]
+        } else if !command && pf {
+            vec![Action::DlError(DlError::A)]
+        } else {
+            vec![]
+        }
+    }
+
+    // Page 106.
+    fn enquiry_response(&mut self, f: bool) -> Action {
+        self.acknowledge_pending = false;
+        if self.own_receiver_busy {
+            Action::SendRnr(f, self.vr)
+        } else {
+            Action::SendRr(f, self.vr, false)
+        }
+    }
+
     // Page 109.
     fn select_t1_value(&mut self) {
         if self.rc == 0 {
@@ -375,7 +402,7 @@ pub trait State {
         eprintln!("TODO: unexpected FRMR");
         vec![]
     }
-    fn rr(&self, _data: &mut Data, _packet: &Rr) -> Vec<Action> {
+    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected RR");
         vec![]
     }
@@ -630,12 +657,22 @@ impl Connected {
     fn new(connected_state: ConnectedState) -> Self {
         Self { connected_state }
     }
-}
-
-// Page 106.
-fn nr_error_recovery(data: &mut Data) -> Vec<Action> {
-    data.layer3_initiated = false;
-    vec![Action::DlError(DlError::J), data.establish_data_link()]
+    // Page 95
+    fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+        data.peer_receiver_busy = false;
+        let mut act = data.check_need_for_response(cr, packet.poll);
+        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+            data.nr_error_recovery();
+            act.push(Action::State(Box::new(AwaitingConnection::new())));
+        } else {
+            data.check_iframe_acked(packet.nr);
+        }
+        act
+    }
+    fn rr_timer_recovery(&self, _data: &mut Data, _packet: &Rr, _cr: bool) -> Vec<Action> {
+        eprintln!("TODO: rr_timer_recovery");
+        vec![]
+    }
 }
 
 impl State for Connected {
@@ -734,7 +771,7 @@ impl State for Connected {
             ];
         }
         if !in_range(data.va, p.nr, data.vs, data.modulus) {
-            let mut acts = nr_error_recovery(data);
+            let mut acts = data.nr_error_recovery();
             acts.push(Action::State(Box::new(AwaitingConnection::new())));
             return acts;
         }
@@ -848,6 +885,13 @@ impl State for Connected {
     }
     // Page 94.
     // TODO: ui
+
+    fn rr(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+        match self.connected_state {
+            ConnectedState::Connected => self.rr_connected(data, packet, cr),
+            ConnectedState::TimerRecovery => self.rr_timer_recovery(data, packet, cr),
+        }
+    }
 }
 
 // Ugly range checker.
@@ -895,7 +939,7 @@ pub fn handle(
         Event::Disc(p) => state.disc(data, p),
         Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
         Event::Ua(p) => state.ua(data, p),
-        Event::Rr(p) => state.rr(data, p),
+        Event::Rr(p, command) => state.rr(data, p, *command),
     };
     let mut ret = Vec::new();
 
