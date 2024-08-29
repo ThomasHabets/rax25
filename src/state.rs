@@ -34,11 +34,11 @@ impl ReturnEvent {
         match self {
             ReturnEvent::Packet(p) => Some(p.serialize()),
             ReturnEvent::DlError(e) => {
-                eprintln!("TODO: DLERROR: {e:?}");
+                eprintln!("TODO: DLERROR: {e}");
                 None
             }
             ReturnEvent::Data(d) => {
-                eprintln!("Data received: {d:?}");
+                debug!("Data received: {d:?}");
                 None
             }
         }
@@ -301,7 +301,7 @@ impl Data {
         }
     }
     fn update_ack(&mut self, nr: u8) {
-        dbg!(self.va, nr);
+        // dbg!(self.va, nr);
         while self.va != nr {
             assert!(!self.iframe_resend_queue.is_empty());
             self.iframe_resend_queue.pop_front();
@@ -351,11 +351,11 @@ impl Data {
 pub trait State {
     fn name(&self) -> String;
     fn connect(&self, _data: &mut Data, _addr: &Addr) -> Vec<Action> {
-        dbg!("TODO: unexpected DLConnect");
+        eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
-        dbg!("TODO: unexpected DLDisconnect");
+        eprintln!("TODO: unexpected DLDisconnect in state {}", self.name());
         vec![]
     }
     fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
@@ -363,42 +363,42 @@ pub trait State {
         vec![]
     }
     fn t1(&self, _data: &mut Data) -> Vec<Action> {
-        dbg!("TODO: unexpected T1 expire");
+        eprintln!("TODO: unexpected T1 expire");
         vec![]
     }
     fn t3(&self, _data: &mut Data) -> Vec<Action> {
-        dbg!("TODO: unexpected T3 expire");
+        eprintln!("TODO: unexpected T3 expire");
         vec![]
     }
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
-        dbg!("TODO: unexpected FRMR");
+        eprintln!("TODO: unexpected FRMR");
         vec![]
     }
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
-        dbg!("TODO: unexpected SABM");
+        eprintln!("TODO: unexpected SABM");
         vec![]
     }
     fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
-        dbg!("TODO: unexpected SABME");
+        eprintln!("TODO: unexpected SABME");
         vec![]
     }
     fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
-        dbg!("TODO; unexpected iframe");
+        eprintln!("TODO; unexpected iframe");
         vec![]
     }
     fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
-        dbg!("TODO; unexpected UA");
+        eprintln!("TODO; unexpected UA");
         vec![]
     }
     fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
-        dbg!("TODO: unexpected DM");
+        eprintln!("TODO: unexpected DM");
         vec![]
     }
     fn disc(&self, _data: &mut Data, _packet: &Disc) -> Vec<Action> {
-        dbg!("TODO: unexpected DISC");
+        eprintln!("TODO: unexpected DISC");
         vec![]
     }
 }
@@ -414,7 +414,7 @@ fn ui_check(command: bool) -> Vec<Action> {
     false {
         return vec![Action::DlError(DlError::K)];
     }
-    dbg!("DL-UNIT_DATA indication");
+    debug!("DL-UNIT_DATA indication");
     vec![]
 }
 
@@ -470,7 +470,7 @@ impl State for Disconnected {
 
     // Page 84.
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
-        dbg!("Disconnect while already disconnected");
+        eprintln!("Disconnect while already disconnected");
         vec![]
     }
 
@@ -524,7 +524,7 @@ impl State for AwaitingConnection {
     }
     // Page 88.
     fn t1(&self, data: &mut Data) -> Vec<Action> {
-        dbg!("t1 expired while connecting, retrying");
+        eprintln!("t1 expired while connecting, retrying");
         if data.rc == data.n2 {
             data.clear_iframe_queue();
             vec![
@@ -546,10 +546,10 @@ impl State for AwaitingConnection {
             return vec![Action::DlError(DlError::D)];
         }
         if data.layer3_initiated {
-            dbg!("DL-CONNECT CONFIRM");
+            debug!("DL-CONNECT CONFIRM");
         } else if data.vs != data.va {
             // discard frame.
-            dbg!("DL-CONNECT indiciation"); // huh?
+            debug!("DL-CONNECT indiciation"); // huh?
         }
         data.t1.stop();
         data.t3.stop();
@@ -679,12 +679,12 @@ impl State for Connected {
     }
     // Page 93.
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
-        dbg!("TODO: Connected: sabm not handled");
+        eprintln!("TODO: Connected: sabm not handled");
         vec![]
     }
     // Page 93.
     fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
-        dbg!("TODO: Connected: sabme not handled");
+        eprintln!("TODO: Connected: sabme not handled");
         vec![]
     }
 

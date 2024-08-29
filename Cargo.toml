@@ -16,4 +16,5 @@ rust-fsm = "0.7.0"
 serialport = "4.5.0"
 
 [dev-dependencies]
+stderrlog = "0.6.0"
 clap = { version = "4.5.16", features = ["derive"] }

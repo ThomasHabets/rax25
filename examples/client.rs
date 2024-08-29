@@ -10,6 +10,11 @@ struct Opt {
 
 fn main() -> Result<()> {
     let opt = Opt::parse();
+    stderrlog::new()
+        .module("rax25")
+        .verbosity(0)
+        .init()
+        .unwrap();
     let k = Kiss::new(&opt.port)?;
     let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
     eprintln!("==== CONNECTING");
@@ -17,8 +22,9 @@ fn main() -> Result<()> {
     eprintln!("==== WRITING");
     c.write("echo hello world".as_bytes())?;
     loop {
-        let data = c.read()?;
-        eprintln!("====> {data:?}");
-        println!("{}", String::from_utf8(data)?);
+        if let Ok(data) = c.read() {
+            // eprintln!("====> {data:?}");
+            println!("{}", String::from_utf8(data)?);
+        }
     }
 }

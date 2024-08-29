@@ -527,7 +527,7 @@ fn unescape(data: &[u8]) -> Vec<u8> {
 // For now this is a KISS interface. But it needs to be changed to allow multiplexing.
 impl Kisser for Kiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        eprintln!("Sending frame… {frame:?}");
+        debug!("Sending frame… {frame:?}");
         self.port.write_all(&escape(frame))?;
         Ok(())
     }
@@ -543,11 +543,11 @@ impl Kisser for Kiss {
                     break;
                 }
             };
-            eprintln!("Got {} bytes from serial", buf.len());
+            debug!("Got {} bytes from serial", buf.len());
             self.buf.extend(buf);
             while let Some((a, b)) = find_frame(&self.buf) {
                 if b - a < 14 {
-                    eprintln!("short packet {a} {b}");
+                    debug!("short packet {a} {b}");
                     self.buf.drain(..(a + 1));
                     continue;
                 }
@@ -559,10 +559,10 @@ impl Kisser for Kiss {
                     .cloned()
                     .collect();
                 self.buf.drain(..b);
-                eprintln!("After drain: {:?}", self.buf);
+                debug!("After drain: {:?}", self.buf);
                 let bytes = unescape(&bytes);
                 if bytes.len() > 14 {
-                    eprintln!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
+                    debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
                     let _packet = Packet::parse(&bytes)?;
                     // dbg!(packet);
                     return Ok(Some(bytes.to_vec()));
@@ -679,7 +679,7 @@ impl Client {
                     state::Res::None => {}
                     state::Res::EOF => eprintln!("EOF!!!!"),
                     state::Res::Some(d) => {
-                        eprintln!("DATA DELIVERED>>> {:?}", String::from_utf8(d.clone()));
+                        debug!("DATA DELIVERED>>> {:?}", String::from_utf8(d.clone()));
                         self.incoming.extend(d);
                     }
                 },
