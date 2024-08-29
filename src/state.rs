@@ -14,6 +14,7 @@ pub enum Event {
     Sabm(Sabm, Addr),
     Sabme(Sabme, Addr),
     Dm(Dm),
+    Rr(Rr),
     Ui(Ui, bool),
     Disc(Disc),
     Iframe(Iframe, bool),
@@ -372,6 +373,10 @@ pub trait State {
     }
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected FRMR");
+        vec![]
+    }
+    fn rr(&self, _data: &mut Data, _packet: &Rr) -> Vec<Action> {
+        eprintln!("TODO: unexpected RR");
         vec![]
     }
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
@@ -890,6 +895,7 @@ pub fn handle(
         Event::Disc(p) => state.disc(data, p),
         Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
         Event::Ua(p) => state.ua(data, p),
+        Event::Rr(p) => state.rr(data, p),
     };
     let mut ret = Vec::new();
 

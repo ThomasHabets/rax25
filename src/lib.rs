@@ -662,6 +662,7 @@ impl Client {
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
+            PacketType::Rr(rr) => self.actions(state::Event::Rr(rr.clone())),
             PacketType::Iframe(iframe) => self.actions(state::Event::Iframe(
                 iframe.clone(),
                 packet.command_response,
