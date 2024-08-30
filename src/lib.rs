@@ -148,7 +148,7 @@ pub enum PacketType {
 /// SABM - Set Ansynchronous Balanced Mode (4.3.3.1)
 ///
 ///
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Sabm {
     poll: bool,
 }
@@ -372,16 +372,16 @@ pub struct Iframe {
     payload: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ui {
     push: bool,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Dm {
     poll: bool,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Disc {
     poll: bool,
 }
@@ -696,6 +696,16 @@ impl Client {
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
+            PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
+            PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
+            PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
+            PacketType::Rej(p) => self.actions(state::Event::Rej(p.clone())),
+            PacketType::Srej(p) => self.actions(state::Event::Srej(p.clone())),
+            PacketType::Frmr(p) => self.actions(state::Event::Frmr(p.clone())),
+            PacketType::Xid(p) => self.actions(state::Event::Xid(p.clone())),
+            PacketType::Ui(p) => self.actions(state::Event::Ui(p.clone(), packet.command_response)),
+            PacketType::Test(p) => self.actions(state::Event::Test(p.clone())),
+            PacketType::Dm(p) => self.actions(state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
                 self.actions(state::Event::Rr(rr.clone(), packet.command_response))
             }
@@ -703,7 +713,6 @@ impl Client {
                 iframe.clone(),
                 packet.command_response,
             )),
-            _ => panic!(),
         }
         Ok(())
     }

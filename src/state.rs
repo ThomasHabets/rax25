@@ -1,4 +1,7 @@
-use crate::{Addr, Disc, Dm, Iframe, Packet, PacketType, Rnr, Rr, Sabm, Sabme, Ua, Ui};
+use crate::{
+    Addr, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test, Ua,
+    Ui, Xid,
+};
 use anyhow::Result;
 use log::debug;
 use std::collections::VecDeque;
@@ -15,10 +18,16 @@ pub enum Event {
     Sabme(Sabme, Addr),
     Dm(Dm),
     Rr(Rr, bool),
+    Rnr(Rnr),
     Ui(Ui, bool),
     Disc(Disc),
     Iframe(Iframe, bool),
     Ua(Ua),
+    Frmr(Frmr),
+    Rej(Rej),
+    Srej(Srej),
+    Test(Test),
+    Xid(Xid),
 }
 
 // Return events, that the state machine wants to tell the world. IOW excludes state changes.
@@ -441,14 +450,44 @@ pub trait State {
     }
 
     #[must_use]
+    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
+        eprintln!("TODO: unexpected RR");
+        vec![]
+    }
+
+    #[must_use]
+    fn rej(&self, _data: &mut Data, _packet: &Rej) -> Vec<Action> {
+        eprintln!("TODO: unexpected REJ");
+        vec![]
+    }
+
+    #[must_use]
+    fn xid(&self, _data: &mut Data, _packet: &Xid) -> Vec<Action> {
+        eprintln!("TODO: unexpected XID");
+        vec![]
+    }
+
+    #[must_use]
+    fn test(&self, _data: &mut Data, _packet: &Test) -> Vec<Action> {
+        eprintln!("TODO: unexpected TEST");
+        vec![]
+    }
+
+    #[must_use]
+    fn srej(&self, _data: &mut Data, _packet: &Srej) -> Vec<Action> {
+        eprintln!("TODO: unexpected SREJ");
+        vec![]
+    }
+
+    #[must_use]
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected FRMR");
         vec![]
     }
 
     #[must_use]
-    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
-        eprintln!("TODO: unexpected RR");
+    fn rnr(&self, _data: &mut Data, _packet: &Rnr) -> Vec<Action> {
+        eprintln!("TODO: unexpected RNR");
         vec![]
     }
 
@@ -1083,6 +1122,12 @@ pub fn handle(
         Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
         Event::Ua(p) => state.ua(data, p),
         Event::Rr(p, command) => state.rr(data, p, *command),
+        Event::Rnr(p) => state.rnr(data, p),
+        Event::Frmr(_) => state.frmr(data),
+        Event::Rej(p) => state.rej(data, p),
+        Event::Srej(p) => state.srej(data, p),
+        Event::Xid(p) => state.xid(data, p),
+        Event::Test(p) => state.test(data, p),
     };
     let mut ret = Vec::new();
 
