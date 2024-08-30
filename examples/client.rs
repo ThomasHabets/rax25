@@ -65,8 +65,8 @@ fn main() -> Result<()> {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
             // eprintln!("====> {data:?}");
             match String::from_utf8(data.clone()) {
-                Ok(s) => println!("{s}"),
-                Err(_) => println!(
+                Ok(s) => print!("{s}"),
+                Err(_) => print!(
                     "{}",
                     String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?
                 ),
