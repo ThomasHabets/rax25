@@ -741,12 +741,15 @@ impl Connected {
 
 impl State for Connected {
     fn name(&self) -> String {
-        "Connected".to_string()
+        match self.connected_state {
+            ConnectedState::Connected => "Connected".to_string(),
+            ConnectedState::TimerRecovery => "TimerRecovery".to_string(),
+        }
     }
 
-    // Page 92.
+    // Page 92 & 98.
     fn disconnect(&self, data: &mut Data) -> Vec<Action> {
-        data.iframe_queue.clear();
+        data.clear_iframe_queue();
         data.rc = 0;
         data.t1.start(data.srt); // TODO: with what timer?
         data.t3.stop();
@@ -756,14 +759,15 @@ impl State for Connected {
         ]
     }
 
-    // Page 92.
+    // Page 92 & 98.
+    //
     // TODO: this sends directly, without putting it on any queue.
     // So really, this is maybe the event "pop iframe".
     fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
         if data.peer_receiver_busy {
             panic!("TODO: we have no tx queue");
         }
-        if data.vs == data.va + data.k {
+        if data.vs == (data.va + data.k) % data.modulus {
             panic!("TODO: tx window full!");
         }
         let ns = data.vs;
@@ -787,6 +791,7 @@ impl State for Connected {
     // Page 93.
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: Connected: sabm not handled");
+        // TODO: if TimerRecovery, this goes to Connected.
         vec![]
     }
 
@@ -796,10 +801,11 @@ impl State for Connected {
         vec![]
     }
 
-    // Page 93.
+    // Page 93 & 101.
     //
     // Done.
     fn dm(&self, data: &mut Data, _packet: &Dm) -> Vec<Action> {
+        debug!("DL-DISCONNECT");
         data.clear_iframe_queue();
         data.t1.stop();
         data.t3.stop();
@@ -809,7 +815,7 @@ impl State for Connected {
         ]
     }
 
-    // Page 93.
+    // Page 93 & 100.
     //
     // Done.
     fn disc(&self, data: &mut Data, p: &Disc) -> Vec<Action> {
@@ -858,8 +864,10 @@ impl State for Connected {
         let mut actions = vec![];
         if p.ns == data.vr {
             data.vr = (data.vr + 1) % data.modulus;
-            // TODO: clear reject exception
-            // TODO: decrement sreject exception if >0
+            data.reject_exception = false;
+            if data.sreject_exception > 0 {
+                data.sreject_exception -= 1;
+            }
             actions.push(Action::Deliver(p.payload.clone()));
             // TODO: check for stored out of order frames
             while
@@ -915,7 +923,8 @@ impl State for Connected {
         data.acknowledge_pending = false;
         actions
     }
-    // Page 93.
+
+    // Page 93 & 99.
     fn t1(&self, data: &mut Data) -> Vec<Action> {
         data.rc = 1;
         vec![
@@ -923,15 +932,21 @@ impl State for Connected {
             data.transmit_enquiry(),
         ]
     }
-    // Page 93.
+
+    // Page 93 (Connected only).
     fn t3(&self, data: &mut Data) -> Vec<Action> {
+        assert!(
+            matches![self.connected_state, ConnectedState::Connected],
+            "T3 should not be running in TimerRecovery"
+        );
         data.rc = 0;
         vec![
             Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
             data.transmit_enquiry(),
         ]
     }
-    // Page 93.
+
+    // Page 93 & 100.
     fn ua(&self, data: &mut Data, _ua: &Ua) -> Vec<Action> {
         data.layer3_initiated = false;
         vec![
@@ -940,7 +955,10 @@ impl State for Connected {
             Action::State(Box::new(AwaitingConnection::new())),
         ]
     }
-    // Page 94.
+
+    // Page 94 & 101.
+    //
+    // For TimerRecovery, see note K.
     fn frmr(&self, data: &mut Data) -> Vec<Action> {
         data.layer3_initiated = false;
         vec![
