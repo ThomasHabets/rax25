@@ -66,7 +66,10 @@ fn main() -> Result<()> {
             // eprintln!("====> {data:?}");
             match String::from_utf8(data.clone()) {
                 Ok(s) => println!("{s}"),
-                Err(_) => println!("BYTES: {data:?}"),
+                Err(_) => println!(
+                    "{}",
+                    String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?
+                ),
             }
         }
         match rx.recv_timeout(std::time::Duration::from_secs(0)) {
