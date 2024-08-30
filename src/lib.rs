@@ -199,6 +199,7 @@ impl Packet {
             self.dst
                 .serialize(false, self.command_response, self.rr_dist1, false),
         );
+        assert_ne!(self.command_response, self.command_response_la);
         ret.extend(self.src.serialize(
             self.digipeater.is_empty(),
             self.command_response_la,
