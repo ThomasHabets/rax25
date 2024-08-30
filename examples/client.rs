@@ -64,7 +64,10 @@ fn main() -> Result<()> {
     while !done.load(Ordering::SeqCst) {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
             // eprintln!("====> {data:?}");
-            println!("{}", String::from_utf8(data)?);
+            match String::from_utf8(data.clone()) {
+                Ok(s) => println!("{s}"),
+                Err(_) => println!("BYTES: {data:?}"),
+            }
         }
         match rx.recv_timeout(std::time::Duration::from_secs(0)) {
             Ok(Ok(line)) => c.write(&line.as_bytes())?,
