@@ -126,7 +126,10 @@ pub enum Action {
 }
 
 // Spec says 3s.
-const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(1);
+const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
+
+// TODO: what is the default?
+const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(3);
 
 const DEFAULT_N2: u8 = 3;
 
@@ -218,7 +221,7 @@ impl Data {
             srt_default: DEFAULT_SRT,
             srt: DEFAULT_SRT,
             t1v: DEFAULT_SRT,
-            t3v: std::time::Duration::from_secs(1), // TODO
+            t3v: DEFAULT_T3V,
             n2: DEFAULT_N2,
             rc: 0,
             k: 7,
