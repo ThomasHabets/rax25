@@ -298,13 +298,27 @@ impl Data {
     }
 
     // Page 106.
+    //
+    // Bug in spec:
+    // This function is literally called "response", but the spec says "RR command". I think not.
+    // It breaks against the Linux implementation if sending a command, since the kernel never gets
+    // answered.
+    //
+    // The kernel (M0THC-2) keeps asking (P), but by following the spec keeps asking right back.
+    //
+    //  9584 18.543153318      M0THC-2 → M0THC-1      AX.25 16 S P, func=RR, N(R)=1
+    //  9585 18.546108006      M0THC-1 → M0THC-2      AX.25 16 S P, func=RR, N(R)=5
+    //  9586 18.546117747      M0THC-2 → M0THC-1      AX.25 16 S F, func=RR, N(R)=1
+    //
+    //  Repeats until Linux kernel gives up and sends DM, closing the connection.
     #[must_use]
     fn enquiry_response(&mut self, f: bool) -> Action {
         self.acknowledge_pending = false;
         if self.own_receiver_busy {
             Action::SendRnr(f, self.vr)
         } else {
-            Action::SendRr(f, self.vr, /* command */ true)
+            // Spec says commmand.
+            Action::SendRr(f, self.vr, /* command */ false)
         }
     }
 
