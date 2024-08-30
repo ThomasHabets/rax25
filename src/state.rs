@@ -733,9 +733,39 @@ impl Connected {
         }
         act
     }
-    fn rr_timer_recovery(&self, _data: &mut Data, _packet: &Rr, _cr: bool) -> Vec<Action> {
-        eprintln!("TODO: rr_timer_recovery");
-        vec![]
+
+    // Page 99.
+    #[must_use]
+    fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+        data.peer_receiver_busy = false;
+        if !cr && packet.poll {
+            data.t1.stop();
+            data.select_t1_value();
+            if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+                let mut act = data.nr_error_recovery();
+                act.push(Action::State(Box::new(AwaitingConnection::new())));
+                return act;
+            }
+            data.update_ack(packet.nr);
+            if data.vs != data.va {
+                return data.invoke_retransmission(packet.nr);
+            }
+            data.t3.start(data.t3v);
+            return vec![Action::State(Box::new(Connected::new(
+                ConnectedState::Connected,
+            )))];
+        }
+        let mut act = Vec::new();
+        if cr && packet.poll {
+            act.push(data.enquiry_response(true));
+        }
+        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+            act.extend(data.nr_error_recovery());
+            act.push(Action::State(Box::new(AwaitingConnection::new())));
+            return act;
+        }
+        data.update_ack(packet.nr);
+        act
     }
 }
 
@@ -771,7 +801,7 @@ impl State for Connected {
             panic!("TODO: tx window full!");
         }
         let ns = data.vs;
-        data.vs += 1;
+        data.vs = (data.vs + 1) % data.modulus;
         data.acknowledge_pending = false;
         if data.t1.running {
             data.t3.stop();
@@ -926,10 +956,26 @@ impl State for Connected {
 
     // Page 93 & 99.
     fn t1(&self, data: &mut Data) -> Vec<Action> {
-        data.rc = 1;
+        data.rc = match self.connected_state {
+            ConnectedState::Connected => 1,
+            ConnectedState::TimerRecovery => data.rc + 1,
+        };
+        if data.rc != data.n2 {
+            return vec![
+                data.transmit_enquiry(),
+                Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
+            ];
+        }
+        data.clear_iframe_queue(); // Spec says "discard" iframe queue.
+        debug!("DL-DISCONNECT request");
         vec![
-            Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
-            data.transmit_enquiry(),
+            Action::DlError(match (data.vs == data.va, data.peer_receiver_busy) {
+                (false, _) => DlError::I,
+                (true, true) => DlError::U,
+                (true, false) => DlError::T,
+            }),
+            Action::SendDm(true), // TODO: spec (page 99) doesn't say if it should be true or false.
+            Action::State(Box::new(Disconnected::new())),
         ]
     }
 
