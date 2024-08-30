@@ -47,6 +47,8 @@ impl Addr {
         a.rbit_dama = rbit_dama;
         Ok(a)
     }
+
+    #[must_use]
     pub fn display(&self) -> &str {
         &self.t
     }
@@ -80,6 +82,7 @@ impl Addr {
         )
     }
 
+    #[must_use]
     pub fn serialize(
         &self,
         lowbit: bool,
@@ -182,6 +185,7 @@ pub const TYPE_MASK: u8 = 0b0000_0011;
 pub const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    #[must_use]
     pub fn serialize(&self) -> Vec<u8> {
         let mut ret = Vec::with_capacity(
             14 + 1
@@ -390,6 +394,7 @@ struct FakeKiss {
 
 #[cfg(test)]
 impl FakeKiss {
+    #[must_use]
     fn make_iframe(src: Addr, dst: Addr, payload: Vec<u8>) -> Packet {
         Packet {
             src,
@@ -408,6 +413,8 @@ impl FakeKiss {
             }),
         }
     }
+
+    #[must_use]
     fn make_ua(src: Addr, dst: Addr) -> Packet {
         Packet {
             src,
@@ -478,6 +485,7 @@ const KISS_FESC: u8 = 0xDB;
 const KISS_TFEND: u8 = 0xDC;
 const KISS_TFESC: u8 = 0xDD;
 
+#[must_use]
 fn escape(bytes: &[u8]) -> Vec<u8> {
     let mut ret = Vec::new();
     ret.push(KISS_FEND);
@@ -493,6 +501,7 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
     ret
 }
 
+#[must_use]
 fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     let mut start_index = None;
 
@@ -511,6 +520,7 @@ fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     None // Return None if no valid subrange is found
 }
 
+#[must_use]
 fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;
@@ -596,6 +606,7 @@ impl Drop for Client {
     }
 }
 impl Client {
+    #[must_use]
     pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
             kiss,

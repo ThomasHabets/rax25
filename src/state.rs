@@ -46,7 +46,7 @@ impl ReturnEvent {
     }
 }
 
-// Errors. TODO: implement stringifications of these.
+// Errors.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DlError {
     A,
@@ -231,12 +231,18 @@ impl Data {
             iframe_resend_queue: VecDeque::new(),
         }
     }
+
+    #[must_use]
     pub fn t1_expired(&self) -> bool {
         self.t1.is_expired().unwrap_or(false)
     }
+
+    #[must_use]
     pub fn t3_expired(&self) -> bool {
         self.t3.is_expired().unwrap_or(false)
     }
+
+    #[must_use]
     pub fn active_timers(&self) -> Vec<Event> {
         let mut ret = Vec::new();
         if self.t1_expired() {
@@ -248,6 +254,7 @@ impl Data {
         ret
     }
 
+    #[must_use]
     pub fn next_timer_remaining(&self) -> Option<std::time::Duration> {
         match (self.t1.remaining(), self.t3.remaining()) {
             (Some(t1), Some(t3)) => Some(std::cmp::min(t1, t3)),
@@ -258,12 +265,14 @@ impl Data {
     }
 
     // Page 106.
+    #[must_use]
     fn nr_error_recovery(&mut self) -> Vec<Action> {
         self.layer3_initiated = false;
         vec![Action::DlError(DlError::J), self.establish_data_link()]
     }
 
     // Page 108.
+    #[must_use]
     fn check_need_for_response(&mut self, command: bool, pf: bool) -> Vec<Action> {
         if command && pf {
             vec![self.enquiry_response(true)]
@@ -275,6 +284,7 @@ impl Data {
     }
 
     // Page 106.
+    #[must_use]
     fn enquiry_response(&mut self, f: bool) -> Action {
         self.acknowledge_pending = false;
         if self.own_receiver_busy {
@@ -282,6 +292,20 @@ impl Data {
         } else {
             Action::SendRr(f, self.vr, false)
         }
+    }
+
+    // Page 107.
+    #[must_use]
+    fn invoke_retransmission(&mut self, _nr: u8) -> Vec<Action> {
+        // TODO: is this correct?
+        //        let mut act = Vec::new();
+        //        for _vs in nr..self.vs {
+        //           act.push(Action::Iframe(Iframe
+        //      }
+        self.iframe_resend_queue
+            .iter()
+            .map(|i| Action::SendIframe(i.clone()))
+            .collect()
     }
 
     // Page 109.
@@ -296,6 +320,7 @@ impl Data {
     }
 
     // Page 106.
+    #[must_use]
     fn transmit_enquiry(&mut self) -> Action {
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
@@ -348,6 +373,7 @@ impl Data {
     }
 
     // Page 106.
+    #[must_use]
     fn establish_data_link(&mut self) -> Action {
         self.clear_exception_conditions();
         self.rc = 0;
@@ -378,57 +404,85 @@ impl Data {
 
 pub trait State {
     fn name(&self) -> String;
+
+    #[must_use]
     fn connect(&self, _data: &mut Data, _addr: &Addr) -> Vec<Action> {
         eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
+
+    #[must_use]
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected DLDisconnect in state {}", self.name());
         vec![]
     }
+
+    #[must_use]
     fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
         eprintln!("writing data while not connected!");
         vec![]
     }
+
+    #[must_use]
     fn t1(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected T1 expire");
         vec![]
     }
+
+    #[must_use]
     fn t3(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected T3 expire");
         vec![]
     }
+
+    #[must_use]
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected FRMR");
         vec![]
     }
+
+    #[must_use]
     fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected RR");
         vec![]
     }
+
+    #[must_use]
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: unexpected SABM");
         vec![]
     }
+
+    #[must_use]
     fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
         eprintln!("TODO: unexpected SABME");
         vec![]
     }
+
+    #[must_use]
     fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
         eprintln!("TODO; unexpected iframe");
         vec![]
     }
+
+    #[must_use]
     fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
+
+    #[must_use]
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
         eprintln!("TODO; unexpected UA");
         vec![]
     }
+
+    #[must_use]
     fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
         eprintln!("TODO: unexpected DM");
         vec![]
     }
+
+    #[must_use]
     fn disc(&self, _data: &mut Data, _packet: &Disc) -> Vec<Action> {
         eprintln!("TODO: unexpected DISC");
         vec![]
@@ -437,6 +491,7 @@ pub trait State {
 
 // Unnumbered information is pretty uninteresting here.
 // Page 108.
+#[must_use]
 fn ui_check(command: bool) -> Vec<Action> {
     if !command {
         return vec![Action::DlError(DlError::Q)];
@@ -458,11 +513,13 @@ fn ui_check(command: bool) -> Vec<Action> {
 /// should in theory cause `SendDm(p.poll)`, but out of scope.
 struct Disconnected {}
 impl Disconnected {
+    #[must_use]
     pub fn new() -> Self {
         Self {}
     }
 
     // Page 85.
+    #[must_use]
     fn sabm_and_sabme(&self, data: &mut Data, src: Addr, poll: bool) -> Vec<Action> {
         data.clear_exception_conditions();
         data.vs = 0;
@@ -545,6 +602,7 @@ impl State for Disconnected {
 struct AwaitingConnection {}
 
 impl AwaitingConnection {
+    #[must_use]
     fn new() -> Self {
         Self {}
     }
@@ -597,6 +655,7 @@ impl State for AwaitingConnection {
 struct AwaitingRelease {}
 
 impl AwaitingRelease {
+    #[must_use]
     fn new() -> Self {
         Self {}
     }
@@ -654,15 +713,18 @@ struct Connected {
 }
 
 impl Connected {
+    #[must_use]
     fn new(connected_state: ConnectedState) -> Self {
         Self { connected_state }
     }
+
     // Page 95
+    #[must_use]
     fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         data.peer_receiver_busy = false;
         let mut act = data.check_need_for_response(cr, packet.poll);
         if !in_range(data.va, packet.nr, data.vs, data.modulus) {
-            data.nr_error_recovery();
+            act.extend(data.nr_error_recovery());
             act.push(Action::State(Box::new(AwaitingConnection::new())));
         } else {
             data.check_iframe_acked(packet.nr);
@@ -719,11 +781,13 @@ impl State for Connected {
         data.iframe_resend_queue.push_back(i.clone());
         vec![Action::SendIframe(i)]
     }
+
     // Page 93.
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: Connected: sabm not handled");
         vec![]
     }
+
     // Page 93.
     fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
         eprintln!("TODO: Connected: sabme not handled");
@@ -897,6 +961,7 @@ impl State for Connected {
 // Ugly range checker.
 //
 // if va steps forward, will it hit nr before it hits vs?
+#[must_use]
 fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
     let mut t = va;
     loop {
@@ -910,6 +975,7 @@ fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
     }
 }
 
+#[must_use]
 pub fn new() -> Box<dyn State> {
     Box::new(Disconnected::new())
 }
@@ -921,6 +987,7 @@ pub enum Res {
     Some(Vec<u8>),
 }
 
+#[must_use]
 pub fn handle(
     state: &dyn State,
     data: &mut Data,
