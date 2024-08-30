@@ -82,10 +82,12 @@ impl std::fmt::Display for DlError {
             match self {
                 DlError::A => "A: F=1 received but P=1 not outstanding",
                 DlError::B => "B: Unexpected DM with F=1 in states 3,4,5",
-                DlError::C => "C: Unexpected UA in states 3,4,5",
+                DlError::C => "C: Unexpected UA in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
                 DlError::D => "D: UA received without F=1 when SABM or DISC was sent P=1",
-                DlError::E => "E: DM received in states 3,4,5",
-                DlError::F => "F: Data link reset; i.e., SABM received instate 3,4,5",
+                DlError::E => "E: DM received in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
+
+                DlError::F => "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
+
                 DlError::G => "G: Connection timed out", // TODO: specs don't list ths.
                 DlError::H => "H: Undocumented?",
                 DlError::I => "I: N2 timeouts; unacknowledged data",
