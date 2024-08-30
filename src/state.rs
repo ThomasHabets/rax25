@@ -1013,8 +1013,15 @@ impl State for Connected {
             Action::State(Box::new(AwaitingConnection::new())),
         ]
     }
-    // Page 94.
-    // TODO: ui
+
+    // Page 94 & 100.
+    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
+        let mut act = ui_check(cr);
+        if packet.push {
+            act.push(data.enquiry_response(true));
+        }
+        act
+    }
 
     fn rr(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         match self.connected_state {
