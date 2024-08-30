@@ -9,8 +9,14 @@ struct Opt {
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
 
+    #[clap(short = 's')]
+    src: String,
+
     #[clap(short = 'r')]
     cr: bool,
+
+    #[clap()]
+    dst: String,
 }
 
 fn main() -> Result<()> {
@@ -22,7 +28,7 @@ fn main() -> Result<()> {
         .init()
         .unwrap();
     let k = Kiss::new(&opt.port)?;
-    let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
+    let mut c = Client::new(Addr::new(&opt.src)?, Box::new(k));
 
     let d = done.clone();
     ctrlc::set_handler(move || {
@@ -52,7 +58,7 @@ fn main() -> Result<()> {
     });
 
     eprintln!("==== CONNECTING");
-    c.connect(&Addr::new("M0THC-2")?)?;
+    c.connect(&Addr::new(&opt.dst)?)?;
     //eprintln!("==== WRITING");
     //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) {
