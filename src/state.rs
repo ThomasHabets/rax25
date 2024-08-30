@@ -124,7 +124,7 @@ pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
     SendUa(bool),
-    SendRr(bool, u8, bool),
+    SendRr(/* poll */ bool, u8, /* command */ bool),
     SendRnr(bool, u8),
     SendDisc(bool),
     SendIframe(Iframe),
@@ -304,7 +304,7 @@ impl Data {
         if self.own_receiver_busy {
             Action::SendRnr(f, self.vr)
         } else {
-            Action::SendRr(f, self.vr, false)
+            Action::SendRr(f, self.vr, /* command */ true)
         }
     }
 
@@ -339,9 +339,9 @@ impl Data {
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
-            Action::SendRnr(true, self.vr)
+            Action::SendRnr(/* poll */ true, self.vr)
         } else {
-            Action::SendRr(true, self.vr, true)
+            Action::SendRr(/* poll */ true, self.vr, /* command */ true)
         }
     }
     // Page 107.
@@ -1171,7 +1171,7 @@ pub fn handle(
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: *command,
-                command_response_la: false, // TODO: set to what?
+                command_response_la: !*command,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
@@ -1362,7 +1362,7 @@ mod tests {
                     src: Addr::new("M0THC-1")?,
                     dst: Addr::new("M0THC-2")?,
                     command_response: false,
-                    command_response_la: false,
+                    command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
                     rr_extseq: false,
@@ -1414,7 +1414,7 @@ mod tests {
                     src: Addr::new("M0THC-1")?,
                     dst: Addr::new("M0THC-2")?,
                     command_response: false,
-                    command_response_la: false,
+                    command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
                     rr_extseq: false,
