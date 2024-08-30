@@ -227,7 +227,12 @@ impl Packet {
                 CONTROL_RNR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK),
             ),
             PacketType::Iframe(iframe) => {
-                ret.push(CONTROL_IFRAME | if iframe.poll { CONTROL_POLL } else { 0 });
+                ret.push(
+                    CONTROL_IFRAME
+                        | if iframe.poll { CONTROL_POLL } else { 0 }
+                        | ((iframe.nr << 5) & 0b1110_0000)
+                        | ((iframe.ns << 1) & 0b0000_1110),
+                );
                 ret.push(iframe.pid);
                 ret.extend(&iframe.payload);
             }
