@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use rax25::{Addr, Client, Kiss};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -64,13 +65,13 @@ fn main() -> Result<()> {
     while !done.load(Ordering::SeqCst) {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
             // eprintln!("====> {data:?}");
-            match String::from_utf8(data.clone()) {
-                Ok(s) => print!("{s}"),
-                Err(_) => print!(
-                    "{}",
-                    String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?
-                ),
-            }
+            let s = match String::from_utf8(data.clone()) {
+                Ok(s) => s,
+                Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
+            };
+            let s = if opt.cr { s.replace("\r", "\n") } else { s };
+            print!("{s}");
+            std::io::stdout().flush()?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(0)) {
             Ok(Ok(line)) => c.write(&line.as_bytes())?,
