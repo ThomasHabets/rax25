@@ -28,15 +28,34 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let d = done.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        while !d.load(Ordering::SeqCst) {
+            let stdin = std::io::stdin();
+            let mut iterator = stdin.lock().lines();
+            if let Some(line) = iterator.next() {
+                tx.send(line).unwrap();
+            }
+        }
+    });
+
     eprintln!("==== CONNECTING");
     c.connect(&Addr::new("M0THC-2")?)?;
-    eprintln!("==== WRITING");
-    c.write("echo hello world".as_bytes())?;
+    //eprintln!("==== WRITING");
+    //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
             // eprintln!("====> {data:?}");
             println!("{}", String::from_utf8(data)?);
         }
+        match rx.recv_timeout(std::time::Duration::from_secs(0)) {
+            Ok(Ok(line)) => c.write(&line.as_bytes())?,
+            Ok(Err(e)) => eprintln!("Error reading line: {}", e),
+            Err(_) => {}
+        };
     }
     Ok(())
 }

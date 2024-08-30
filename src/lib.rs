@@ -561,7 +561,7 @@ impl Kisser for Kiss {
             let buf = match self.port.read(&mut buf) {
                 Ok(n) => &buf[..n],
                 Err(e) => {
-                    eprintln!("Read error: {e}, assuming timeout");
+                    debug!("TODO: Read error: {e}, assuming timeout");
                     break;
                 }
             };
@@ -663,7 +663,7 @@ impl Client {
         Packet::parse(
             &self
                 .kiss
-                .recv_timeout(std::time::Duration::from_secs(1))?
+                .recv_timeout(std::time::Duration::from_millis(100))?
                 .ok_or(Error::msg("did not get a packet in time"))?,
         )
     }
