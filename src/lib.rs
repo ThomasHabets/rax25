@@ -49,7 +49,7 @@ impl Addr {
     }
 
     #[must_use]
-    pub fn display(&self) -> &str {
+    pub fn call(&self) -> &str {
         &self.t
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
@@ -632,11 +632,13 @@ impl Client {
                 let packet = Packet::parse(&packet)?;
                 // dbg!(&packet);
                 // TODO: check addresses.
-                self.actions_packet(&packet)?;
-                if self.state.name() == "Connected" {
-                    debug!("YAY! CONNECTED!");
-                    // TODO: don't compare strings.
-                    return Ok(());
+                if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
+                    self.actions_packet(&packet)?;
+                    if self.state.name() == "Connected" {
+                        debug!("YAY! CONNECTED!");
+                        // TODO: don't compare strings.
+                        return Ok(());
+                    }
                 }
             }
             if self.data.t1_expired() {
@@ -660,13 +662,20 @@ impl Client {
         self.actions(state::Event::Data(data.to_vec()));
         Ok(())
     }
-    pub fn try_read(&mut self) -> Result<Packet> {
-        Packet::parse(
+    pub fn try_read(&mut self) -> Result<Option<Packet>> {
+        let packet = Packet::parse(
             &self
                 .kiss
                 .recv_timeout(std::time::Duration::from_millis(100))?
                 .ok_or(Error::msg("did not get a packet in time"))?,
-        )
+        )?;
+        if packet.src.call() != self.data.peer.as_ref().unwrap().call()
+            || packet.dst.call() != self.data.me.call()
+        {
+            Ok(None)
+        } else {
+            Ok(Some(packet))
+        }
     }
     pub fn read_until(
         &mut self,
@@ -676,8 +685,9 @@ impl Client {
             if done.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(None);
             }
-            let p = self.try_read()?;
-            self.actions_packet(&p)?;
+            if let Some(p) = self.try_read()? {
+                self.actions_packet(&p)?;
+            }
         }
         let ret: Vec<_> = self.incoming.iter().cloned().collect();
         self.incoming.clear();
@@ -738,7 +748,7 @@ mod tests {
         c.data.srt_default = std::time::Duration::from_millis(1);
         c.connect(&Addr::new("M0THC-2")?)?;
         c.write(&vec![1, 2, 3])?;
-        let reply = c.try_read()?;
+        let reply = c.try_read()?.unwrap();
         assert_eq!(
             reply,
             Packet {
@@ -767,27 +777,27 @@ mod tests {
         // TODO: test invalid calls.
         let a = Addr::new("M0THC")?.serialize(true, false, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
         let a = Addr::new("M0THC-0")?.serialize(true, false, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
         let a = Addr::new("M0THC-1")?.serialize(true, false, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC-1");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC-1");
 
         let a = Addr::new("M0THC-2")?.serialize(false, true, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 100 + 0x80]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC-2");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC-2");
 
         let a = Addr::new("M0THC-3")?.serialize(false, false, true, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 38]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC-3");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC-3");
 
         let a = Addr::new("M0THC-4")?.serialize(false, false, false, true);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
-        assert_eq!(Addr::parse(&a)?.display(), "M0THC-4");
+        assert_eq!(Addr::parse(&a)?.call(), "M0THC-4");
         Ok(())
     }
 

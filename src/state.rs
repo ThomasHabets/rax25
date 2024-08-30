@@ -172,9 +172,9 @@ impl Timer {
 
 #[derive(Debug)]
 pub struct Data {
-    me: Addr,
+    pub(crate) me: Addr,
 
-    peer: Option<Addr>,
+    pub(crate) peer: Option<Addr>,
     // TODO: double check all types.
     layer3_initiated: bool,
     t1: Timer,
