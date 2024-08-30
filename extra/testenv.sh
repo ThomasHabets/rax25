@@ -12,7 +12,7 @@ pkill axshd ||true
 sleep 0.1
 
 SOCATOUT="$(mktemp)"
-socat -d -d pty,raw,echo=0 pty,raw,echo=0 2> "${SOCATOUT}" &
+socat -d -d pty,rawer,echo=0 pty,rawer,echo=0 2> "${SOCATOUT}" &
 SOCAT=$!
 
 sleep 0.2
