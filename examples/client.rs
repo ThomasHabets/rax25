@@ -8,6 +8,9 @@ use std::sync::Arc;
 struct Opt {
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
+
+    #[clap(short = 'r')]
+    cr: bool,
 }
 
 fn main() -> Result<()> {
@@ -31,13 +34,19 @@ fn main() -> Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     let d = done.clone();
+    let cr = opt.cr;
     std::thread::spawn(move || {
         use std::io::BufRead;
         while !d.load(Ordering::SeqCst) {
             let stdin = std::io::stdin();
             let mut iterator = stdin.lock().lines();
             if let Some(line) = iterator.next() {
-                tx.send(line).unwrap();
+                if cr {
+                    tx.send(line.and_then(|s| Ok(s.trim_end().to_owned() + "\r")))
+                        .unwrap();
+                } else {
+                    tx.send(line).unwrap();
+                }
             }
         }
     });
