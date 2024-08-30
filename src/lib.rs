@@ -20,7 +20,7 @@ pub struct Addr {
 impl Addr {
     pub fn new(s: &str) -> Result<Self> {
         let s = s.to_uppercase();
-        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))$")
+        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
             .expect("can't happen: Regex compile fail");
         if !re.is_match(&s) {
             return Err(Error::msg(format!("invalid callsign: {s}")));
@@ -765,6 +765,14 @@ mod tests {
     #[test]
     fn addr_serial() -> Result<()> {
         // TODO: test invalid calls.
+        let a = Addr::new("M0THC")?.serialize(true, false, false, false);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC");
+
+        let a = Addr::new("M0THC-0")?.serialize(true, false, false, false);
+        assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
+        assert_eq!(Addr::parse(&a)?.display(), "M0THC");
+
         let a = Addr::new("M0THC-1")?.serialize(true, false, false, false);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
         assert_eq!(Addr::parse(&a)?.display(), "M0THC-1");
