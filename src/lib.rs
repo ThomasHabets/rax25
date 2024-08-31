@@ -542,11 +542,13 @@ fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
 fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;
-
     for &byte in data {
         if is_escaped {
-            // XOR the byte with 0x20 to revert the escaping
-            unescaped.push(byte ^ 0x20);
+            unescaped.push(match byte {
+                KISS_TFESC => KISS_FESC,
+                KISS_TFEND => KISS_FEND,
+                other => panic!("TODO: kiss unescape error: escaped {other}"),
+            });
             is_escaped = false;
         } else if byte == KISS_FESC {
             // Next byte is escaped, so set the flag
@@ -579,7 +581,7 @@ impl Kisser for Kiss {
                     break;
                 }
             };
-            debug!("Got {} bytes from serial", buf.len());
+            //debug!("Got {} bytes from serial", buf.len());
             self.buf.extend(buf);
             while let Some((a, b)) = find_frame(&self.buf) {
                 if b - a < 14 {
