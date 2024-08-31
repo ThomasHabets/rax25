@@ -23,10 +23,10 @@ sudo kissparms -p radio1 -c 1
 ln -fs "$PTY2" $HOME/tmp/rax25.serial
 
 sleep 0.1
-LD_LIBRARY_PATH=$HOME/opt/gcc/lib64/ $HOME/scm/axsh/ax25/axsh/axshd  -r radio1 -s M0THC-2 > /dev/null 2>/dev/null &
+LD_LIBRARY_PATH=$HOME/opt/gcc/lib64/ $HOME/scm/axsh/ax25/axsh/axshd -e -r radio1 -s M0THC-2 > /dev/null 2>/dev/null &
 AXSHD=$!
 
-sudo axlisten -cart
+sudo axlisten -ah #-cart
 kill $SOCAT || true
 kill $AXSHD || true
 sudo pkill kissattach || true

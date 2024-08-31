@@ -388,6 +388,7 @@ impl Data {
     }
     fn update_ack(&mut self, nr: u8) {
         // dbg!(self.va, nr);
+        // debug!("Updating ack to {} {}", self.va, nr);
         while self.va != nr {
             assert!(!self.iframe_resend_queue.is_empty());
             self.iframe_resend_queue.pop_front();
@@ -931,6 +932,7 @@ impl State for Connected {
         }
         if p.payload.len() > data.n1.try_into().unwrap() {
             data.layer3_initiated = false;
+            debug!("Discarding frame for being too big");
             return vec![
                 data.establish_data_link(),
                 Action::DlError(DlError::O),
@@ -938,6 +940,7 @@ impl State for Connected {
             ];
         }
         if !in_range(data.va, p.nr, data.vs, data.modulus) {
+            debug!("Discarding frame for being out of range");
             let mut acts = data.nr_error_recovery();
             acts.push(Action::State(Box::new(AwaitingConnection::new())));
             return acts;
@@ -949,6 +952,7 @@ impl State for Connected {
         }
         if data.own_receiver_busy {
             // discord (implicit)
+            debug!("Discarding iframe because busy and being polled");
             if p.poll {
                 data.acknowledge_pending = false;
                 return vec![Action::SendRnr(true, data.vr)];
@@ -958,6 +962,8 @@ impl State for Connected {
 
         let mut actions = vec![];
         if p.ns == data.vr {
+            debug!("iframe in order {}", p.ns);
+            // Frame in order.
             data.vr = (data.vr + 1) % data.modulus;
             data.reject_exception = false;
             if data.sreject_exception > 0 {
@@ -983,6 +989,7 @@ impl State for Connected {
             }
             return actions;
         }
+        debug!("Iframe not in order {} {}", p.ns, data.vr);
         if data.reject_exception {
             // discard frame (implicit)
             if p.poll {

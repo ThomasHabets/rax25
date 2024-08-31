@@ -208,7 +208,9 @@ impl Packet {
             ext,
             false,
         ));
+
         match &self.packet_type {
+            // U frames. Control always one byte.
             PacketType::Sabm(s) => {
                 if ext {
                     ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 });
@@ -218,36 +220,76 @@ impl Packet {
             }
             PacketType::Sabme(s) => ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Rej(s) => ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Srej(s) => ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Disc(disc) => {
+                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 })
+            }
+            PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
+            // TODO: FRMR data too.
+            PacketType::Frmr(s) => ret.push(CONTROL_FRMR | if s.poll { CONTROL_POLL } else { 0 }),
+            // TODO: UI data too.
+            PacketType::Ui(s) => ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 }),
+            // TODO: XID data too.
+            PacketType::Xid(s) => ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Test(s) => {
                 ret.push(CONTROL_TEST | if s.poll { CONTROL_POLL } else { 0 });
                 ret.extend(&s.payload);
             }
-            // TODO: XID data too.
-            PacketType::Xid(s) => ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 }),
-            // TODO: UI data too.
-            PacketType::Ui(s) => ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 }),
-            // TODO: FRMR data too.
-            PacketType::Frmr(s) => ret.push(CONTROL_FRMR | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Rr(s) => ret
-                .push(CONTROL_RR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK)),
-            PacketType::Rnr(s) => ret.push(
-                CONTROL_RNR | if s.poll { CONTROL_POLL } else { 0 } | ((s.nr << 5) & NR_MASK),
-            ),
+
+            // S frames.
+            PacketType::Rr(s) => {
+                if ext {
+                    ret.push(CONTROL_RR);
+                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                } else {
+                    ret.push(
+                        CONTROL_RR
+                            | if s.poll { CONTROL_POLL } else { 0 }
+                            | ((s.nr << 5) & NR_MASK),
+                    );
+                }
+            }
+            PacketType::Rnr(s) => {
+                if ext {
+                    ret.push(CONTROL_RNR);
+                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                } else {
+                    ret.push(
+                        CONTROL_RNR
+                            | if s.poll { CONTROL_POLL } else { 0 }
+                            | ((s.nr << 5) & NR_MASK),
+                    );
+                }
+            }
+            PacketType::Rej(s) => {
+                if ext {
+                    ret.push(CONTROL_REJ);
+                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                } else {
+                    ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 });
+                }
+            }
+            PacketType::Srej(s) => {
+                if ext {
+                    ret.push(CONTROL_SREJ);
+                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                } else {
+                    ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 });
+                }
+            }
             PacketType::Iframe(iframe) => {
-                ret.push(
-                    CONTROL_IFRAME
-                        | if iframe.poll { CONTROL_POLL } else { 0 }
-                        | ((iframe.nr << 5) & 0b1110_0000)
-                        | ((iframe.ns << 1) & 0b0000_1110),
-                );
+                if ext {
+                    ret.push(CONTROL_IFRAME | ((iframe.ns << 1) & 0xFE));
+                    ret.push((iframe.nr << 1) & 0xFE | if iframe.poll { 1 } else { 0 });
+                } else {
+                    ret.push(
+                        CONTROL_IFRAME
+                            | if iframe.poll { CONTROL_POLL } else { 0 }
+                            | ((iframe.nr << 5) & 0b1110_0000)
+                            | ((iframe.ns << 1) & 0b0000_1110),
+                    );
+                }
                 ret.push(iframe.pid);
                 ret.extend(&iframe.payload);
-            }
-            PacketType::Disc(disc) => {
-                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 })
             }
         };
         if USE_FCS {
@@ -274,35 +316,61 @@ impl Packet {
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
+        let ext = src.rbit_ext;
+
         // TODO: parse digipeater.
-        let control = bytes[14];
-        let poll = control & CONTROL_POLL != 0;
-        let nr = (control >> 5) & 7; // Used for iframe and supervisory.
-        let ns = (control >> 1) & 7; // Used for iframe only.
+        let control1 = bytes[14];
+        let (poll, nr, ns, bytes) = {
+            if !ext || control1 & TYPE_MASK == 3 {
+                // NOTE: ns/nr will be nonsense for U frames.
+                // ns will be nonsense for S frames.
+                (
+                    control1 & CONTROL_POLL == CONTROL_POLL,
+                    (control1 >> 5) & 7,
+                    (control1 >> 1) & 7,
+                    &bytes[15..],
+                )
+            } else {
+                if bytes.len() < 16 {
+                    return Err(Error::msg("AX.25 in ext mode, but S/U frame is too short"));
+                }
+                let control2 = bytes[15];
+                (
+                    control2 & 1 == 1,
+                    (control2 >> 1) & 127,
+                    (control1 >> 1) & 127,
+                    &bytes[16..],
+                )
+            }
+        };
         Ok(Packet {
             src: src.clone(),
             dst: dst.clone(),
             command_response: dst.highbit,
             command_response_la: src.highbit,
             rr_dist1: dst.rbit_ext,
-            rr_extseq: src.rbit_ext,
+            rr_extseq: ext,
             digipeater: vec![],
-            packet_type: match control & TYPE_MASK {
+            packet_type: match control1 & TYPE_MASK {
+                // I frames. Second control byte, with NR and NS.
+                // TODO: confirm pid is NO_L3
                 0 | 2 => PacketType::Iframe(Iframe {
                     ns,
                     nr,
                     poll,
                     pid: NO_L3,
-                    payload: bytes[16..].to_vec(),
+                    payload: bytes[1..].to_vec(),
                 }),
-                1 => match control & !NR_MASK & !CONTROL_POLL {
+                // S frames. Second control byte, with NR.
+                1 => match control1 & !NR_MASK & !CONTROL_POLL {
                     CONTROL_RR => PacketType::Rr(Rr { nr, poll }),
                     CONTROL_RNR => PacketType::Rnr(Rnr { nr, poll }),
                     CONTROL_REJ => PacketType::Rej(Rej { nr, poll }),
                     CONTROL_SREJ => PacketType::Srej(Srej { nr, poll }),
-                    _ => panic!("Impossible logic error: {control} failed to be supervisor"),
+                    _ => panic!("Impossible logic error: {control1} failed to be supervisor"),
                 },
-                3 => match !CONTROL_POLL & bytes[14] {
+                // U frames. No second control byte.
+                3 => match !CONTROL_POLL & control1 {
                     CONTROL_SABME => PacketType::Sabme(Sabme { poll }),
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
                     CONTROL_UA => PacketType::Ua(Ua { poll }),
@@ -313,11 +381,11 @@ impl Packet {
                     CONTROL_XID => PacketType::Xid(Xid { poll }),
                     CONTROL_TEST => PacketType::Test(Test {
                         poll,
-                        payload: bytes[15..].to_vec(),
+                        payload: bytes.to_vec(),
                     }),
                     c => todo!("Control {c:b} not implemented"),
                 },
-                _ => panic!("Logic error: {control} & 3 > 3"),
+                _ => panic!("Logic error: {control1} & 3 > 3"),
             },
         })
     }
@@ -601,8 +669,13 @@ impl Kisser for Kiss {
                 let bytes = unescape(&bytes);
                 if bytes.len() > 14 {
                     debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
-                    let _packet = Packet::parse(&bytes)?;
-                    // dbg!(packet);
+                    match Packet::parse(&bytes) {
+                        Ok(packet) => debug!("... Decoded as: {:?}", packet),
+                        Err(e) => {
+                            debug!("... Failed to decode: {:?}", e);
+                            panic!();
+                        }
+                    }
                     return Ok(Some(bytes.to_vec()));
                 }
             }
