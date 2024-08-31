@@ -601,6 +601,7 @@ pub struct Client {
     kiss: Box<dyn Kisser>,
     pub(crate) data: state::Data,
     state: Box<dyn state::State>,
+    eof: bool,
 
     incoming: std::collections::VecDeque<u8>,
 }
@@ -617,6 +618,7 @@ impl Client {
     pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
             kiss,
+            eof: false,
             data: state::Data::new(me),
             state: state::new(),
             incoming: std::collections::VecDeque::new(),
@@ -678,11 +680,17 @@ impl Client {
             Ok(Some(packet))
         }
     }
+    pub fn eof(&self) -> bool {
+        self.eof
+    }
     pub fn read_until(
         &mut self,
         done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Option<Vec<u8>>> {
         while self.incoming.is_empty() {
+            if self.eof {
+                return Ok(None);
+            }
             if done.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(None);
             }
@@ -730,7 +738,7 @@ impl Client {
                 }
                 state::ReturnEvent::Data(res) => match res {
                     state::Res::None => {}
-                    state::Res::EOF => eprintln!("EOF!!!!"),
+                    state::Res::EOF => self.eof = true,
                     state::Res::Some(d) => {
                         debug!("DATA DELIVERED>>> {:?}", String::from_utf8(d.clone()));
                         self.incoming.extend(d);

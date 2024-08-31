@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     c.connect(&Addr::new(&opt.dst)?)?;
     //eprintln!("==== WRITING");
     //c.write("echo hello world".as_bytes())?;
-    while !done.load(Ordering::SeqCst) {
+    while !done.load(Ordering::SeqCst) && !c.eof() {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
             // eprintln!("====> {data:?}");
             let s = match String::from_utf8(data.clone()) {
@@ -79,5 +79,6 @@ fn main() -> Result<()> {
             Err(_) => {}
         };
     }
+    done.store(true, Ordering::SeqCst);
     Ok(())
 }
