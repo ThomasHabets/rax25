@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 // Incoming events to the state machine.
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Connect(Addr),
+    Connect(Addr, bool),
     Disconnect,
     Data(Vec<u8>),
     T1,
@@ -40,9 +40,9 @@ pub enum ReturnEvent {
 
 impl ReturnEvent {
     // Not very clean. Only packets can serialize.
-    pub fn serialize(&self) -> Option<Vec<u8>> {
+    pub fn serialize(&self, ext: bool) -> Option<Vec<u8>> {
         match self {
-            ReturnEvent::Packet(p) => Some(p.serialize()),
+            ReturnEvent::Packet(p) => Some(p.serialize(ext)),
             ReturnEvent::DlError(e) => {
                 eprintln!("TODO: DLERROR: {e}");
                 None
@@ -247,6 +247,11 @@ impl Data {
     }
 
     #[must_use]
+    pub fn ext(&self) -> bool {
+        self.modulus == 128
+    }
+
+    #[must_use]
     pub fn t1_expired(&self) -> bool {
         self.t1.is_expired().unwrap_or(false)
     }
@@ -400,7 +405,7 @@ impl Data {
         self.acknowledge_pending = false;
     }
 
-    // Page 106.
+    // Page 106 & "establish extended data link" on page 109.
     #[must_use]
     fn establish_data_link(&mut self) -> Action {
         self.clear_exception_conditions();
@@ -434,7 +439,7 @@ pub trait State {
     fn name(&self) -> String;
 
     #[must_use]
-    fn connect(&self, _data: &mut Data, _addr: &Addr) -> Vec<Action> {
+    fn connect(&self, _data: &mut Data, _addr: &Addr, _ext: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
@@ -603,7 +608,11 @@ impl State for Disconnected {
         "Disconnected".to_string()
     }
     // Page 85.
-    fn connect(&self, data: &mut Data, addr: &Addr) -> Vec<Action> {
+    fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
+        data.modulus = match ext {
+            true => 128,
+            false => 8,
+        };
         // It says "SAT" in the PDF, but surely means SRT?
         data.peer = Some(addr.clone());
         data.srt = data.srt_default;
@@ -1123,7 +1132,7 @@ pub fn handle(
     packet: &Event,
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
-        Event::Connect(addr) => state.connect(data, addr),
+        Event::Connect(addr, ext) => state.connect(data, addr, *ext),
         Event::Disconnect => state.disconnect(data),
         Event::Data(payload) => state.data(data, payload),
         Event::T1 => state.t1(data),
@@ -1270,7 +1279,11 @@ mod tests {
 
         // First attempt.
         dbg!("First attempt");
-        let (con, events) = handle(&con, &mut data, &Event::Connect(Addr::new("M0THC-2")?));
+        let (con, events) = handle(
+            &con,
+            &mut data,
+            &Event::Connect(Addr::new("M0THC-2")?, false),
+        );
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");
         assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));

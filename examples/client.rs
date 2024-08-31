@@ -16,6 +16,9 @@ struct Opt {
     #[clap(short = 'r')]
     cr: bool,
 
+    #[clap(short = 'e')]
+    ext: bool,
+
     #[clap()]
     dst: String,
 }
@@ -59,7 +62,7 @@ fn main() -> Result<()> {
     });
 
     eprintln!("==== CONNECTING");
-    c.connect(&Addr::new(&opt.dst)?)?;
+    c.connect(&Addr::new(&opt.dst)?, opt.ext)?;
     //eprintln!("==== WRITING");
     //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) && !c.eof() {

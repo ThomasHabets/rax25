@@ -187,9 +187,9 @@ pub const NO_L3: u8 = 0xF0;
 
 impl Packet {
     #[must_use]
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize(&self, ext: bool) -> Vec<u8> {
         let mut ret = Vec::with_capacity(
-            14 + 1
+            14 + 2
                 + if let PacketType::Iframe(s) = &self.packet_type {
                     s.payload.len() + 1
                 } else {
@@ -204,11 +204,18 @@ impl Packet {
         ret.extend(self.src.serialize(
             self.digipeater.is_empty(),
             self.command_response_la,
-            self.rr_extseq,
+            // self.rr_extseq,
+            ext,
             false,
         ));
         match &self.packet_type {
-            PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Sabm(s) => {
+                if ext {
+                    ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 });
+                } else {
+                    ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 });
+                }
+            }
             PacketType::Sabme(s) => ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Rej(s) => ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 }),
@@ -397,6 +404,7 @@ pub trait Kisser {
 #[cfg(test)]
 #[derive(Default, Debug)]
 struct FakeKiss {
+    ext: bool,
     queue: std::collections::VecDeque<Vec<u8>>,
 }
 
@@ -442,19 +450,21 @@ impl Kisser for FakeKiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let packet = Packet::parse(frame)?;
         match &packet.packet_type {
-            PacketType::Sabm(_) => {
-                self.queue
-                    .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
+            PacketType::Sabm(_) | PacketType::Sabme(_) => {
+                self.queue.push_back(
+                    Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
+                );
             }
             PacketType::Iframe(_) => {
                 self.queue.push_back(
                     Self::make_iframe(packet.dst.clone(), packet.src.clone(), vec![3, 2, 1])
-                        .serialize(),
+                        .serialize(self.ext),
                 );
             }
             PacketType::Disc(_) => {
-                self.queue
-                    .push_back(Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize());
+                self.queue.push_back(
+                    Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
+                );
             }
             _ => todo!(),
         }
@@ -626,8 +636,8 @@ impl Client {
             incoming: std::collections::VecDeque::new(),
         }
     }
-    pub fn connect(&mut self, addr: &Addr) -> Result<()> {
-        self.actions(state::Event::Connect(addr.clone()));
+    pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
+        self.actions(state::Event::Connect(addr.clone(), ext));
         loop {
             let dead = self.data.next_timer_remaining();
             let packet = self
@@ -752,7 +762,7 @@ impl Client {
                 _ => {}
             }
 
-            if let Some(frame) = act.serialize() {
+            if let Some(frame) = act.serialize(self.data.ext()) {
                 self.kiss.send(&frame).unwrap();
             }
         }
@@ -769,7 +779,7 @@ mod tests {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        c.connect(&Addr::new("M0THC-2")?)?;
+        c.connect(&Addr::new("M0THC-2")?, false)?;
         c.write(&vec![1, 2, 3])?;
         let reply = c.try_read()?.unwrap();
         assert_eq!(
@@ -839,7 +849,7 @@ mod tests {
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
-            .serialize(),
+            .serialize(false),
             vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63], //, 111, 212]
         );
         assert_eq!(
@@ -853,7 +863,7 @@ mod tests {
                 dst,
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
-            .serialize(),
+            .serialize(false),
             vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47], // , 238, 196]
         );
         Ok(())
