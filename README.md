@@ -6,7 +6,10 @@ https://github.com/ThomasHabets/rax25
 
 ## Status
 
-Not even remotely working yet.
+* AX.25 2.0 parts implemented, and seem to be working well.
+* No support for 2.2 yet, with its SREJ and extended modulus.
+* The API is not great.
+* No support yet for server side.
 
 ## Reference documentation
 
