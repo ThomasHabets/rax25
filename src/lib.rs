@@ -131,6 +131,7 @@ pub struct Packet {
 #[derive(Debug, PartialEq)]
 pub enum PacketType {
     Sabm(Sabm),
+    Sabme(Sabme),
     Ua(Ua),
     Dm(Dm),
     Disc(Disc),
@@ -208,6 +209,7 @@ impl Packet {
         ));
         match &self.packet_type {
             PacketType::Sabm(s) => ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Sabme(s) => ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Rej(s) => ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Srej(s) => ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 }),
@@ -294,7 +296,7 @@ impl Packet {
                     _ => panic!("Impossible logic error: {control} failed to be supervisor"),
                 },
                 3 => match !CONTROL_POLL & bytes[14] {
-                    CONTROL_SABME => PacketType::Sabm(Sabm { poll }),
+                    CONTROL_SABME => PacketType::Sabme(Sabme { poll }),
                     CONTROL_SABM => PacketType::Sabm(Sabm { poll }),
                     CONTROL_UA => PacketType::Ua(Ua { poll }),
                     CONTROL_DISC => PacketType::Disc(Disc { poll }),
@@ -314,7 +316,7 @@ impl Packet {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Sabme {
     poll: bool,
 }
@@ -704,8 +706,11 @@ impl Client {
     }
     pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
-            PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
             PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
+            PacketType::Sabme(p) => {
+                self.actions(state::Event::Sabme(p.clone(), packet.src.clone()))
+            }
+            PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
             PacketType::Rej(p) => self.actions(state::Event::Rej(p.clone())),
