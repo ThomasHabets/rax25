@@ -19,6 +19,9 @@ struct Opt {
     #[clap(short = 'e')]
     ext: bool,
 
+    #[clap(short = 'v', default_value = "0")]
+    v: usize,
+
     #[clap()]
     dst: String,
 }
@@ -28,7 +31,7 @@ fn main() -> Result<()> {
     let done = Arc::new(AtomicBool::new(false));
     stderrlog::new()
         .module("rax25")
-        .verbosity(0)
+        .verbosity(opt.v)
         .init()
         .unwrap();
     let k = Kiss::new(&opt.port)?;
