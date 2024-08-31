@@ -1,27 +1,37 @@
+//! State machine code for AX.25
+//!
+//! The state machine is documented in https://www.tapr.org/pdf/AX25.2.2.pdf,
+//! but it has a few bugs. They're pointed out in the code as they are
+//! encountered.
+use std::collections::VecDeque;
+
+use anyhow::Result;
+use log::debug;
+
 use crate::{
     Addr, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test, Ua,
     Ui, Xid,
 };
-use anyhow::Result;
-use log::debug;
-use std::collections::VecDeque;
 
-// Incoming events to the state machine.
+/// Incoming events to the state machine.
+///
+/// An incoming event is an incoming packet, or a command from the application,
+/// like "connect", or "send this data".
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Connect(Addr, bool),
+    Connect(Addr, /* extended */ bool),
     Disconnect,
     Data(Vec<u8>),
     T1,
     T3,
-    Sabm(Sabm, Addr),
-    Sabme(Sabme, Addr),
+    Sabm(Sabm, /* peer */ Addr),
+    Sabme(Sabme, /* peer */ Addr),
     Dm(Dm),
-    Rr(Rr, bool),
+    Rr(Rr, /* command */ bool),
     Rnr(Rnr),
-    Ui(Ui, bool),
+    Ui(Ui, /* command */ bool),
     Disc(Disc),
-    Iframe(Iframe, bool),
+    Iframe(Iframe, /* command */ bool),
     Ua(Ua),
     Frmr(Frmr),
     Rej(Rej),
@@ -30,7 +40,10 @@ pub enum Event {
     Xid(Xid),
 }
 
-// Return events, that the state machine wants to tell the world. IOW excludes state changes.
+/// Return events, that the state machine wants to tell the world.
+///
+/// IOW this excludes state changes, since only the state code needs to know
+/// about that.
 #[derive(Debug, PartialEq)]
 pub enum ReturnEvent {
     Packet(Packet),
@@ -39,7 +52,10 @@ pub enum ReturnEvent {
 }
 
 impl ReturnEvent {
-    // Not very clean. Only packets can serialize.
+    /// Serialize a return event.
+    ///
+    /// TODO: Not very clean. Only packets can serialize. Other return events
+    /// return None.
     pub fn serialize(&self, ext: bool) -> Option<Vec<u8>> {
         match self {
             ReturnEvent::Packet(p) => Some(p.serialize(ext)),
@@ -55,7 +71,9 @@ impl ReturnEvent {
     }
 }
 
-// Errors.
+/// DLErrors (C4.3, page 81)
+///
+/// Error codes of all kinds.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DlError {
     A,
@@ -97,7 +115,7 @@ impl std::fmt::Display for DlError {
 
                 DlError::F => "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
 
-                DlError::G => "G: Connection timed out", // TODO: specs don't list ths.
+                DlError::G => "G: Connection timed out", // TODO: specs don't list this.
                 DlError::H => "H: Undocumented?",
                 DlError::I => "I: N2 timeouts; unacknowledged data",
                 DlError::J => "J: N(r) sequence error",
@@ -118,8 +136,12 @@ impl std::fmt::Display for DlError {
     }
 }
 
-// Actions are like ReturnEvent, except packets are separate.
-// Terminology here is not very great.
+/// Actions are like ReturnEvent, except packets are separated.
+///
+/// Basically anything the state machine wants to do, aside from
+/// modifying the `Data` struct, is to produce "Actions".
+///
+/// TODO: Terminology here is not very great.
 pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
@@ -140,8 +162,12 @@ const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
 // TODO: what is the default?
 const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(3);
 
+// Max retry count.
 const DEFAULT_N2: u8 = 3;
 
+/// Timer object.
+///
+/// There are two timers, T1 and T3 (4.4.5, page 30).
 #[derive(Debug)]
 pub struct Timer {
     running: bool,
@@ -158,64 +184,146 @@ impl Default for Timer {
 }
 
 impl Timer {
+    /// Start timer.
+    ///
+    /// Called by the state machine.
     fn start(&mut self, v: std::time::Duration) {
         self.expiry = std::time::Instant::now() + v;
         self.running = true;
     }
+
+    /// Return None if timer is not running.
+    ///
+    /// Returns true if it's expired, alse false.
     pub fn is_expired(&self) -> Option<bool> {
         if !self.running {
             return None;
         }
         Some(std::time::Instant::now() > self.expiry)
     }
+
     fn remaining(&self) -> Option<std::time::Duration> {
         if !self.running {
             return None;
         }
         Some(self.expiry - std::time::Instant::now())
     }
+
+    /// Stop timer.
+    ///
+    /// Called by the state machine.
     fn stop(&mut self) {
         self.running = false;
     }
+
+    /// Restart timer.
+    ///
+    /// Called by the state machine.
+    ///
+    /// TODO: the spec doesn't say what the difference is between "start"
+    /// and "restart". Maybe there's no difference?
     fn restart(&mut self, v: std::time::Duration) {
-        self.start(v); // TODO: is start and restart the same thing?
+        self.start(v);
     }
 }
 
+/// Connection (or socket, if you will) extra data.
+///
+/// The state object only carries the state itself. Further data is in this
+/// object.
 #[derive(Debug)]
 pub struct Data {
     pub(crate) me: Addr,
 
     pub(crate) peer: Option<Addr>,
     // TODO: double check all types.
+    /// True if this client initiated the connection via SABM(E).
+    ///
+    /// C4.3, page 82.
     layer3_initiated: bool,
+
+    /// T1 timer - pending ACK.
+    /// 4.4.5.1, page 30.
+    ///
+    /// When a packet expecting a reply is sent, such as IFRAME (expecting RR or
+    /// a returning IFRAME with NR), T1 is started (unless already running).
+    ///
+    /// T1 stops if a the last sent IFRAME is acknowledged.
+    /// T1 is also used to send another SABM(E) if no UA or DM is received.
+    ///
+    /// If T1 expires, it initiates a retransmit.
     t1: Timer,
+
+    /// T3 timer - Connection idle timer. (4.4.5.2, page 30)
+    ///
+    /// When no data is pending ACK, T3 is running. If it expires, it'll trigger
+    /// RR/RNR, to probe.
     t3: Timer,
     t3v: std::time::Duration, // TODO: is this where the init value should be?
     vs: u8,
     va: u8,
     vr: u8,
     pub(crate) srt_default: std::time::Duration,
+
+    /// Smoothed round trip time. (TODO)
     srt: std::time::Duration,
+
+    /// Next value for T1; default initial value is initial value of SRT.
     t1v: std::time::Duration,
+
+    /// Max packet size.
     n1: u32,
+
+    /// Max retries.
     n2: u8,
+
+    /// Current retry counter.
     rc: u8,
+
+    /// Either 8 or 128, depending on EXTSEQ.
     modulus: u8,
+
+    /// Remote end is busy, and canet receive frames.
+    /// Page 82.
     peer_receiver_busy: bool,
+
+    /// A REJ has been sent to the remote end.
     reject_exception: bool,
+
+    /// An SREJ has been sent to the remote end.
+    ///
+    /// TODO: this counts outstanding SREJs?
     sreject_exception: u32,
+
+    /// We are busy.
+    ///
+    /// TODO: check if we'd ever actually set this to true. The receive window
+    /// is so small that the NR/NS will wrap around way before we get "full".
     own_receiver_busy: bool,
+
+    /// ACK, like RR, RNR, or IFRAME, pending.
     acknowledge_pending: bool,
+
+    /// This implementation doesn't yet implement SREJ, so this
+    /// is always falso for now.
     srej_enabled: bool,
+
+    /// TODO: what is this?
     k: u8,
 
-    // TODO: not the right type.
+    // TODO: not the right type. Should be VecDeque<u8> or VecDeque<Iframe>
+    //
+    // TODO: this is not currently used, but should be. Either as is, or
+    // a byte queue maximizing packet size.
     iframe_queue: Vec<Vec<u8>>,
+
+    /// When an IFRAME is sent out, it's stared in this queue, until it's been
+    /// acked. When a resend is required, it's sent from here.
     iframe_resend_queue: VecDeque<Iframe>,
 }
 
 impl Data {
+    /// Create new Data with the specified address being the local one.
     pub fn new(me: Addr) -> Self {
         Self {
             me,
@@ -246,21 +354,25 @@ impl Data {
         }
     }
 
+    /// Return true if using 128 modulus.
     #[must_use]
     pub fn ext(&self) -> bool {
         self.modulus == 128
     }
 
+    /// Return true if T1 (retry) has expired.
     #[must_use]
     pub fn t1_expired(&self) -> bool {
         self.t1.is_expired().unwrap_or(false)
     }
 
+    /// Return true if T3 (idle timer) has expired.
     #[must_use]
     pub fn t3_expired(&self) -> bool {
         self.t3.is_expired().unwrap_or(false)
     }
 
+    /// Return list of expired timers.
     #[must_use]
     pub fn active_timers(&self) -> Vec<Event> {
         let mut ret = Vec::new();
@@ -273,6 +385,8 @@ impl Data {
         ret
     }
 
+    /// Return time until next timer expires, or None if no timer is currently
+    /// running.
     #[must_use]
     pub fn next_timer_remaining(&self) -> Option<std::time::Duration> {
         match (self.t1.remaining(), self.t3.remaining()) {
@@ -283,14 +397,14 @@ impl Data {
         }
     }
 
-    // Page 106.
+    /// Page 106.
     #[must_use]
     fn nr_error_recovery(&mut self) -> Vec<Action> {
         self.layer3_initiated = false;
         vec![Action::DlError(DlError::J), self.establish_data_link()]
     }
 
-    // Page 108.
+    /// Page 108.
     #[must_use]
     fn check_need_for_response(&mut self, command: bool, pf: bool) -> Vec<Action> {
         if command && pf {

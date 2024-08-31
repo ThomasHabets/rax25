@@ -7,7 +7,13 @@ pub mod state;
 
 const USE_FCS: bool = false;
 
-/// Source or dst addr.
+/// AX.25 address.
+///
+/// The encoding for an AX.25 address includes some extra bits, so they're
+/// included here. That way they can be serialized and parsed fully in and
+/// out of the struct.
+///
+/// This may not be the best idea, so is worth revisiting.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
     t: String,
@@ -18,6 +24,7 @@ pub struct Addr {
 }
 
 impl Addr {
+    /// Create a new Addr from string. The extra bits are all clear.
     pub fn new(s: &str) -> Result<Self> {
         let s = s.to_uppercase();
         let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
@@ -33,6 +40,8 @@ impl Addr {
             rbit_dama: false,
         })
     }
+
+    /// Create a new Addr from string and the extra bits.
     pub fn new_bits(
         s: &str,
         lowbit: bool,
@@ -48,10 +57,13 @@ impl Addr {
         Ok(a)
     }
 
+    /// Get just the callsign & SSID as a string, not the extra bits.
     #[must_use]
     pub fn call(&self) -> &str {
         &self.t
     }
+
+    /// Parse the callsign and the extra bits from the packet format.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != 7 {
             return Err(Error::msg(format!(
@@ -82,6 +94,7 @@ impl Addr {
         )
     }
 
+    /// Serialize the callsign and SSID, plus explicit bits.
     #[must_use]
     pub fn serialize(
         &self,
@@ -113,9 +126,11 @@ impl Addr {
             | (if highbit { 0x80 } else { 0 });
         ret
     }
-    //fn as_str(&self) -> &str {&self.t }
 }
 
+/// AX.25 packet, of all types.
+///
+/// Maybe this should be replaced by a protobuf.
 #[derive(Debug, PartialEq)]
 pub struct Packet {
     src: Addr,
@@ -128,6 +143,7 @@ pub struct Packet {
     packet_type: PacketType,
 }
 
+/// All packet types.
 #[derive(Debug, PartialEq)]
 pub enum PacketType {
     Sabm(Sabm),
@@ -146,11 +162,146 @@ pub enum PacketType {
     Test(Test),
 }
 
-/// SABM - Set Ansynchronous Balanced Mode (4.3.3.1)
-///
-///
+/// SABM - Set Asynchronous Balanced Mode (4.3.3.1, page 23)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sabm {
+    poll: bool,
+}
+
+/// SAMBE - Set Asynchronous Balanced Mode Extended (4.3.3.2, page 23)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sabme {
+    poll: bool,
+}
+
+/// RR - Receiver Ready (4.3.2.1, page 21)
+///
+/// Basically an ACK.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rr {
+    poll: bool,
+    nr: u8,
+}
+
+/// REJ - Reject (4.3.2.3, page 21)
+///
+/// Unclear why this is even needed. Couldn't RR with NR older than last sent
+/// be equally eager to retransmit?
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rej {
+    poll: bool,
+    nr: u8,
+}
+
+/// SREJ - Selective reject (4.3.2.4, page 21)
+///
+/// Request retransmissions of a single iframe.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Srej {
+    poll: bool,
+    nr: u8,
+}
+
+/// FRMR - A deprecated error signaling (4.3.3.9, page 28)
+///
+/// The AX.25 2.2 spec deprecates this, and says to not generate these frames. But
+/// it does specify what to do when receiving one.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Frmr {
+    poll: bool,
+}
+
+/// Test - Test frame (4.3.3.8, page 28)
+///
+/// It's ping, basically. The payload is mirrorred back, or (if there's not
+/// enough room to store the payload), an empty response is returned.
+///
+/// The intended use of the poll flag here is unclear.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Test {
+    poll: bool,
+    payload: Vec<u8>,
+}
+
+/// XID - Exchange Identification (4.3.3.7, page 24)
+///
+/// ISO 8885 exchange of capabilities, like extended sequence numbers,
+/// max IFRAME size ("MTU"), and lots of other stuff.
+///
+/// TODO: Currently not implemented.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Xid {
+    poll: bool,
+}
+
+/// RNR - Receiver Not Ready (4.3.2.2, page 21)
+///
+/// Like RR, but asks the sender to not send more data for now.
+/// The TCP version of this would be a closed receiver window.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Rnr {
+    poll: bool,
+    nr: u8,
+}
+
+/// UA - Unnumbered Ack (4.3.3.4, page 23)
+///
+/// Acknowledge of things that don't have sequence numbers. Like SABM(E)
+/// and DISC.
+///
+/// The equivalent of both the replying FIN and the SYN|ACK in TCP.
+/// Probably not a good idea to use the same message for these two very
+/// different events, since it's more "yeah, whatever, I hear you", but
+/// not acknowledging if you heard "let's go" or "close down".
+#[derive(Debug, PartialEq, Clone)]
+pub struct Ua {
+    poll: bool,
+}
+
+/// IFRAME - Information Frame (4.3.1, page 19)
+///
+/// Carries information. Obviously. Really, this could probably have been
+/// merged with RR/RNR, even if it means empty payload. That's what
+/// TCP does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Iframe {
+    nr: u8,
+    ns: u8,
+    poll: bool,
+    pid: u8,
+    payload: Vec<u8>,
+}
+
+/// UI - Unnumbered Information (4.3.3.6, page 24)
+///
+/// Information frames outside of the sequential data flow.
+/// Can be used whether a connection is established or not.
+/// Disconnected UIs power APRS.
+///
+/// APRS doesn't use "push" for ACKs, but when unicasted
+/// it could. A DM should be returned when push is set.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ui {
+    push: bool,
+}
+
+/// DM - Disconnected Mode (4.3.3.5, page 23)
+///
+/// The reply if the incoming packet implies a connection is active, or if
+/// a SABM(E) was received and nothing was ready to receive it.
+///
+/// Basically a TCP RST.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dm {
+    poll: bool,
+}
+
+/// DISC - Disconnect (4.3.3.3, page 23)
+///
+/// End the connection. A DISC is acked with a UA packet, which seems
+/// silly. Replying with DISC would make more sense, but hey ho.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Disc {
     poll: bool,
 }
 
@@ -186,6 +337,7 @@ pub const TYPE_MASK: u8 = 0b0000_0011;
 pub const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    /// Serialize a packet, either as standard mod-8, or extended mod-128.
     #[must_use]
     pub fn serialize(&self, ext: bool) -> Vec<u8> {
         let mut ret = Vec::with_capacity(
@@ -299,6 +451,11 @@ impl Packet {
         }
         ret
     }
+
+    /// Parse packet from bytes.
+    ///
+    /// Source address `rbit_ext` is used to indicate that the packet is using
+    /// the mod-128 extended format, just like the Linux kernel does.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
@@ -391,79 +548,13 @@ impl Packet {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Sabme {
-    poll: bool,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Rr {
-    poll: bool,
-    nr: u8,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Rej {
-    poll: bool,
-    nr: u8,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Srej {
-    poll: bool,
-    nr: u8,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Frmr {
-    poll: bool,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Test {
-    poll: bool,
-    payload: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Xid {
-    poll: bool,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Rnr {
-    poll: bool,
-    nr: u8,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Ua {
-    poll: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Iframe {
-    nr: u8,
-    ns: u8,
-    poll: bool,
-    pid: u8,
-    payload: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Ui {
-    push: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Dm {
-    poll: bool,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct Disc {
-    poll: bool,
-}
-
+/// Kisser -- not a very good name.
+///
+/// Kisser reads and writes packets. Normally to a KISS serial port. But
+/// ideally something more clevel with priority queues and mux-capability.
+///
+/// Then again that more clever system could just be freestanding, and expose
+/// KISS as an interface to it.
 pub trait Kisser {
     fn send(&mut self, frame: &[u8]) -> Result<()>;
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>>;
@@ -543,12 +634,18 @@ impl Kisser for FakeKiss {
     }
 }
 
+/// Kiss reads and writes packets on a KISS serial port.
+///
+/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 pub struct Kiss {
     buf: std::collections::VecDeque<u8>,
     port: Box<dyn serialport::SerialPort>,
 }
 
 impl Kiss {
+    /// Create new Kiss connected to the named port.
+    ///
+    /// Currently hard coded to 9600bps 8N1.
     pub fn new(port: &str) -> Result<Self> {
         //            let mut stream = std::net::TcpStream::connect("127.0.0.1:8001")?;
         let port = serialport::new(port, 9600)
@@ -571,6 +668,8 @@ const KISS_FESC: u8 = 0xDB;
 const KISS_TFEND: u8 = 0xDC;
 const KISS_TFESC: u8 = 0xDD;
 
+/// Escape KISS data stream.
+/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 #[must_use]
 fn escape(bytes: &[u8]) -> Vec<u8> {
     let mut ret = Vec::new();
@@ -587,6 +686,10 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
     ret
 }
 
+/// Find frames from a KISS stream.
+///
+/// Because this function only returns the index of the first frame, the frame
+/// of course is not unescaped.
 #[must_use]
 fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     let mut start_index = None;
@@ -606,6 +709,8 @@ fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     None // Return None if no valid subrange is found
 }
 
+/// Unescape KISS data stream.
+/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 #[must_use]
 fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
@@ -629,7 +734,6 @@ fn unescape(data: &[u8]) -> Vec<u8> {
     unescaped
 }
 
-// For now this is a KISS interface. But it needs to be changed to allow multiplexing.
 impl Kisser for Kiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         debug!("Sending frame… {frame:?}");
@@ -684,6 +788,13 @@ impl Kisser for Kiss {
     }
 }
 
+/// A connected mode client.
+///
+/// `.read_until()` MUST be called fairly often (how often depends on T1 and
+/// T3 of local and remote endpoint), in order to drain the KISS packet queue
+/// and respond to remote peer queries like RR, or to see any received DISC.
+///
+/// A future `async` interface will make this cleaner.
 pub struct Client {
     kiss: Box<dyn Kisser>,
     pub(crate) data: state::Data,
@@ -700,7 +811,10 @@ impl Drop for Client {
         }
     }
 }
+
 impl Client {
+    /// Create a new client with the given local address, using the given
+    /// KISS interface for incoming and outgoing frames.
     #[must_use]
     pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
@@ -711,6 +825,8 @@ impl Client {
             incoming: std::collections::VecDeque::new(),
         }
     }
+
+    /// Connect to a remote node, optionally using extended (mod-128) mode.
     pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
         self.actions(state::Event::Connect(addr.clone(), ext));
         loop {
@@ -744,15 +860,30 @@ impl Client {
             }
         }
     }
+
+    /// Disconnect an ongoing connection.
+    ///
+    /// Currently does not wait for the remote end to send UA, but that may
+    /// change.
     pub fn disconnect(&mut self) -> Result<()> {
         self.actions(state::Event::Disconnect);
         Ok(())
     }
+
+    /// Write data on an established connection.
+    ///
+    /// This may block.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(state::Event::Data(data.to_vec()));
         Ok(())
     }
-    pub fn try_read(&mut self) -> Result<Option<Packet>> {
+
+    /// Try reading a raw packet.
+    ///
+    /// This should normally not be used. Instead use `.write()`.
+    ///
+    /// Possible uses for this if you're doing lower level stuff.
+    fn try_read(&mut self) -> Result<Option<Packet>> {
         let packet = Packet::parse(
             &self
                 .kiss
@@ -767,9 +898,20 @@ impl Client {
             Ok(Some(packet))
         }
     }
+
+    /// Returns true if remote end has disconnected.
+    ///
+    /// TODO: really, this maybe should be `.is_connected()`.
     pub fn eof(&self) -> bool {
         self.eof
     }
+
+    /// Read data, or time out after a while.
+    ///
+    /// Returns an error (possibly timeout error), Some data, or None
+    /// if the remote end disconnected.
+    ///
+    /// I'm not so sure about this return value.
     pub fn read_until(
         &mut self,
         done: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -789,7 +931,12 @@ impl Client {
         self.incoming.clear();
         Ok(Some(ret))
     }
-    pub fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
+
+    /// Tell the state machine about a packet.
+    ///
+    /// If using `try_read()`, then this function should very likely be called
+    /// with the received packet.
+    fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
             PacketType::Sabme(p) => {
@@ -816,7 +963,15 @@ impl Client {
         Ok(())
     }
 
-    pub fn actions(&mut self, event: state::Event) {
+    /// Give the state machine any event.
+    ///
+    /// Events can be incoming packets (probably from `.try_read()` via
+    /// `.actions_packet()`), or requests from the application, like
+    /// "send this data", or "disconnect".
+    ///
+    /// State machine side effects are then actioned, including possible
+    /// state transitions.
+    fn actions(&mut self, event: state::Event) {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
