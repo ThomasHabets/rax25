@@ -11,4 +11,5 @@ sed -ri 's/^(version = "[0-9]+[.][0-9])[.].*/\1'.$PATCH'"/' Cargo.toml
 VER="$(sed -rn '/^version/{s/.*= *"([0-9]+[.][0-9]+[.][0-9]+)"/\1/;p}' Cargo.toml)"
 git add Cargo.toml
 git commit -a -m"Bump version to ${VER}"
-exec cargo publish
+cargo publish
+exec git push
