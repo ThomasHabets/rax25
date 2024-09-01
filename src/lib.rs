@@ -283,6 +283,7 @@ pub struct Iframe {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ui {
     push: bool,
+    payload: Vec<u8>,
 }
 
 /// DM - Disconnected Mode (4.3.3.5, page 23)
@@ -534,7 +535,10 @@ impl Packet {
                     CONTROL_DISC => PacketType::Disc(Disc { poll }),
                     CONTROL_DM => PacketType::Dm(Dm { poll }),
                     CONTROL_FRMR => PacketType::Frmr(Frmr { poll }),
-                    CONTROL_UI => PacketType::Ui(Ui { push: poll }),
+                    CONTROL_UI => PacketType::Ui(Ui {
+                        push: poll,
+                        payload: bytes.to_vec(),
+                    }),
                     CONTROL_XID => PacketType::Xid(Xid { poll }),
                     CONTROL_TEST => PacketType::Test(Test {
                         poll,

@@ -299,7 +299,7 @@ pub struct Data {
     ///
     /// Normally like 200 bytes. And setting it too large tends to cause
     /// some implementations to crash.
-    n1: u32,
+    n1: usize,
 
     /// Max retries.
     ///
@@ -434,6 +434,33 @@ impl Data {
             (Some(t), None) => Some(t),
             (None, None) => None,
         }
+    }
+
+    /// Do something with a received UI frame.
+    ///
+    /// Unnumbered information is pretty uninteresting here, since this crate
+    /// handles connected mode.
+    ///
+    /// But we should probably add some UI support. It wouldn't be much code.
+    ///
+    /// Page 108.
+    #[must_use]
+    fn ui_check(&self, command: bool, len: usize) -> Vec<Action> {
+        if !command {
+            // Spec bug: error Q says this is also for UI frames with Poll set.
+            //
+            // But 4.3.3.6 says command+poll is just fine, and should just trigger
+            // DM.
+            //
+            // So probably the code as-is, is correct, and the Q error message
+            // should be changed.
+            return vec![Action::DlError(DlError::Q)];
+        }
+        if len > self.n1 {
+            return vec![Action::DlError(DlError::K)];
+        }
+        debug!("DL-UNIT_DATA indication");
+        vec![]
     }
 
     /// NR error recovery.
@@ -796,35 +823,6 @@ pub trait State {
     }
 }
 
-/// Do something with a received UI frame.
-///
-/// Unnumbered information is pretty uninteresting here, since this crate
-/// handles connected mode.
-///
-/// But we should probably add some UI support. It wouldn't be much code.
-///
-/// Page 108.
-#[must_use]
-fn ui_check(command: bool) -> Vec<Action> {
-    if !command {
-        // Spec bug: error Q says this is also for UI frames with Poll set.
-        //
-        // But 4.3.3.6 says command+poll is just fine, and should just trigger
-        // DM.
-        //
-        // So probably the code as-is, is correct, and the Q error message
-        // should be changed.
-        return vec![Action::DlError(DlError::Q)];
-    }
-    if
-    /*packet too long*/
-    false {
-        return vec![Action::DlError(DlError::K)];
-    }
-    debug!("DL-UNIT_DATA indication");
-    vec![]
-}
-
 /// Disconnected state.
 ///
 /// I think this is fully implemented for AX.25 2.0. No SABME yet, though.
@@ -889,8 +887,8 @@ impl State for Disconnected {
     }
 
     // Page 84.
-    fn ui(&self, _data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
-        let mut ret = ui_check(cr);
+    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
+        let mut ret = data.ui_check(cr, packet.payload.len());
         if packet.push {
             ret.push(Action::SendDm(true));
         }
@@ -1193,7 +1191,7 @@ impl State for Connected {
         if !command_response {
             return vec![Action::DlError(DlError::S)];
         }
-        if p.payload.len() > data.n1.try_into().unwrap() {
+        if p.payload.len() > data.n1 {
             data.layer3_initiated = false;
             debug!("Discarding frame for being too big");
             return vec![
@@ -1351,7 +1349,7 @@ impl State for Connected {
 
     // Page 94 & 100.
     fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
-        let mut act = ui_check(cr);
+        let mut act = data.ui_check(cr, packet.payload.len());
         if packet.push {
             act.push(data.enquiry_response(true));
         }
