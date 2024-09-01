@@ -755,7 +755,8 @@ impl Kisser for Kiss {
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
         let end = std::time::Instant::now() + timeout;
         loop {
-            self.port.set_timeout(end - std::time::Instant::now())?;
+            self.port
+                .set_timeout(end.saturating_duration_since(std::time::Instant::now()))?;
             let mut buf = [0u8; 1];
             let buf = match self.port.read(&mut buf) {
                 Ok(n) => &buf[..n],

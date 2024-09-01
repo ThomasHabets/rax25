@@ -206,7 +206,10 @@ impl Timer {
         if !self.running {
             return None;
         }
-        Some(self.expiry - std::time::Instant::now())
+        Some(
+            self.expiry
+                .saturating_duration_since(std::time::Instant::now()),
+        )
     }
 
     /// Stop timer.
