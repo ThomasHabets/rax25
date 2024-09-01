@@ -627,7 +627,10 @@ impl Data {
         // TODO: set half duplex SREJ
         self.modulus = 128;
         // TODO: n1r = 2048
-        // TODO: kr = 32  // Does the spec mean k?
+
+        // Spec bug: Spec says `kr`. Surely it means `k`?
+        self.k = 32;
+
         // TODO: self.t2.set(3000);
         self.n2 = 10;
     }
@@ -638,7 +641,10 @@ impl Data {
     fn set_version_2(&mut self) {
         self.modulus = 8;
         // TODO: n1r = 2048
-        // TODO: kr = 4  // Does the spec mean k?
+
+        // Spec bug: Spec says `kr`. Surely it means `k`?
+        self.k = 4;
+
         // TODO: self.t2.set(3000);
         self.n2 = 10;
     }
