@@ -562,7 +562,12 @@ impl Packet {
 /// Then again that more clever system could just be freestanding, and expose
 /// KISS as an interface to it.
 pub trait Kisser {
+    /// Send frame. May block.
     fn send(&mut self, frame: &[u8]) -> Result<()>;
+
+    /// Try receiving a frame.
+    ///
+    /// Ok(None) means timeout.
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>>;
 }
 
