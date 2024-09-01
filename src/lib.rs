@@ -552,7 +552,9 @@ impl Packet {
     }
 }
 
-/// Kisser -- not a very good name.
+/// Kisser packet serializer/deserializer.
+///
+/// Not a very good name.
 ///
 /// Kisser reads and writes packets. Normally to a KISS serial port. But
 /// ideally something more clevel with priority queues and mux-capability.
