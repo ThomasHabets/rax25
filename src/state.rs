@@ -260,24 +260,56 @@ pub struct Data {
     /// RR/RNR, to probe.
     t3: Timer,
     t3v: std::time::Duration, // TODO: is this where the init value should be?
+
+    /// Send state variable.
+    ///
+    /// This is the sequence number of the next frame that this node will send,
+    /// in the NS field.
+    ///
+    /// In TCP this counts bytes, but this is packets. Value is kept at mod 8
+    /// or 128 at all times.
     vs: u8,
+
+    /// Acknowledge state variable.
+    ///
+    /// This is the most recent sequence number that the remote end
+    /// has reported seeing.
     va: u8,
+
+    /// Receive state variable.
+    ///
+    /// This is the sequence number of the next expected frame to receive
+    /// from the remote end.
     vr: u8,
+
+    /// Default SRT.
+    ///
+    /// SRT should be smoothed round trip time, but it needs an initial value.
     pub(crate) srt_default: std::time::Duration,
 
-    /// Smoothed round trip time. (TODO)
+    /// Smoothed round trip time.
+    ///
+    /// TODO: Don't just keep this fixed.
     srt: std::time::Duration,
 
     /// Next value for T1; default initial value is initial value of SRT.
     t1v: std::time::Duration,
 
     /// Max packet size.
+    ///
+    /// Normally like 200 bytes. And setting it too large tends to cause
+    /// some implementations to crash.
     n1: u32,
 
     /// Max retries.
+    ///
+    /// After T1 timer expires this many times, the connection attempt
+    /// (SABM(E)) or connection (other frames) is aborted.
     n2: u8,
 
     /// Current retry counter.
+    ///
+    /// The current value counting towards N2.
     rc: u8,
 
     /// Either 8 or 128, depending on EXTSEQ.
@@ -308,7 +340,14 @@ pub struct Data {
     /// is always falso for now.
     srej_enabled: bool,
 
-    /// TODO: what is this?
+    /// Maximum number of iframes outstanding.
+    ///
+    /// This is at most 7 (mod-8), or 127 (extseq, mod-128).
+    ///
+    /// This is a bit of a tunable value, especially if SREJ is not supported
+    /// for the connection. Higher value means fewer bigger bursts of packets,
+    /// but makes retransmissions worse. It also hogs the transmitter for other
+    /// users.
     k: u8,
 
     // TODO: not the right type. Should be VecDeque<u8> or VecDeque<Iframe>
@@ -397,6 +436,11 @@ impl Data {
         }
     }
 
+    /// NR error recovery.
+    ///
+    /// A received packet is trying to ACK a sequence number outside of what's
+    /// currently in flight, that's an error, and the connection is terminated.
+    ///
     /// Page 106.
     #[must_use]
     fn nr_error_recovery(&mut self) -> Vec<Action> {
@@ -404,32 +448,46 @@ impl Data {
         vec![Action::DlError(DlError::J), self.establish_data_link()]
     }
 
-    /// Page 108.
+    /// Check need for response.
+    ///
+    /// If a packet is a command, and has the poll bit set, then it demands
+    /// a response. I guess in theory this could be an IFRAME, if there's
+    /// outstanding data. But the state diagram says to send an RR.
+    ///
+    /// Page 108, and 6.1.2 and 6.2 on pages 35-36.
     #[must_use]
     fn check_need_for_response(&mut self, command: bool, pf: bool) -> Vec<Action> {
-        if command && pf {
-            vec![self.enquiry_response(true)]
-        } else if !command && pf {
-            vec![Action::DlError(DlError::A)]
-        } else {
-            vec![]
+        match (command, pf) {
+            // A command with poll set demands a response with fin set.
+            (true, true) => vec![self.enquiry_response(true)],
+
+            // I believe that this means the state is currently Connected,
+            // and therefore we're not waiting for a response.
+            (false, true) => vec![Action::DlError(DlError::A)],
+
+            // If it's not a command, or a command but no response required,
+            // then no response needed.
+            (_, _) => vec![],
         }
     }
 
-    // Page 106.
-    //
-    // Bug in spec:
-    // This function is literally called "response", but the spec says "RR command". I think not.
-    // It breaks against the Linux implementation if sending a command, since the kernel never gets
-    // answered.
-    //
-    // The kernel (M0THC-2) keeps asking (P), but by following the spec keeps asking right back.
-    //
-    //  9584 18.543153318      M0THC-2 → M0THC-1      AX.25 16 S P, func=RR, N(R)=1
-    //  9585 18.546108006      M0THC-1 → M0THC-2      AX.25 16 S P, func=RR, N(R)=5
-    //  9586 18.546117747      M0THC-2 → M0THC-1      AX.25 16 S F, func=RR, N(R)=1
-    //
-    //  Repeats until Linux kernel gives up and sends DM, closing the connection.
+    /// Respond to the other end demanding a sequence number report.
+    ///
+    /// Bug in spec:
+    /// This function is literally called "response", but the spec says
+    /// "RR command". I think not.  It breaks against the Linux implementation
+    /// if sending a command, since the kernel never gets answered.
+    ///
+    /// The kernel (M0THC-2) keeps asking (P), but by following the spec keeps
+    /// asking right back.
+    ///
+    ///  9584 18.543153318      M0THC-2 → M0THC-1      AX.25 16 S P, func=RR, N(R)=1
+    ///  9585 18.546108006      M0THC-1 → M0THC-2      AX.25 16 S P, func=RR, N(R)=5
+    ///  9586 18.546117747      M0THC-2 → M0THC-1      AX.25 16 S F, func=RR, N(R)=1
+    ///
+    ///  Repeats until Linux kernel gives up and sends DM, closing the connection.
+    ///
+    /// Page 106.
     #[must_use]
     fn enquiry_response(&mut self, f: bool) -> Action {
         self.acknowledge_pending = false;
@@ -441,21 +499,29 @@ impl Data {
         }
     }
 
-    // Page 107.
+    /// Retransmit the resend queue.
+    ///
+    /// If the remote acks something other than our latest packet, then
+    /// send everything unacked.
+    ///
+    /// TODO: Is this a good idea? This seems like it's a bit over eager in
+    /// retransmitting.
+    ///
+    /// Page 107.
     #[must_use]
     fn invoke_retransmission(&mut self, _nr: u8) -> Vec<Action> {
-        // TODO: is this correct?
-        //        let mut act = Vec::new();
-        //        for _vs in nr..self.vs {
-        //           act.push(Action::Iframe(Iframe
-        //      }
         self.iframe_resend_queue
             .iter()
             .map(|i| Action::SendIframe(i.clone()))
             .collect()
     }
 
-    // Page 109.
+    /// Select a new T1 value based off of the roundtrip time.
+    ///
+    /// TODO: actually implement this. Maybe the algorithm in the spec, maybe
+    /// something better.
+    ///
+    /// Page 109.
     fn select_t1_value(&mut self) {
         if self.rc == 0 {
             // TODO: the real formula is stranger.
@@ -466,7 +532,11 @@ impl Data {
         }
     }
 
-    // Page 106.
+    /// Ask remote end if they're there, what they heard last.
+    ///
+    /// This is when T1 or T3 expires.
+    ///
+    /// Page 106.
     #[must_use]
     fn transmit_enquiry(&mut self) -> Action {
         self.acknowledge_pending = false;
@@ -477,7 +547,11 @@ impl Data {
             Action::SendRr(/* poll */ true, self.vr, /* command */ true)
         }
     }
-    // Page 107.
+
+    /// When RR is received, incorporate any new info, and potentially
+    /// wait for more RRs.
+    ///
+    /// Page 107.
     fn check_iframe_acked(&mut self, nr: u8) {
         if self.peer_receiver_busy {
             // Typo in spec. Says "peer busy".
@@ -500,6 +574,12 @@ impl Data {
             self.t1.restart(self.srt);
         }
     }
+
+    /// Update state based on an an ACK being received.
+    ///
+    /// As ACK moves forward, the iframe resend queue can be pruned.
+    ///
+    /// In the spec this is just `va <- nr`, which hides the complexity.
     fn update_ack(&mut self, nr: u8) {
         // dbg!(self.va, nr);
         // debug!("Updating ack to {} {}", self.va, nr);
@@ -509,10 +589,16 @@ impl Data {
             self.va = (self.va + 1) % self.modulus;
         }
     }
+
+    /// Clear iframe queue.
+    ///
+    /// This probably means connection shutdown.
     fn clear_iframe_queue(&mut self) {
         self.iframe_queue.clear();
         self.iframe_resend_queue.clear();
     }
+
+    /// Clear exception conditions as a new connection is established.
     fn clear_exception_conditions(&mut self) {
         self.peer_receiver_busy = false;
         self.reject_exception = false;
@@ -520,7 +606,11 @@ impl Data {
         self.acknowledge_pending = false;
     }
 
-    // Page 106 & "establish extended data link" on page 109.
+    /// Establish data link.
+    ///
+    /// Some connection initialization.
+    ///
+    /// Page 106 & "establish extended data link" on page 109.
     #[must_use]
     fn establish_data_link(&mut self) -> Action {
         self.clear_exception_conditions();
@@ -530,136 +620,167 @@ impl Data {
         Action::SendSabm(true)
     }
 
-    // Page 109.
+    /// Set values for extended sequence number connection.
+    ///
+    /// Page 109.
     fn set_version_2_2(&mut self) {
         // TODO: set half duplex SREJ
         self.modulus = 128;
         // TODO: n1r = 2048
-        // TODO: kr = 4
+        // TODO: kr = 32  // Does the spec mean k?
         // TODO: self.t2.set(3000);
         self.n2 = 10;
     }
 
-    // Page 109.
+    /// Set values for mod-8 connections.
+    ///
+    /// Page 109.
     fn set_version_2(&mut self) {
         self.modulus = 8;
         // TODO: n1r = 2048
-        // TODO: kr = 32
+        // TODO: kr = 4  // Does the spec mean k?
         // TODO: self.t2.set(3000);
         self.n2 = 10;
     }
 }
 
+/// State machine for an AX.25 connection.
+///
+/// Not all events are implemented in all states, but enough.
+///
+/// TODO: remove default implementations, to make the "default noop" more
+/// deliberate.
 pub trait State {
     fn name(&self) -> String;
 
+    /// User initiates a new connection.
     #[must_use]
     fn connect(&self, _data: &mut Data, _addr: &Addr, _ext: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
 
+    /// User initiates disconnection.
     #[must_use]
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected DLDisconnect in state {}", self.name());
         vec![]
     }
 
+    /// User initiates sending data on a connection.
     #[must_use]
     fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
         eprintln!("writing data while not connected!");
         vec![]
     }
 
+    /// Timer T1 (pending ack) expires.
     #[must_use]
     fn t1(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected T1 expire");
         vec![]
     }
 
+    /// Timer T3 (connection keepalive) expires.
     #[must_use]
     fn t3(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected T3 expire");
         vec![]
     }
 
+    /// RR received from peer.
     #[must_use]
     fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected RR");
         vec![]
     }
 
+    /// REJ received from peer.
     #[must_use]
     fn rej(&self, _data: &mut Data, _packet: &Rej) -> Vec<Action> {
         eprintln!("TODO: unexpected REJ");
         vec![]
     }
 
+    /// XID received from peer.
     #[must_use]
     fn xid(&self, _data: &mut Data, _packet: &Xid) -> Vec<Action> {
         eprintln!("TODO: unexpected XID");
         vec![]
     }
 
+    /// TEST received from peer.
     #[must_use]
     fn test(&self, _data: &mut Data, _packet: &Test) -> Vec<Action> {
         eprintln!("TODO: unexpected TEST");
         vec![]
     }
 
+    /// SREJ received from peer.
     #[must_use]
     fn srej(&self, _data: &mut Data, _packet: &Srej) -> Vec<Action> {
         eprintln!("TODO: unexpected SREJ");
         vec![]
     }
 
+    /// FRMR received from peer.
+    ///
+    /// FRMR is deprecated, so we should probably never see this.
     #[must_use]
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
         eprintln!("TODO: unexpected FRMR");
         vec![]
     }
 
+    /// RNR received from peer.
     #[must_use]
     fn rnr(&self, _data: &mut Data, _packet: &Rnr) -> Vec<Action> {
         eprintln!("TODO: unexpected RNR");
         vec![]
     }
 
+    /// SABM received from peer.
     #[must_use]
     fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: unexpected SABM");
         vec![]
     }
 
+    /// SABME received from peer.
     #[must_use]
     fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
         eprintln!("TODO: unexpected SABME");
         vec![]
     }
 
+    /// IFRAME received from peer.
     #[must_use]
     fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
         eprintln!("TODO; unexpected iframe");
         vec![]
     }
 
+    /// UI received from peer.
     #[must_use]
     fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
 
+    /// UA received from peer.
     #[must_use]
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
         eprintln!("TODO; unexpected UA");
         vec![]
     }
 
+    /// DM received from peer.
     #[must_use]
     fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
         eprintln!("TODO: unexpected DM");
         vec![]
     }
 
+    /// DISC received from peer.
     #[must_use]
     fn disc(&self, _data: &mut Data, _packet: &Disc) -> Vec<Action> {
         eprintln!("TODO: unexpected DISC");
@@ -667,11 +788,24 @@ pub trait State {
     }
 }
 
-// Unnumbered information is pretty uninteresting here.
-// Page 108.
+/// Do something with a received UI frame.
+///
+/// Unnumbered information is pretty uninteresting here, since this crate
+/// handles connected mode.
+///
+/// But we should probably add some UI support. It wouldn't be much code.
+///
+/// Page 108.
 #[must_use]
 fn ui_check(command: bool) -> Vec<Action> {
     if !command {
+        // Spec bug: error Q says this is also for UI frames with Poll set.
+        //
+        // But 4.3.3.6 says command+poll is just fine, and should just trigger
+        // DM.
+        //
+        // So probably the code as-is, is correct, and the Q error message
+        // should be changed.
         return vec![Action::DlError(DlError::Q)];
     }
     if
@@ -722,6 +856,7 @@ impl State for Disconnected {
     fn name(&self) -> String {
         "Disconnected".to_string()
     }
+
     // Page 85.
     fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
         data.modulus = match ext {
@@ -759,6 +894,7 @@ impl State for Disconnected {
         data.set_version_2();
         self.sabm_and_sabme(data, src.clone(), sabm.poll)
     }
+
     // Page 85.
     fn sabme(&self, data: &mut Data, src: &Addr, packet: &Sabme) -> Vec<Action> {
         data.set_version_2_2();
@@ -794,6 +930,7 @@ impl State for AwaitingConnection {
     fn name(&self) -> String {
         "AwaitingConnection".to_string()
     }
+
     // Page 88.
     fn t1(&self, data: &mut Data) -> Vec<Action> {
         eprintln!("t1 expired while connecting, retrying");
@@ -811,6 +948,7 @@ impl State for AwaitingConnection {
             vec![Action::SendSabm(true)]
         }
     }
+
     // Page 88.
     fn ua(&self, data: &mut Data, packet: &Ua) -> Vec<Action> {
         let f = packet.poll;
@@ -834,6 +972,7 @@ impl State for AwaitingConnection {
     }
 }
 
+/// TODO: document the meaning of this state.
 struct AwaitingRelease {}
 
 impl AwaitingRelease {
@@ -890,6 +1029,8 @@ enum ConnectedState {
     Connected,
     TimerRecovery,
 }
+
+/// TODO: document the meaning of this state.
 struct Connected {
     connected_state: ConnectedState,
 }
@@ -1217,9 +1358,9 @@ impl State for Connected {
     }
 }
 
-// Ugly range checker.
-//
-// if va steps forward, will it hit nr before it hits vs?
+/// Ugly range checker.
+///
+/// if va steps forward, will it hit nr before it hits vs?
 #[must_use]
 fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
     let mut t = va;
@@ -1234,11 +1375,19 @@ fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
     }
 }
 
+/// Create new state machine, starting in state `Disconnected`.
 #[must_use]
 pub fn new() -> Box<dyn State> {
     Box::new(Disconnected::new())
 }
 
+/// Data delivery object.
+///
+/// None => No data available now.
+/// EOF => Connection is closed.
+/// Some(_) => Some data, here you go.
+///
+/// TODO: poorly named.
 #[derive(Debug, PartialEq)]
 pub enum Res {
     None,
@@ -1246,6 +1395,9 @@ pub enum Res {
     Some(Vec<u8>),
 }
 
+/// Handle an incoming state, by shoving it through the state machine.
+///
+/// A set of return events and possibly a new state is returned..
 #[must_use]
 pub fn handle(
     state: &dyn State,
