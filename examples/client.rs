@@ -66,7 +66,7 @@ fn main() -> Result<()> {
 
     eprintln!("==== CONNECTING");
     c.connect(&Addr::new(&opt.dst)?, opt.ext)?;
-    //eprintln!("==== WRITING");
+    eprintln!("==== Connected to {}", opt.dst);
     //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) && !c.eof() {
         if let Ok(Some(data)) = c.read_until(done.clone()) {
