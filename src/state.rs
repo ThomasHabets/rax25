@@ -485,7 +485,9 @@ impl Data {
     ///  9585 18.546108006      M0THC-1 → M0THC-2      AX.25 16 S P, func=RR, N(R)=5
     ///  9586 18.546117747      M0THC-2 → M0THC-1      AX.25 16 S F, func=RR, N(R)=1
     ///
-    ///  Repeats until Linux kernel gives up and sends DM, closing the connection.
+    /// Repeats until Linux kernel gives up and sends DM, closing the connection.
+    ///
+    /// In the parts currently implemented, `pf` is always set to `true`.
     ///
     /// Page 106.
     #[must_use]
