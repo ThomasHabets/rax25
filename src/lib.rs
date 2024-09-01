@@ -308,34 +308,34 @@ pub struct Disc {
 
 // Unnumbered frames. Ending in 11.
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_SABM: u8 = 0b001_0_11_11;
+const CONTROL_SABM: u8 = 0b001_0_11_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_SABME: u8 = 0b011_0_11_11;
+const CONTROL_SABME: u8 = 0b011_0_11_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_UI: u8 = 0b000_0_00_11;
+const CONTROL_UI: u8 = 0b000_0_00_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_DISC: u8 = 0b010_0_00_11;
+const CONTROL_DISC: u8 = 0b010_0_00_11;
 #[allow(clippy::unusual_byte_groupings)]
-pub const CONTROL_DM: u8 = 0b0000_1111;
-pub const CONTROL_UA: u8 = 0b0110_0011;
-pub const CONTROL_TEST: u8 = 0b1110_0011;
-pub const CONTROL_XID: u8 = 0b1010_1111;
-pub const CONTROL_FRMR: u8 = 0b1000_0111;
+const CONTROL_DM: u8 = 0b0000_1111;
+const CONTROL_UA: u8 = 0b0110_0011;
+const CONTROL_TEST: u8 = 0b1110_0011;
+const CONTROL_XID: u8 = 0b1010_1111;
+const CONTROL_FRMR: u8 = 0b1000_0111;
 
 // Supervisor frames. Ending in 01.
-pub const CONTROL_RR: u8 = 0b0000_0001;
-pub const CONTROL_RNR: u8 = 0b0000_0101;
-pub const CONTROL_REJ: u8 = 0b0000_1001;
-pub const CONTROL_SREJ: u8 = 0b0000_1101;
+const CONTROL_RR: u8 = 0b0000_0001;
+const CONTROL_RNR: u8 = 0b0000_0101;
+const CONTROL_REJ: u8 = 0b0000_1001;
+const CONTROL_SREJ: u8 = 0b0000_1101;
 
 // Iframes end in 0.
-pub const CONTROL_IFRAME: u8 = 0b0000_0000;
+const CONTROL_IFRAME: u8 = 0b0000_0000;
 
 // Masks.
-pub const CONTROL_POLL: u8 = 0b0001_0000;
-pub const NR_MASK: u8 = 0b1110_0000;
-pub const TYPE_MASK: u8 = 0b0000_0011;
-pub const NO_L3: u8 = 0xF0;
+const CONTROL_POLL: u8 = 0b0001_0000;
+const NR_MASK: u8 = 0b1110_0000;
+const TYPE_MASK: u8 = 0b0000_0011;
+const NO_L3: u8 = 0xF0;
 
 impl Packet {
     /// Serialize a packet, either as standard mod-8, or extended mod-128.
