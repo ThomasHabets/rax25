@@ -503,7 +503,7 @@ impl Data {
 
     /// Respond to the other end demanding a sequence number report.
     ///
-    /// Bug in spec:
+    /// Bug in 1998 spec, fixed in the 2017 doc:
     /// This function is literally called "response", but the spec says
     /// "RR command". I think not.  It breaks against the Linux implementation
     /// if sending a command, since the kernel never gets answered.

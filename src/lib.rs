@@ -357,8 +357,7 @@ impl Packet {
         ret.extend(self.src.serialize(
             self.digipeater.is_empty(),
             self.command_response_la,
-            // self.rr_extseq,
-            ext,
+            ext, // Setting this bit for extseq seems to be a de facto standard.
             false,
         ));
 
@@ -457,6 +456,9 @@ impl Packet {
     ///
     /// Source address `rbit_ext` is used to indicate that the packet is using
     /// the mod-128 extended format, just like the Linux kernel does.
+    ///
+    /// That doesn't actually appear to be a standard, so we should probably
+    /// allow the caller to override, forcing use of extended or non-extended.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
