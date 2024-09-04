@@ -159,6 +159,14 @@ pub enum Action {
 // Spec says 3s.
 const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
 
+const DEFAULT_MTU: usize = 200;
+
+// Output buffer size is kept in RAM, so should not grow unbounded.
+//
+// At the expected speeds, 100MB is way more than what we should expect to
+// send in any connection.
+const MAX_OBUF_SIZE: usize = 100_000_000;
+
 // TODO: what is the default?
 const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -359,6 +367,15 @@ pub struct Data {
     // a byte queue maximizing packet size.
     iframe_queue: Vec<Vec<u8>>,
 
+    /// Output buffer of application payload bytes.
+    ///
+    /// This will be chopped up into frames when sequence numbers and
+    /// transmitter business allows.
+    obuf: VecDeque<u8>,
+
+    /// MTU for this connection.
+    mtu: usize,
+
     /// When an IFRAME is sent out, it's stared in this queue, until it's been
     /// acked. When a resend is required, it's sent from here.
     iframe_resend_queue: VecDeque<Iframe>,
@@ -392,6 +409,8 @@ impl Data {
             acknowledge_pending: false,
             own_receiver_busy: false,
             iframe_queue: Vec::new(),
+            mtu: DEFAULT_MTU,
+            obuf: VecDeque::new(),
             iframe_resend_queue: VecDeque::new(),
         }
     }
@@ -584,26 +603,25 @@ impl Data {
     /// wait for more RRs.
     ///
     /// Page 107.
-    fn check_iframe_acked(&mut self, nr: u8) {
+    #[must_use]
+    fn check_iframe_acked(&mut self, nr: u8) -> Vec<Action> {
         if self.peer_receiver_busy {
             // Typo in spec. Says "peer busy".
-            self.update_ack(nr);
             self.t3.start(self.t3v);
             if !self.t1.running {
                 self.t1.start(self.srt); // srt or t1v?
             }
-            return;
-        }
-        if nr == self.vs {
-            self.update_ack(nr);
+            self.update_ack(nr)
+        } else if nr == self.vs {
             self.t1.stop();
             self.t3.start(self.t3v);
             self.select_t1_value();
-            return;
-        }
-        if nr != self.va {
-            self.update_ack(nr);
+            self.update_ack(nr)
+        } else if nr != self.va {
             self.t1.restart(self.srt);
+            self.update_ack(nr)
+        } else {
+            vec![]
         }
     }
 
@@ -612,7 +630,8 @@ impl Data {
     /// As ACK moves forward, the iframe resend queue can be pruned.
     ///
     /// In the spec this is just `va <- nr`, which hides the complexity.
-    fn update_ack(&mut self, nr: u8) {
+    #[must_use]
+    fn update_ack(&mut self, nr: u8) -> Vec<Action> {
         // dbg!(self.va, nr);
         // debug!("Updating ack to {} {}", self.va, nr);
         while self.va != nr {
@@ -620,6 +639,7 @@ impl Data {
             self.iframe_resend_queue.pop_front();
             self.va = (self.va + 1) % self.modulus;
         }
+        self.flush()
     }
 
     /// Clear iframe queue.
@@ -679,6 +699,48 @@ impl Data {
 
         // TODO: self.t2.set(3000);
         self.n2 = 10;
+    }
+
+    // If sequence numbers allow, write as many packets as possible.
+    #[must_use]
+    fn flush(&mut self) -> Vec<Action> {
+        if self.peer_receiver_busy {
+            return vec![];
+        }
+        let mut act = Vec::new();
+        loop {
+            if self.obuf.is_empty() {
+                break;
+            }
+            if self.vs == (self.va + self.k) % self.modulus {
+                debug!(
+                    "tx window full with more data ({} bytes) to send!",
+                    self.obuf.len()
+                );
+                break;
+            }
+            let payload = self
+                .obuf
+                .drain(..std::cmp::min(self.mtu, self.obuf.len()))
+                .collect::<Vec<_>>();
+            let ns = self.vs;
+            self.vs = (self.vs + 1) % self.modulus;
+            self.acknowledge_pending = false;
+            if self.t1.running {
+                self.t3.stop();
+                self.t1.start(self.srt);
+            }
+            let i = Iframe {
+                ns,
+                nr: self.vr,
+                poll: false,
+                pid: 0xF0,
+                payload,
+            };
+            self.iframe_resend_queue.push_back(i.clone());
+            act.push(Action::SendIframe(i));
+        }
+        act
     }
 }
 
@@ -1059,7 +1121,7 @@ impl Connected {
             act.extend(data.nr_error_recovery());
             act.push(Action::State(Box::new(AwaitingConnection::new())));
         } else {
-            data.check_iframe_acked(packet.nr);
+            act.extend(data.check_iframe_acked(packet.nr));
         }
         act
     }
@@ -1076,25 +1138,27 @@ impl Connected {
                 act.push(Action::State(Box::new(AwaitingConnection::new())));
                 return act;
             }
-            data.update_ack(packet.nr);
-            if data.vs != data.va {
-                return data.invoke_retransmission(packet.nr);
+            let mut act = data.update_ack(packet.nr);
+            if data.vs == data.va {
+                data.t3.start(data.t3v);
+                act.push(Action::State(Box::new(Connected::new(
+                    ConnectedState::Connected,
+                ))));
+            } else {
+                act.extend(data.invoke_retransmission(packet.nr));
             }
-            data.t3.start(data.t3v);
-            return vec![Action::State(Box::new(Connected::new(
-                ConnectedState::Connected,
-            )))];
+            return act;
         }
         let mut act = Vec::new();
         if cr && packet.poll {
             act.push(data.enquiry_response(true));
         }
-        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+        if in_range(data.va, packet.nr, data.vs, data.modulus) {
+            act.extend(data.update_ack(packet.nr));
+        } else {
             act.extend(data.nr_error_recovery());
             act.push(Action::State(Box::new(AwaitingConnection::new())));
-            return act;
         }
-        data.update_ack(packet.nr);
         act
     }
 }
@@ -1121,31 +1185,21 @@ impl State for Connected {
 
     // Page 92 & 98.
     //
-    // TODO: this sends directly, without putting it on any queue.
-    // So really, this is maybe the event "pop iframe".
+    // This implementation deliberately doesn't preserve the application's
+    // frame boundaries.
+    //
+    // This seems like the right thing to do. But in the future maybe we'll
+    // implement the equivalent of SEQPACKET.
     fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
-        if data.peer_receiver_busy {
-            panic!("TODO: we have no tx queue");
+        data.obuf.extend(payload);
+        if data.obuf.len() > MAX_OBUF_SIZE {
+            panic!(
+                "TODO: handle better. Output buffer got too large. {} > {}",
+                data.obuf.len(),
+                MAX_OBUF_SIZE
+            );
         }
-        if data.vs == (data.va + data.k) % data.modulus {
-            panic!("TODO: tx window full!");
-        }
-        let ns = data.vs;
-        data.vs = (data.vs + 1) % data.modulus;
-        data.acknowledge_pending = false;
-        if data.t1.running {
-            data.t3.stop();
-            data.t1.start(data.srt);
-        }
-        let i = Iframe {
-            ns,
-            nr: data.vr,
-            poll: false,
-            pid: 0xF0,
-            payload: payload.to_vec(),
-        };
-        data.iframe_resend_queue.push_back(i.clone());
-        vec![Action::SendIframe(i)]
+        data.flush()
     }
 
     // Page 93.
@@ -1209,22 +1263,22 @@ impl State for Connected {
             acts.push(Action::State(Box::new(AwaitingConnection::new())));
             return acts;
         }
+        let mut actions = vec![];
         if let ConnectedState::Connected = self.connected_state {
-            data.check_iframe_acked(p.nr);
+            actions.extend(data.check_iframe_acked(p.nr));
         } else {
-            data.update_ack(p.nr);
+            actions.extend(data.update_ack(p.nr));
         }
         if data.own_receiver_busy {
             // discord (implicit)
             debug!("Discarding iframe because busy and being polled");
             if p.poll {
                 data.acknowledge_pending = false;
-                return vec![Action::SendRnr(true, data.vr)];
+                actions.push(Action::SendRnr(true, data.vr));
             }
-            return vec![];
+            return actions;
         }
 
-        let mut actions = vec![];
         if p.ns == data.vr {
             debug!("iframe in order {}", p.ns);
             // Frame in order.
