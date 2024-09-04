@@ -80,7 +80,13 @@ fn main() -> Result<()> {
             std::io::stdout().flush()?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(0)) {
-            Ok(Ok(line)) => c.write(&line.as_bytes())?,
+            Ok(Ok(line)) => {
+                if line == "exit" {
+                    done.store(true, Ordering::SeqCst);
+                    break;
+                }
+                c.write(&line.as_bytes())?;
+            }
             Ok(Err(e)) => eprintln!("Error reading line: {}", e),
             Err(_) => {}
         };
