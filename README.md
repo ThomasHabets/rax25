@@ -29,4 +29,4 @@ https://github.com/ThomasHabets/rax25
 
 ## Misc
 
-* [Patch for wireshark to decode extended mode](https://github.com/wireshark/wireshark/commit/ba7164c74a770ccd7ac9f0a4a65959411307a6e8)
+* [PR for wireshark to decode extended mode](https://gitlab.com/wireshark/wireshark/-/merge_requests/17121)
