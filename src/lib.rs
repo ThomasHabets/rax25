@@ -854,9 +854,8 @@ impl Client {
                 // TODO: check addresses.
                 if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
                     self.actions_packet(&packet)?;
-                    if self.state.name() == "Connected" {
-                        debug!("YAY! CONNECTED!");
-                        // TODO: don't compare strings.
+                    if self.state.is_state_connected() {
+                        debug!("Connection successful");
                         return Ok(());
                     }
                 }
@@ -867,9 +866,8 @@ impl Client {
             if self.data.t3_expired() {
                 self.actions(state::Event::T3);
             }
-            // TODO: stop using string comparison.
-            if self.state.name() == "Disconnected" {
-                debug!("connection timeout");
+            if self.state.is_state_disconnected() {
+                debug!("Connection timeout");
                 return Err(Error::msg("connection timeout"));
             }
         }

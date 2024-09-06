@@ -752,6 +752,12 @@ impl Data {
 /// deliberate.
 pub trait State {
     fn name(&self) -> String;
+    fn is_state_connected(&self) -> bool {
+        false
+    }
+    fn is_state_disconnected(&self) -> bool {
+        false
+    }
 
     /// User initiates a new connection.
     #[must_use]
@@ -926,6 +932,10 @@ impl Disconnected {
 impl State for Disconnected {
     fn name(&self) -> String {
         "Disconnected".to_string()
+    }
+
+    fn is_state_disconnected(&self) -> bool {
+        true
     }
 
     // Page 85.
@@ -1169,6 +1179,9 @@ impl State for Connected {
             ConnectedState::Connected => "Connected".to_string(),
             ConnectedState::TimerRecovery => "TimerRecovery".to_string(),
         }
+    }
+    fn is_state_connected(&self) -> bool {
+        true
     }
 
     // Page 92 & 98.
