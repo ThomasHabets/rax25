@@ -333,6 +333,14 @@ pub struct Data {
     /// A REJ has been sent to the remote end.
     reject_exception: bool,
 
+    /// We are currently waiting for an incoming connection.
+    ///
+    /// This is false for outgoing connections, and we will not accept SABM(E)
+    /// during Disconnected.
+    ///
+    /// In a modern spec, able to establish and not would be separate states.
+    able_to_establish: bool,
+
     /// An SREJ has been sent to the remote end.
     ///
     /// TODO: this counts outstanding SREJs?
@@ -412,6 +420,7 @@ impl Data {
             mtu: DEFAULT_MTU,
             obuf: VecDeque::new(),
             iframe_resend_queue: VecDeque::new(),
+            able_to_establish: false,
         }
     }
 
@@ -910,6 +919,10 @@ impl Disconnected {
     // Page 85.
     #[must_use]
     fn sabm_and_sabme(&self, data: &mut Data, src: Addr, poll: bool) -> Vec<Action> {
+        debug!("DL-Connect indication");
+        if !data.able_to_establish {
+            return vec![Action::SendDm(poll)];
+        }
         data.clear_exception_conditions();
         data.vs = 0;
         data.va = 0;
@@ -917,6 +930,7 @@ impl Disconnected {
         data.srt = data.srt_default;
         data.t1v = data.srt + data.srt;
         data.t3.start(data.t3v);
+        data.rc = 0;
         data.peer = Some(src);
         vec![
             Action::SendUa(poll),
@@ -1682,6 +1696,7 @@ mod tests {
     #[test]
     fn disconnected_incoming() -> Result<()> {
         let mut data = Data::new(Addr::new("M0THC-1")?);
+        data.able_to_establish = true; // TODO: implement some sort of listen()
         let con = Disconnected::new();
 
         let (con, events) = handle(
