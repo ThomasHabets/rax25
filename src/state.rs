@@ -1072,6 +1072,17 @@ impl State for AwaitingConnection {
             ConnectedState::Connected,
         )))]
     }
+
+    // Page 86.
+    fn sabm(&self, _data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+        vec![Action::SendUa(packet.poll)]
+    }
+
+    // Page 88.
+    fn sabme(&self, _data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+        // TODO: This is supposed to transition to "awaiting connect 2.2".
+        vec![Action::SendDm(packet.poll)]
+    }
 }
 
 /// TODO: document the meaning of this state.
