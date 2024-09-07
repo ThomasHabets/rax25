@@ -1012,6 +1012,8 @@ impl State for Disconnected {
     }
 }
 
+// AwaitingConnection means a SABM(E) has been sent, and we are waiting for the
+// UA.
 struct AwaitingConnection {}
 
 impl AwaitingConnection {
@@ -1057,10 +1059,15 @@ impl State for AwaitingConnection {
             debug!("DL-CONNECT indiciation"); // huh?
         }
         data.t1.stop();
-        data.t3.stop();
+
+        // 1998 spec says "stop T3".
+        // 2017 spec says "start T3" (page 89), which makes much more sense.
+        data.t3.start(data.t3v);
+
         data.vs = 0;
         data.va = 0;
         data.vr = 0;
+        data.select_t1_value();
         vec![Action::State(Box::new(Connected::new(
             ConnectedState::Connected,
         )))]
