@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use anyhow::Result;
-use log::debug;
+use log::{debug, warn};
 
 use crate::{
     Addr, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test, Ua,
@@ -1055,8 +1055,25 @@ impl State for AwaitingConnection {
         if data.layer3_initiated {
             debug!("DL-CONNECT CONFIRM");
         } else if data.vs != data.va {
-            // discard frame.
-            debug!("DL-CONNECT indiciation"); // huh?
+            // 1998 spec:
+            // We're awaiting a connection confirmation, but vs!=va? What does
+            // that mean?
+            //
+            // If we're getting an UA after remote end has already acked
+            // some packets, what does that even mean?
+            //
+            //   data.iframe_queue.clear();
+            //   debug!("DL-CONNECT indiciation"); // huh?
+            //
+            // 2017 spec;
+            // I still wonder what it means, what the intention is.
+            //
+            // In addition, there's a bug in the 2017 spec. This path says to
+            // start T1, then immediately stop it again.
+            data.srt = data.srt_default;
+            data.t1v = data.srt + data.srt;
+            debug!("DL-CONNECT CONFIRM, vs!=va");
+            warn!("Strange state entered: UA received while vs != va");
         }
         data.t1.stop();
 
