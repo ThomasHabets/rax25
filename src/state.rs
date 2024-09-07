@@ -711,6 +711,8 @@ impl Data {
     }
 
     // If sequence numbers allow, write as many packets as possible.
+    //
+    // Page 92, "I frame pops off queue".
     #[must_use]
     fn flush(&mut self) -> Vec<Action> {
         if self.peer_receiver_busy {
@@ -1220,6 +1222,22 @@ impl Connected {
         }
         act
     }
+
+    // Page 93.
+    fn sabm_or_sabme(&self, data: &mut Data, poll: bool) -> Vec<Action> {
+        data.clear_exception_conditions();
+        if data.vs != data.va {
+            data.iframe_queue.clear();
+            debug!("DL-Connect indication");
+        }
+        data.t1.stop();
+        data.t3.start(data.t3v);
+        data.va = 0;
+        data.vs = 0;
+        data.vr = 0;
+        data.rc = 0; // Added by 2017 spec, page 92.
+        vec![Action::DlError(DlError::F), Action::SendUa(poll)]
+    }
 }
 
 impl State for Connected {
@@ -1265,16 +1283,21 @@ impl State for Connected {
     }
 
     // Page 93.
-    fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
-        eprintln!("TODO: Connected: sabm not handled");
-        // TODO: if TimerRecovery, this goes to Connected.
-        vec![]
+    //
+    // src is ignored, because it's presumed to already have been checked, in
+    // this state.
+    fn sabm(&self, data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+        data.set_version_2();
+        self.sabm_or_sabme(data, packet.poll)
     }
 
     // Page 93.
-    fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
-        eprintln!("TODO: Connected: sabme not handled");
-        vec![]
+    //
+    // src is ignored, because it's presumed to already have been checked, in
+    // this state.
+    fn sabme(&self, data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+        data.set_version_2_2();
+        self.sabm_or_sabme(data, packet.poll)
     }
 
     // Page 93 & 101.
@@ -1445,6 +1468,8 @@ impl State for Connected {
     }
 
     // Page 93 & 100.
+    //
+    // 2017 spec says DlError::K, which is undocumented.
     fn ua(&self, data: &mut Data, _ua: &Ua) -> Vec<Action> {
         data.layer3_initiated = false;
         vec![
