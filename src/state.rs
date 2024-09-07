@@ -1403,9 +1403,11 @@ impl State for Connected {
     // Page 96 & 102.
     fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
-            // 2017 spec page 96 says to DlError::O if the iframe *is* a
+            // 2017 spec page 93 says to DlError::O if the iframe *is* a
             // command. That's not even remotely correct, since O means packet
             // too big.
+            // The TimerRecovery version on page 96 has the same nonsense, but
+            // there the yes/no is not even labelled.
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > data.n1 {
