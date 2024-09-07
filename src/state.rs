@@ -6,7 +6,7 @@
 //!
 //! There's also the 2017 version, but it quite possibly added more bugs than it
 //! fixed:
-//! https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pd
+//! https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf
 //!
 //! All page numbers, unless otherwise specified, are for the 1998 PDF.
 //!
@@ -1403,8 +1403,9 @@ impl State for Connected {
     // Page 96 & 102.
     fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
-            // 2017 spec says to DlError::O if the iframe *is* a command.
-            // That's not even remotely correct, since O means packet too big.
+            // 2017 spec page 96 says to DlError::O if the iframe *is* a
+            // command. That's not even remotely correct, since O means packet
+            // too big.
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > data.n1 {
