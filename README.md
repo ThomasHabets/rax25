@@ -3,6 +3,7 @@
 Rust library for AX.25 connected mode.
 
 https://github.com/ThomasHabets/rax25
+https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 
 ## Status
 
@@ -12,6 +13,9 @@ https://github.com/ThomasHabets/rax25
 * SREJ untested / probably broken.
 * The API is not great.
 * No support yet for server side.
+
+Interoperability with linux kernel stack is lightly tested on every push to
+github.
 
 ## Technical details
 
@@ -25,7 +29,8 @@ https://github.com/ThomasHabets/rax25
 * [1998 spec](https://www.tapr.org/pdf/AX25.2.2.pdf). Page annotations in code
   are in reference to this doc.
 * [2017 update of spec](https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf)
-* Examining Ambiguities in the Automatic Packet Reporting System.pdf
+* [isomer's spec findings](https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c)
+* [Examining Ambiguities in the Automatic Packet Reporting System](https://digitalcommons.calpoly.edu/cgi/viewcontent.cgi?article=2449&context=theses)
 
 ## Misc
 

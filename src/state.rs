@@ -3,6 +3,15 @@
 //! The state machine is documented in https://www.tapr.org/pdf/AX25.2.2.pdf,
 //! but it has a few bugs. They're pointed out in the code as they are
 //! encountered.
+//!
+//! There's also the 2017 version, but it quite possibly added more bugs than it
+//! fixed:
+//! https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pd
+//!
+//! All page numbers, unless otherwise specified, are for the 1998 PDF.
+//!
+//! There's also isomer's useful notes at the top of
+//! https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c
 use std::collections::VecDeque;
 
 use anyhow::Result;
@@ -114,12 +123,14 @@ impl std::fmt::Display for DlError {
                 DlError::E => "E: DM received in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
 
                 DlError::F => "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
-
-                DlError::G => "G: Connection timed out", // TODO: specs don't list this.
-                DlError::H => "H: Undocumented?",
+                // Spec bug: Undocumented.
+                DlError::G => "G: Connection timed out",
+                // Spec bug: Undocumented.
+                DlError::H => "H: Undocumented. May mean connection timed out while disconnecting",
                 DlError::I => "I: N2 timeouts; unacknowledged data",
                 DlError::J => "J: N(r) sequence error",
-                DlError::K => "K: Undocumented?",
+                // Spec bug: Undocumented.
+                DlError::K => "K: Undocumented. May mean unexpected frame received",
                 DlError::L => "L: Control field invalid or not implemented",
                 DlError::M => "M: Information field was received in a U- or S-type frame",
                 DlError::N => "N: Length of frame incorrect for frame type",
@@ -147,7 +158,7 @@ pub enum Action {
     DlError(DlError),
     SendUa(bool),
     SendRr(/* poll */ bool, u8, /* command */ bool),
-    SendRnr(bool, u8),
+    SendRnr(/* poll */ bool, u8, /* command */ bool),
     SendDisc(bool),
     SendIframe(Iframe),
     SendDm(bool),
@@ -551,10 +562,16 @@ impl Data {
     #[must_use]
     fn enquiry_response(&mut self, f: bool) -> Action {
         self.acknowledge_pending = false;
+        // TODO: 2017 spec has a bit more complex diagram here. Some of it is
+        // correct, but other stuff I'm not so sure of.
+        //
+        // Most of it is SREJ related, but it also says to send RR instead of
+        // RNR if not `F==1 && (RR || RNR || I)`.
         if self.own_receiver_busy {
-            Action::SendRnr(f, self.vr)
+            // 1998 spec doesn't say, but 2017 spec says "Response".
+            Action::SendRnr(f, self.vr, /* command */ false)
         } else {
-            // Spec says commmand.
+            // Spec says commmand, which is wrong.
             Action::SendRr(f, self.vr, /* command */ false)
         }
     }
@@ -581,14 +598,23 @@ impl Data {
     /// TODO: actually implement this. Maybe the algorithm in the spec, maybe
     /// something better.
     ///
+    /// TODO: Is this supposed to set only SRT, or also T1V?
+    ///
     /// Page 109.
     fn select_t1_value(&mut self) {
         if self.rc == 0 {
             // TODO: the real formula is stranger.
             self.srt = self.srt_default;
         } else if self.t1_expired() {
-            // TODO: spec unclear, default to exponential.
-            self.srt = self.srt + self.srt;
+            // 1998 spec says:
+            // self.srt = self.srt * (2 ** (rc + 1));
+
+            // 2017 spec formula.
+            // It's unclear what unit `rc` is supposed to be. It's retry
+            // counter. I'll assume seconds, to millisecond resolution.
+            // SRT = RC / 4 + SRT*2
+            let t = std::time::Duration::from_millis(self.rc as u64 * 250);
+            self.srt = t + self.srt + self.srt;
         }
     }
 
@@ -602,7 +628,7 @@ impl Data {
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
-            Action::SendRnr(/* poll */ true, self.vr)
+            Action::SendRnr(/* poll */ true, self.vr, /* command */ true)
         } else {
             Action::SendRr(/* poll */ true, self.vr, /* command */ true)
         }
@@ -614,9 +640,12 @@ impl Data {
     /// Page 107.
     #[must_use]
     fn check_iframe_acked(&mut self, nr: u8) -> Vec<Action> {
+        // Typo in spec. Says "peer busy".
         if self.peer_receiver_busy {
-            // Typo in spec. Says "peer busy".
-            self.t3.start(self.t3v);
+            // 1998 spec says start T3, 2017 spec says stop it.
+            // It doesn't make much sense to run both T1 and T3, so let's go
+            // with 2017.
+            self.t3.stop();
             if !self.t1.running {
                 self.t1.start(self.srt); // srt or t1v?
             }
@@ -627,6 +656,8 @@ impl Data {
             self.select_t1_value();
             self.update_ack(nr)
         } else if nr != self.va {
+            // 1998 spec says "restart", 2017 spec just "start". They probably
+            // mean the same thing, right?
             self.t1.restart(self.srt);
             self.update_ack(nr)
         } else {
@@ -665,6 +696,19 @@ impl Data {
         self.reject_exception = false;
         self.own_receiver_busy = false;
         self.acknowledge_pending = false;
+
+        // The following added in 2017 spec.
+        self.sreject_exception = 0;
+
+        // Huh? Clearing the iframe queue inside a subroutine called "clear
+        // exception conditions"? That doesn't seem right.
+        //
+        // This is new in the 2017 spec.
+        //
+        // I'm going to leave it here because when exception conditions are
+        // unconditionally cleared, it's because a connection was just reset in
+        // one way or another.
+        self.iframe_queue.clear();
     }
 
     /// Establish data link.
@@ -675,9 +719,15 @@ impl Data {
     #[must_use]
     fn establish_data_link(&mut self) -> Action {
         self.clear_exception_conditions();
-        self.rc = 0;
+
+        // 1998 spec says to set rc to 0, 2017 says 1.
+        // Yeah I think 1 is right.
+        self.rc = 1;
         self.t3.stop();
-        self.t1.restart(self.srt); // TODO
+        // Again 1998 spec says restart, 2017 says start.
+        self.t1.restart(self.srt); // TODO: srt or t1v?
+
+        // SendSabm actually sends SABME if modulus is 128.
         Action::SendSabm(true)
     }
 
@@ -1143,6 +1193,10 @@ impl State for AwaitingRelease {
     fn t1(&self, data: &mut Data) -> Vec<Action> {
         if data.rc == data.n2 {
             debug!("DL-DISCONNECT confirm");
+            // The spec doesn't say, but if we're going disconnected, then
+            // there's no need for timers.
+            data.t1.stop();
+            data.t3.stop();
             return vec![
                 Action::DlError(DlError::H),
                 Action::State(Box::new(Disconnected::new())),
@@ -1202,15 +1256,22 @@ impl Connected {
             let mut act = data.update_ack(packet.nr);
             if data.vs == data.va {
                 data.t3.start(data.t3v);
+                data.rc = 0; // Added in 2017 spec, page 95.
                 act.push(Action::State(Box::new(Connected::new(
                     ConnectedState::Connected,
                 ))));
             } else {
                 act.extend(data.invoke_retransmission(packet.nr));
+
+                // The following added in 2017 spec, page 95.
+                data.t3.stop();
+                data.t1.start(data.t1v);
+                data.acknowledge_pending = true;
             }
             return act;
         }
         let mut act = Vec::new();
+        // 2017 spec bug on page 95: no 'no' path from this if.
         if cr && packet.poll {
             act.push(data.enquiry_response(true));
         }
@@ -1223,7 +1284,7 @@ impl Connected {
         act
     }
 
-    // Page 93.
+    // Page 93 and page 99.
     fn sabm_or_sabme(&self, data: &mut Data, poll: bool) -> Vec<Action> {
         data.clear_exception_conditions();
         if data.vs != data.va {
@@ -1231,12 +1292,23 @@ impl Connected {
             debug!("DL-Connect indication");
         }
         data.t1.stop();
+
+        // 2017 spec says to stop both T1 and T3 in state timer recovery. That
+        // can't be right, can it?
         data.t3.start(data.t3v);
         data.va = 0;
         data.vs = 0;
-        data.vr = 0;
-        data.rc = 0; // Added by 2017 spec, page 92.
-        vec![Action::DlError(DlError::F), Action::SendUa(poll)]
+        data.vr = 0; // 1998 spec typos this as another vs=0.
+        if let ConnectedState::Connected = self.connected_state {
+            // Added in 2017 spec, but only for Connected.
+            // TODO: should this be set also for TimerRecovery?
+            data.rc = 0;
+        }
+        vec![
+            Action::DlError(DlError::F),
+            Action::SendUa(poll),
+            Action::State(Box::new(Connected::new(ConnectedState::Connected))),
+        ]
     }
 }
 
@@ -1331,6 +1403,8 @@ impl State for Connected {
     // Page 96 & 102.
     fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
+            // 2017 spec says to DlError::O if the iframe *is* a command.
+            // That's not even remotely correct, since O means packet too big.
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > data.n1 {
@@ -1349,24 +1423,23 @@ impl State for Connected {
             return acts;
         }
         let mut actions = vec![];
-        if let ConnectedState::Connected = self.connected_state {
-            actions.extend(data.check_iframe_acked(p.nr));
-        } else {
-            actions.extend(data.update_ack(p.nr));
+        match self.connected_state {
+            ConnectedState::Connected => actions.extend(data.check_iframe_acked(p.nr)),
+            ConnectedState::TimerRecovery => actions.extend(data.update_ack(p.nr)),
         }
         if data.own_receiver_busy {
             // discord (implicit)
             debug!("Discarding iframe because busy and being polled");
             if p.poll {
+                actions.push(Action::SendRnr(true, data.vr, /* command */ false));
                 data.acknowledge_pending = false;
-                actions.push(Action::SendRnr(true, data.vr));
             }
             return actions;
         }
 
         if p.ns == data.vr {
             debug!("iframe in order {}", p.ns);
-            // Frame in order.
+            // Frame is in order.
             data.vr = (data.vr + 1) % data.modulus;
             data.reject_exception = false;
             if data.sreject_exception > 0 {
@@ -1626,11 +1699,11 @@ pub fn handle(
                     nr: *nr,
                 }),
             })),
-            SendRnr(poll, nr) => ret.push(ReturnEvent::Packet(Packet {
+            SendRnr(poll, nr, cr) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
+                command_response: *cr,
+                command_response_la: !*cr,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
@@ -1728,7 +1801,7 @@ mod tests {
         for retry in 1.. {
             dbg!("Retry", retry);
             let (c2, events) = handle(&*con, &mut data, &Event::T1);
-            if retry == 4 {
+            if retry == 3 {
                 assert_eq!(c2.unwrap().name(), "Disconnected");
                 break;
             } else {
