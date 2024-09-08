@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 
 use anyhow::Result;
-use log::{debug, warn};
+use log::{debug, error, warn};
 
 use crate::{
     Addr, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test, Ua,
@@ -1533,10 +1533,9 @@ impl State for Connected {
 
     // Page 93 (Connected only).
     fn t3(&self, data: &mut Data) -> Vec<Action> {
-        assert!(
-            matches![self.connected_state, ConnectedState::Connected],
-            "T3 should not be running in TimerRecovery"
-        );
+        if let ConnectedState::TimerRecovery = self.connected_state {
+            error!("T3 should not be running in TimerRecovery");
+        }
         data.rc = 0;
         vec![
             Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),

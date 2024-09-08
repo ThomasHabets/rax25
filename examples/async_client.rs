@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use anyhow::Result;
 use clap::Parser;
 use tokio::io::AsyncReadExt;
@@ -37,18 +39,34 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     let mut stdin = tokio::io::stdin();
-    let mut client = Client::connect(Addr::new("M0THC-1")?, Addr::new("M0THC-2")?, port).await?;
+    let mut client =
+        Client::connect(Addr::new("M0THC-1")?, Addr::new("M0THC-2")?, port, opt.ext).await?;
     println!("Connected");
     loop {
         let mut buf = [0; 1024];
         tokio::select! {
             res = stdin.read(&mut buf) => {
-                client.write(&buf[..res?]);
+                let buf = &buf[..res?];
+                if buf ==  [101, 120, 105, 116, 10] {
+                    break;
+                }
+                //eprintln!("Got {buf:?} from stdin");
+                client.write(buf).await?;
             },
             data = client.read() => {
                 let data = data?;
-                println!("Got data from server: {data:?}");
+                if data.is_empty() {
+                    println!("Got EOF");
+                    break;
+                }
+                let s = match String::from_utf8(data.clone()) {
+                    Ok(s) => s,
+                    Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
+                };
+                print!("{s}");
+                std::io::stdout().flush()?;
             },
         }
     }
+    Ok(())
 }

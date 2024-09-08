@@ -789,7 +789,7 @@ const KISS_TFESC: u8 = 0xDD;
 ///
 /// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 #[must_use]
-fn escape(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn escape(bytes: &[u8]) -> Vec<u8> {
     // Add 10% capacity to leave room for escaped
     let mut ret = Vec::with_capacity((3 + bytes.len()) * 110 / 100);
     ret.push(KISS_FEND);
@@ -810,7 +810,7 @@ fn escape(bytes: &[u8]) -> Vec<u8> {
 /// Because this function only returns the index of the first frame, the frame
 /// of course is not unescaped.
 #[must_use]
-fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
+pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     let mut start_index = None;
 
     for (i, &value) in vec.iter().enumerate() {
@@ -831,7 +831,7 @@ fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
 /// Unescape KISS data stream.
 /// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 #[must_use]
-fn unescape(data: &[u8]) -> Vec<u8> {
+pub(crate) fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;
     for &byte in data {
