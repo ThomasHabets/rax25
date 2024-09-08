@@ -12,7 +12,6 @@ https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 * REJ untested / probably broken.
 * SREJ untested / probably broken.
 * The API is not great.
-* No support yet for server side.
 
 Interoperability with linux kernel stack is lightly tested on every push to
 github.
