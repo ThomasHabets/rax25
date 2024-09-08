@@ -813,7 +813,7 @@ fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize, usize)> {
     let mut start_index = None;
 
     for (i, &value) in vec.iter().enumerate() {
-        if value == 0xC0 {
+        if value == KISS_FEND {
             if let Some(start) = start_index {
                 // If start_index is already set and we find another 0xC0
                 return Some((start, i));
