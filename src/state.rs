@@ -350,7 +350,7 @@ pub struct Data {
     /// during Disconnected.
     ///
     /// In a modern spec, able to establish and not would be separate states.
-    able_to_establish: bool,
+    pub(crate) able_to_establish: bool,
 
     /// An SREJ has been sent to the remote end.
     ///

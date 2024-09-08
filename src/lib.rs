@@ -1,4 +1,6 @@
 use anyhow::{Error, Result};
+use std::sync::{Arc, Mutex};
+
 use log::{debug, error};
 use std::io::{Read, Write};
 
@@ -554,16 +556,14 @@ impl Packet {
     }
 }
 
-/// Kisser packet serializer/deserializer.
+/// Hub packet serializer/deserializer.
 ///
-/// Not a very good name.
-///
-/// Kisser reads and writes packets. Normally to a KISS serial port. But
+/// Hub reads and writes packets. Normally to a KISS serial port. But
 /// ideally something more clevel with priority queues and mux-capability.
 ///
 /// Then again that more clever system could just be freestanding, and expose
 /// KISS as an interface to it.
-pub trait Kisser {
+pub trait Hub {
     /// Send frame. May block.
     ///
     /// The provided frame must be a complete AX.25 frame, without FEND or
@@ -577,9 +577,7 @@ pub trait Kisser {
 
     /// Clone a kisser.
     /// All packets get delivered to all clones.
-    fn clone(&self) -> Box<dyn Kisser> {
-        todo!()
-    }
+    fn clone(&self) -> Box<dyn Hub>;
 }
 
 #[cfg(test)]
@@ -627,7 +625,7 @@ impl FakeKiss {
 }
 
 #[cfg(test)]
-impl Kisser for FakeKiss {
+impl Hub for FakeKiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let packet = Packet::parse(frame)?;
         match &packet.packet_type {
@@ -647,15 +645,48 @@ impl Kisser for FakeKiss {
                     Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
                 );
             }
-            _ => todo!(),
+            _ => {
+                eprintln!("FakeKiss: Unexpected packet {packet:?}");
+            }
         }
         Ok(())
     }
     fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
         Ok(self.queue.pop_front())
     }
-    fn clone(&self) -> Box<dyn Kisser> {
+    fn clone(&self) -> Box<dyn Hub> {
         Box::new(FakeKiss::default())
+    }
+}
+
+pub struct BusHub {
+    rx: bus::BusReader<Vec<u8>>,
+    bus: Arc<Mutex<bus::Bus<Vec<u8>>>>,
+}
+
+impl BusHub {
+    pub fn new(bus: Arc<Mutex<bus::Bus<Vec<u8>>>>) -> Self {
+        let rx = {
+            let bus = bus.lock();
+            bus.unwrap().add_rx()
+        };
+        Self { rx, bus }
+    }
+}
+
+impl Hub for BusHub {
+    fn send(&mut self, frame: &[u8]) -> Result<()> {
+        let bus = self.bus.lock();
+        bus.unwrap().broadcast(frame.to_vec());
+        Ok(())
+    }
+
+    fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        Ok(Some(self.rx.recv_timeout(timeout)?))
+    }
+
+    fn clone(&self) -> Box<dyn Hub> {
+        Box::new(Self::new(self.bus.clone()))
     }
 }
 
@@ -685,6 +716,39 @@ impl Kiss {
             port,
             //        port: Box::new(stream),
         })
+    }
+}
+
+/// Send data between bus and KISS interface.
+///
+/// TODO: the bus bounces back the packets received. Avoid that.
+pub struct BusKiss {
+    rx: bus::BusReader<Vec<u8>>,
+    bus: Arc<Mutex<bus::Bus<Vec<u8>>>>,
+    kiss: Kiss,
+}
+impl BusKiss {
+    pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<Vec<u8>>>>) -> Result<Self> {
+        let rx = {
+            let bus = bus.lock();
+            bus.unwrap().add_rx()
+        };
+        Ok(Self {
+            kiss: Kiss::new(port)?,
+            rx,
+            bus,
+        })
+    }
+    pub fn run(&mut self) {
+        loop {
+            let d = std::time::Duration::from_millis(10);
+            if let Ok(rx) = self.rx.recv_timeout(d) {
+                self.kiss.send(&rx).unwrap();
+            }
+            if let Ok(Some(rx)) = self.kiss.recv_timeout(d) {
+                self.bus.lock().unwrap().broadcast(rx);
+            }
+        }
     }
 }
 
@@ -759,9 +823,13 @@ fn unescape(data: &[u8]) -> Vec<u8> {
     unescaped
 }
 
-impl Kisser for Kiss {
+impl Hub for Kiss {
+    fn clone(&self) -> Box<dyn Hub> {
+        todo!()
+    }
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        debug!("Sending frame… {frame:?}");
+        let parsed = Packet::parse(frame)?;
+        debug!("Sending frame… {frame:?}: {parsed:?}");
         self.port.write_all(&escape(frame))?;
         self.port.flush()?;
         Ok(())
@@ -775,7 +843,9 @@ impl Kisser for Kiss {
             let buf = match self.port.read(&mut buf) {
                 Ok(n) => &buf[..n],
                 Err(e) => {
-                    debug!("TODO: Read error: {e}, assuming timeout");
+                    if false {
+                        debug!("TODO: Read error: {e}, assuming timeout");
+                    }
                     break;
                 }
             };
@@ -823,7 +893,7 @@ impl Kisser for Kiss {
 /// A future `async` interface will make this cleaner.
 #[must_use]
 pub struct Client {
-    kiss: Box<dyn Kisser>,
+    kiss: Box<dyn Hub>,
     pub(crate) data: state::Data,
     state: Box<dyn state::State>,
     eof: bool,
@@ -842,7 +912,7 @@ impl Drop for Client {
 impl Client {
     /// Create a new client with the given local address, using the given
     /// KISS interface for incoming and outgoing frames.
-    pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
+    pub fn new(me: Addr, kiss: Box<dyn Hub>) -> Self {
         Self {
             kiss,
             eof: false,
@@ -910,6 +980,8 @@ impl Client {
                             let mut new_client =
                                 Client::new(self.data.me.clone(), self.kiss.clone());
                             new_client.data.peer = Some(packet.src.clone());
+                            new_client.data.able_to_establish = true;
+                            new_client.actions_packet(&packet)?;
                             return Ok(Some(new_client));
                         }
                         PacketType::Sabme(_) => {
@@ -917,6 +989,8 @@ impl Client {
                                 Client::new(self.data.me.clone(), self.kiss.clone());
                             new_client.data.peer = Some(packet.src.clone());
                             new_client.data.set_version_2_2();
+                            new_client.data.able_to_establish = true;
+                            new_client.actions_packet(&packet)?;
                             return Ok(Some(new_client));
                         }
                         _ => {}
