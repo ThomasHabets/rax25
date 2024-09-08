@@ -48,25 +48,34 @@ async fn main() -> Result<()> {
             res = stdin.read(&mut buf) => {
                 let buf = &buf[..res?];
                 if buf ==  [101, 120, 105, 116, 10] {
+                    eprintln!("Got 'exit' from user");
                     break;
                 }
+                let buf: Vec<_> = if opt.cr {
+                    buf.iter().map(|&b| if b == b'\n' { b'\r' } else {b}).collect()
+                } else {
+                    buf.to_vec()
+                };
                 //eprintln!("Got {buf:?} from stdin");
-                client.write(buf).await?;
+                client.write(&buf).await?;
             },
             data = client.read() => {
                 let data = data?;
                 if data.is_empty() {
-                    println!("Got EOF");
+                    eprintln!("Got EOF");
                     break;
                 }
                 let s = match String::from_utf8(data.clone()) {
                     Ok(s) => s,
                     Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
                 };
+                let s = if opt.cr { s.replace("\r", "\n") } else {s};
                 print!("{s}");
                 std::io::stdout().flush()?;
             },
         }
     }
+    eprintln!("End of main loop");
+    client.disconnect().await?;
     Ok(())
 }

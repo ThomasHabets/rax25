@@ -124,10 +124,15 @@ impl Client {
         .await
     }
 
-    fn disconnect(&mut self) {
-        // This must be sync, because it's called from drop(). Possibly we'll
-        // need both a sync and async disconnect().
-        eprintln!("TODO: disconnect")
+    pub async fn disconnect(&mut self) -> Result<()> {
+        // TODO: wait for the UA
+        self.actions(Event::Disconnect).await
+    }
+
+    fn sync_disconnect(&mut self) {
+        if !self.state.is_state_disconnected() {
+            eprintln!("TODO: sync_disconnect")
+        }
     }
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(Event::Data(data.to_vec())).await
@@ -191,6 +196,6 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.disconnect()
+        self.sync_disconnect()
     }
 }
