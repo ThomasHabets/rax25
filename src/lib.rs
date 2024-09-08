@@ -785,14 +785,16 @@ const KISS_TFEND: u8 = 0xDC;
 const KISS_TFESC: u8 = 0xDD;
 
 /// Escape KISS data stream.
+///
 /// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
 #[must_use]
 fn escape(bytes: &[u8]) -> Vec<u8> {
-    let mut ret = Vec::new();
+    // Add 10% capacity to leave room for escaped
+    let mut ret = Vec::with_capacity((3 + bytes.len()) * 110 / 100);
     ret.push(KISS_FEND);
     ret.push(0); // TODO: port
-    for b in bytes {
-        match *b {
+    for &b in bytes {
+        match b {
             KISS_FEND => ret.extend(vec![KISS_FESC, KISS_TFEND]),
             KISS_FESC => ret.extend(vec![KISS_FESC, KISS_TFESC]),
             b => ret.push(b),
