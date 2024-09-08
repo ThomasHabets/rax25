@@ -734,7 +734,7 @@ impl Data {
     /// Set values for extended sequence number connection.
     ///
     /// Page 109.
-    fn set_version_2_2(&mut self) {
+    pub(crate) fn set_version_2_2(&mut self) {
         // TODO: set half duplex SREJ
         self.modulus = 128;
         // TODO: n1r = 2048
@@ -1623,7 +1623,10 @@ pub enum Res {
 
 /// Handle an incoming state, by shoving it through the state machine.
 ///
-/// A set of return events and possibly a new state is returned..
+/// Source and destination address are assumed to be correct, or in the case of
+/// SABM(E), the address is passed along.
+///
+/// A set of return events and possibly a new state is returned.
 #[must_use]
 pub fn handle(
     state: &dyn State,
@@ -1866,7 +1869,7 @@ mod tests {
         data.peer = Some(Addr::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
 
-        // Receive data packet.
+        eprintln!("Receive data packet");
         let (c2, events) = handle(
             &con,
             &mut data,

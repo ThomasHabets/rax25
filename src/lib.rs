@@ -565,12 +565,21 @@ impl Packet {
 /// KISS as an interface to it.
 pub trait Kisser {
     /// Send frame. May block.
+    ///
+    /// The provided frame must be a complete AX.25 frame, without FEND or
+    /// escaping.
     fn send(&mut self, frame: &[u8]) -> Result<()>;
 
     /// Try receiving a frame.
     ///
     /// Ok(None) means timeout.
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>>;
+
+    /// Clone a kisser.
+    /// All packets get delivered to all clones.
+    fn clone(&self) -> Box<dyn Kisser> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -644,6 +653,9 @@ impl Kisser for FakeKiss {
     }
     fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
         Ok(self.queue.pop_front())
+    }
+    fn clone(&self) -> Box<dyn Kisser> {
+        Box::new(FakeKiss::default())
     }
 }
 
@@ -809,6 +821,7 @@ impl Kisser for Kiss {
 /// and respond to remote peer queries like RR, or to see any received DISC.
 ///
 /// A future `async` interface will make this cleaner.
+#[must_use]
 pub struct Client {
     kiss: Box<dyn Kisser>,
     pub(crate) data: state::Data,
@@ -829,7 +842,6 @@ impl Drop for Client {
 impl Client {
     /// Create a new client with the given local address, using the given
     /// KISS interface for incoming and outgoing frames.
-    #[must_use]
     pub fn new(me: Addr, kiss: Box<dyn Kisser>) -> Self {
         Self {
             kiss,
@@ -869,6 +881,47 @@ impl Client {
             if self.state.is_state_disconnected() {
                 debug!("Connection timeout");
                 return Err(Error::msg("connection timeout"));
+            }
+        }
+    }
+
+    /// Wait for an incoming connection.
+    ///
+    /// Return a new client for that connection.
+    ///
+    /// TODO: Not sure Result<Option<_>> is a good pattern. It's not really
+    /// compatible with must_use.
+    pub fn accept(&mut self, until: std::time::Instant) -> Result<Option<Client>> {
+        loop {
+            let now = std::time::Instant::now();
+            if until < now {
+                return Ok(None);
+            }
+            let packet = self
+                .kiss
+                .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))?;
+            if let Some(packet) = packet {
+                if let Ok(packet) = Packet::parse(&packet) {
+                    if packet.dst.call() != self.data.me.call() {
+                        continue;
+                    }
+                    match packet.packet_type {
+                        PacketType::Sabm(_) => {
+                            let mut new_client =
+                                Client::new(self.data.me.clone(), self.kiss.clone());
+                            new_client.data.peer = Some(packet.src.clone());
+                            return Ok(Some(new_client));
+                        }
+                        PacketType::Sabme(_) => {
+                            let mut new_client =
+                                Client::new(self.data.me.clone(), self.kiss.clone());
+                            new_client.data.peer = Some(packet.src.clone());
+                            new_client.data.set_version_2_2();
+                            return Ok(Some(new_client));
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -1044,6 +1097,67 @@ mod tests {
                 },),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn listen_timeout() -> Result<()> {
+        let k = FakeKiss::default();
+        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        c.data.srt_default = std::time::Duration::from_millis(1);
+        assert!(matches![
+            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
+            None
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn listen_wrong_dst() -> Result<()> {
+        let mut k = FakeKiss::default();
+        k.queue.push_back(
+            Packet {
+                src: Addr::new("M0THC-1")?,
+                dst: Addr::new("M0THC-3")?,
+                digipeater: vec![],
+                rr_extseq: false,
+                command_response: true,
+                command_response_la: false,
+                rr_dist1: false,
+                packet_type: PacketType::Sabm(Sabm { poll: true }),
+            }
+            .serialize(false),
+        );
+        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        c.data.srt_default = std::time::Duration::from_millis(1);
+        assert!(matches![
+            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
+            None
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn listen() -> Result<()> {
+        let mut k = FakeKiss::default();
+        k.queue.push_back(
+            Packet {
+                src: Addr::new("M0THC-1")?,
+                dst: Addr::new("M0THC-2")?,
+                digipeater: vec![],
+                rr_extseq: false,
+                command_response: true,
+                command_response_la: false,
+                rr_dist1: false,
+                packet_type: PacketType::Sabm(Sabm { poll: true }),
+            }
+            .serialize(false),
+        );
+        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        c.data.srt_default = std::time::Duration::from_millis(1);
+        let _new_conn = c
+            .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
+            .expect("Expected new incoming connection");
         Ok(())
     }
 
