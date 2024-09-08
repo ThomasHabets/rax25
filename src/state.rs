@@ -221,7 +221,8 @@ impl Timer {
         Some(std::time::Instant::now() > self.expiry)
     }
 
-    fn remaining(&self) -> Option<std::time::Duration> {
+    /// Return the remaining time of the timer, if it's running.
+    pub fn remaining(&self) -> Option<std::time::Duration> {
         if !self.running {
             return None;
         }
@@ -274,13 +275,13 @@ pub struct Data {
     /// T1 is also used to send another SABM(E) if no UA or DM is received.
     ///
     /// If T1 expires, it initiates a retransmit.
-    t1: Timer,
+    pub(crate) t1: Timer,
 
     /// T3 timer - Connection idle timer. (4.4.5.2, page 30)
     ///
     /// When no data is pending ACK, T3 is running. If it expires, it'll trigger
     /// RR/RNR, to probe.
-    t3: Timer,
+    pub(crate) t3: Timer,
     t3v: std::time::Duration, // TODO: is this where the init value should be?
 
     /// Send state variable.

@@ -16,7 +16,9 @@ log = "0.4.22"
 regex = "1.10.6"
 rust-fsm = "0.7.0"
 serialport = "4.5.0"
+tokio-serial = "5.4.4"
 #serialport = { path="../../src/serialport-rs"}
+tokio = { version = "1.40.0", features = ["full"] }
 
 [dev-dependencies]
 stderrlog = "0.6.0"

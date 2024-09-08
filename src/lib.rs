@@ -12,6 +12,7 @@ const USE_FCS: bool = false;
 
 mod client;
 pub use client::Client;
+pub mod r#async;
 
 /// AX.25 address.
 ///
