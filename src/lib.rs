@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error};
@@ -659,13 +660,19 @@ impl Hub for FakeKiss {
     }
 }
 
+#[derive(Clone)]
+pub struct BusMessage {
+    sender: usize,
+    data: Vec<u8>,
+}
+
 pub struct BusHub {
-    rx: bus::BusReader<Vec<u8>>,
-    bus: Arc<Mutex<bus::Bus<Vec<u8>>>>,
+    rx: bus::BusReader<BusMessage>,
+    bus: Arc<Mutex<bus::Bus<BusMessage>>>,
 }
 
 impl BusHub {
-    pub fn new(bus: Arc<Mutex<bus::Bus<Vec<u8>>>>) -> Self {
+    pub fn new(bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Self {
         let rx = {
             let bus = bus.lock();
             bus.unwrap().add_rx()
@@ -677,12 +684,17 @@ impl BusHub {
 impl Hub for BusHub {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let bus = self.bus.lock();
-        bus.unwrap().broadcast(frame.to_vec());
+        bus.unwrap()
+            .try_broadcast(BusMessage {
+                sender: 0,
+                data: frame.to_vec(),
+            })
+            .map_err(|_| Error::msg("failed to broadcast"))?;
         Ok(())
     }
 
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
-        Ok(Some(self.rx.recv_timeout(timeout)?))
+        Ok(Some(self.rx.recv_timeout(timeout)?.data))
     }
 
     fn clone(&self) -> Box<dyn Hub> {
@@ -719,21 +731,23 @@ impl Kiss {
     }
 }
 
+static BUSKISS_ID: AtomicUsize = AtomicUsize::new(1);
+
 /// Send data between bus and KISS interface.
-///
-/// TODO: the bus bounces back the packets received. Avoid that.
 pub struct BusKiss {
-    rx: bus::BusReader<Vec<u8>>,
-    bus: Arc<Mutex<bus::Bus<Vec<u8>>>>,
+    rx: bus::BusReader<BusMessage>,
+    bus: Arc<Mutex<bus::Bus<BusMessage>>>,
     kiss: Kiss,
+    id: usize,
 }
 impl BusKiss {
-    pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<Vec<u8>>>>) -> Result<Self> {
+    pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
         let rx = {
             let bus = bus.lock();
             bus.unwrap().add_rx()
         };
         Ok(Self {
+            id: BUSKISS_ID.fetch_add(1, Ordering::SeqCst),
             kiss: Kiss::new(port)?,
             rx,
             bus,
@@ -743,10 +757,20 @@ impl BusKiss {
         loop {
             let d = std::time::Duration::from_millis(10);
             if let Ok(rx) = self.rx.recv_timeout(d) {
-                self.kiss.send(&rx).unwrap();
+                if rx.sender != self.id {
+                    self.kiss.send(&rx.data).unwrap();
+                }
             }
             if let Ok(Some(rx)) = self.kiss.recv_timeout(d) {
-                self.bus.lock().unwrap().broadcast(rx);
+                self.bus
+                    .lock()
+                    .unwrap()
+                    .try_broadcast(BusMessage {
+                        sender: self.id,
+                        data: rx,
+                    })
+                    .map_err(|_| Error::msg("queue full"))
+                    .expect("failed to broadcast");
             }
         }
     }
@@ -1005,7 +1029,9 @@ impl Client {
     /// Currently does not wait for the remote end to send UA, but that may
     /// change.
     pub fn disconnect(&mut self) -> Result<()> {
-        self.actions(state::Event::Disconnect);
+        if !self.state.is_state_disconnected() {
+            self.actions(state::Event::Disconnect);
+        }
         Ok(())
     }
 
