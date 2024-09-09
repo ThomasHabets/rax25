@@ -123,13 +123,13 @@ impl std::fmt::Display for DlError {
                 DlError::E => "E: DM received in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
 
                 DlError::F => "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
-                // Spec bug: Undocumented.
+                // 1998 Spec bug: Undocumented.
                 DlError::G => "G: Connection timed out",
-                // Spec bug: Undocumented.
+                // 1998 Spec bug: Undocumented.
                 DlError::H => "H: Undocumented. May mean connection timed out while disconnecting",
                 DlError::I => "I: N2 timeouts; unacknowledged data",
                 DlError::J => "J: N(r) sequence error",
-                // Spec bug: Undocumented.
+                // 1998 Spec bug: Undocumented.
                 DlError::K => "K: Undocumented. May mean unexpected frame received",
                 DlError::L => "L: Control field invalid or not implemented",
                 DlError::M => "M: Information field was received in a U- or S-type frame",
@@ -490,7 +490,7 @@ impl Data {
     #[must_use]
     fn ui_check(&self, command: bool, len: usize) -> Vec<Action> {
         if !command {
-            // Spec bug: error Q says this is also for UI frames with Poll set.
+            // 1998 Spec bug: error Q says this is also for UI frames with Poll set.
             //
             // But 4.3.3.6 says command+poll is just fine, and should just trigger
             // DM.
@@ -740,7 +740,7 @@ impl Data {
         self.modulus = 128;
         // TODO: n1r = 2048
 
-        // Spec bug: Spec says `kr`. Surely it means `k`?
+        // 1998 Spec bug: Spec says `kr`. Surely it means `k`?
         self.k = 32;
 
         // TODO: self.t2.set(3000);
@@ -754,7 +754,7 @@ impl Data {
         self.modulus = 8;
         // TODO: n1r = 2048
 
-        // Spec bug: Spec says `kr`. Surely it means `k`?
+        // 1998 Spec bug: Spec says `kr`. Surely it means `k`?
         self.k = 4;
 
         // TODO: self.t2.set(3000);
