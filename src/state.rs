@@ -187,7 +187,7 @@ const DEFAULT_N2: u8 = 3;
 /// Timer object.
 ///
 /// There are two timers, T1 and T3 (4.4.5, page 30).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Timer {
     running: bool,
     expiry: std::time::Instant,
@@ -820,73 +820,75 @@ pub trait State {
     fn is_state_disconnected(&self) -> bool {
         false
     }
+    fn state_data(&mut self) -> &mut Data;
+    fn state_data_ro(&self) -> &Data;
 
     /// User initiates a new connection.
     #[must_use]
-    fn connect(&self, _data: &mut Data, _addr: &Addr, _ext: bool) -> Vec<Action> {
+    fn connect(&mut self, _addr: &Addr, _ext: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
 
     /// User initiates disconnection.
     #[must_use]
-    fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
+    fn disconnect(&mut self) -> Vec<Action> {
         eprintln!("TODO: unexpected DLDisconnect in state {}", self.name());
         vec![]
     }
 
     /// User initiates sending data on a connection.
     #[must_use]
-    fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
+    fn data(&mut self, _payload: &[u8]) -> Vec<Action> {
         eprintln!("writing data while not connected!");
         vec![]
     }
 
     /// Timer T1 (pending ack) expires.
     #[must_use]
-    fn t1(&self, _data: &mut Data) -> Vec<Action> {
+    fn t1(&mut self) -> Vec<Action> {
         eprintln!("TODO: unexpected T1 expire");
         vec![]
     }
 
     /// Timer T3 (connection keepalive) expires.
     #[must_use]
-    fn t3(&self, _data: &mut Data) -> Vec<Action> {
+    fn t3(&mut self) -> Vec<Action> {
         eprintln!("TODO: unexpected T3 expire");
         vec![]
     }
 
     /// RR received from peer.
     #[must_use]
-    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
+    fn rr(&mut self, _packet: &Rr, _command: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected RR");
         vec![]
     }
 
     /// REJ received from peer.
     #[must_use]
-    fn rej(&self, _data: &mut Data, _packet: &Rej) -> Vec<Action> {
+    fn rej(&mut self, _packet: &Rej) -> Vec<Action> {
         eprintln!("TODO: unexpected REJ");
         vec![]
     }
 
     /// XID received from peer.
     #[must_use]
-    fn xid(&self, _data: &mut Data, _packet: &Xid) -> Vec<Action> {
+    fn xid(&mut self, _packet: &Xid) -> Vec<Action> {
         eprintln!("TODO: unexpected XID");
         vec![]
     }
 
     /// TEST received from peer.
     #[must_use]
-    fn test(&self, _data: &mut Data, _packet: &Test) -> Vec<Action> {
+    fn test(&mut self, _packet: &Test) -> Vec<Action> {
         eprintln!("TODO: unexpected TEST");
         vec![]
     }
 
     /// SREJ received from peer.
     #[must_use]
-    fn srej(&self, _data: &mut Data, _packet: &Srej) -> Vec<Action> {
+    fn srej(&mut self, _packet: &Srej) -> Vec<Action> {
         eprintln!("TODO: unexpected SREJ");
         vec![]
     }
@@ -895,62 +897,62 @@ pub trait State {
     ///
     /// FRMR is deprecated, so we should probably never see this.
     #[must_use]
-    fn frmr(&self, _data: &mut Data) -> Vec<Action> {
+    fn frmr(&mut self) -> Vec<Action> {
         eprintln!("TODO: unexpected FRMR");
         vec![]
     }
 
     /// RNR received from peer.
     #[must_use]
-    fn rnr(&self, _data: &mut Data, _packet: &Rnr) -> Vec<Action> {
+    fn rnr(&mut self, _packet: &Rnr) -> Vec<Action> {
         eprintln!("TODO: unexpected RNR");
         vec![]
     }
 
     /// SABM received from peer.
     #[must_use]
-    fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
+    fn sabm(&mut self, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: unexpected SABM");
         vec![]
     }
 
     /// SABME received from peer.
     #[must_use]
-    fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
+    fn sabme(&mut self, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
         eprintln!("TODO: unexpected SABME");
         vec![]
     }
 
     /// IFRAME received from peer.
     #[must_use]
-    fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
+    fn iframe(&mut self, _packet: &Iframe, _cr: bool) -> Vec<Action> {
         eprintln!("TODO; unexpected iframe");
         vec![]
     }
 
     /// UI received from peer.
     #[must_use]
-    fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
+    fn ui(&mut self, _cr: bool, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
 
     /// UA received from peer.
     #[must_use]
-    fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
+    fn ua(&mut self, _packet: &Ua) -> Vec<Action> {
         eprintln!("TODO; unexpected UA");
         vec![]
     }
 
     /// DM received from peer.
     #[must_use]
-    fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
+    fn dm(&mut self, _packet: &Dm) -> Vec<Action> {
         eprintln!("TODO: unexpected DM");
         vec![]
     }
 
     /// DISC received from peer.
     #[must_use]
-    fn disc(&self, _data: &mut Data, _packet: &Disc) -> Vec<Action> {
+    fn disc(&mut self, _packet: &Disc) -> Vec<Action> {
         eprintln!("TODO: unexpected DISC");
         vec![]
     }
@@ -962,21 +964,44 @@ pub trait State {
 ///
 /// This is a state diagram for a connection. Any non-listening socket
 /// should in theory cause `SendDm(p.poll)`, but out of scope.
-struct Disconnected {}
+struct Disconnected {
+    me: Addr,
+    able_to_establish: bool,
+
+    // Just used because we need something to give a reference to.
+    data: Data,
+}
 impl Disconnected {
     #[must_use]
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(me: Addr) -> Self {
+        let data = Data::new(me.clone());
+        Self {
+            me,
+            able_to_establish: false,
+            data,
+        }
+    }
+
+    #[must_use]
+    pub fn new_listen(me: Addr) -> Self {
+        let data = Data::new(me.clone());
+        Self {
+            me,
+            able_to_establish: true,
+            data,
+        }
     }
 
     // Page 85.
     #[must_use]
-    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, poll: bool) -> Vec<Action> {
+    fn sabm_and_sabme(&mut self, src: Addr, poll: bool) -> Vec<Action> {
         debug!("DL-Connect indication");
-        if !data.able_to_establish {
+        if !self.able_to_establish {
             return vec![Action::SendDm(poll)];
         }
+        let mut data = Data::new(self.me.clone());
         data.clear_exception_conditions();
+        data.able_to_establish = true; // TODO: needed?
         data.vs = 0;
         data.va = 0;
         data.vr = 0;
@@ -987,7 +1012,7 @@ impl Disconnected {
         data.peer = Some(src);
         vec![
             Action::SendUa(poll),
-            Action::State(Box::new(Connected::new(ConnectedState::Connected))),
+            Action::State(Box::new(Connected::new(ConnectedState::Connected, data))),
         ]
     }
 }
@@ -1001,36 +1026,44 @@ impl State for Disconnected {
         "Disconnected".to_string()
     }
 
+    fn state_data(&mut self) -> &mut Data {
+        warn!("state_data() called on Disconnected state");
+        &mut self.data
+    }
+    fn state_data_ro(&self) -> &Data {
+        &self.data
+    }
+
     fn is_state_disconnected(&self) -> bool {
         true
     }
 
     // Page 85.
-    fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
+    fn connect(&mut self, addr: &Addr, ext: bool) -> Vec<Action> {
+        let mut data = Data::new(self.me.clone());
         data.modulus = match ext {
             true => 128,
             false => 8,
         };
         // It says "SAT" in the PDF, but surely means SRT?
         data.peer = Some(addr.clone());
-        data.srt = data.srt_default;
-        data.t1v = 2 * data.srt;
+        data.srt = self.data.srt_default;
+        data.t1v = 2 * self.data.srt;
         data.layer3_initiated = true;
-        vec![
-            Action::State(Box::new(AwaitingConnection::new())),
-            data.establish_data_link(),
-        ]
+        let mut act = vec![data.establish_data_link()];
+        act.push(Action::State(Box::new(AwaitingConnection::new(data))));
+        act
     }
 
     // Page 84.
-    fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
+    fn disconnect(&mut self) -> Vec<Action> {
         eprintln!("Disconnect while already disconnected");
         vec![]
     }
 
     // Page 84.
-    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
-        let mut ret = data.ui_check(cr, packet.payload.len());
+    fn ui(&mut self, cr: bool, packet: &Ui) -> Vec<Action> {
+        let mut ret = self.data.ui_check(cr, packet.payload.len());
         if packet.push {
             ret.push(Action::SendDm(true));
         }
@@ -1038,41 +1071,43 @@ impl State for Disconnected {
     }
 
     // Page 85.
-    fn sabm(&self, data: &mut Data, src: &Addr, sabm: &Sabm) -> Vec<Action> {
-        data.set_version_2();
-        self.sabm_and_sabme(data, src.clone(), sabm.poll)
+    fn sabm(&mut self, src: &Addr, sabm: &Sabm) -> Vec<Action> {
+        self.data.set_version_2();
+        self.sabm_and_sabme(src.clone(), sabm.poll)
     }
 
     // Page 85.
-    fn sabme(&self, data: &mut Data, src: &Addr, packet: &Sabme) -> Vec<Action> {
-        data.set_version_2_2();
-        self.sabm_and_sabme(data, src.clone(), packet.poll)
+    fn sabme(&mut self, src: &Addr, packet: &Sabme) -> Vec<Action> {
+        self.data.set_version_2_2();
+        self.sabm_and_sabme(src.clone(), packet.poll)
     }
 
     // Page 84.
-    fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
+    fn dm(&mut self, _packet: &Dm) -> Vec<Action> {
         vec![]
     }
 
     // Page 84.
-    fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
+    fn ua(&mut self, _packet: &Ua) -> Vec<Action> {
         vec![Action::DlError(DlError::C), Action::DlError(DlError::D)]
     }
 
     // Page 84.
-    fn disc(&self, _data: &mut Data, packet: &Disc) -> Vec<Action> {
+    fn disc(&mut self, packet: &Disc) -> Vec<Action> {
         vec![Action::SendDm(packet.poll)]
     }
 }
 
 // AwaitingConnection means a SABM(E) has been sent, and we are waiting for the
 // UA.
-struct AwaitingConnection {}
+struct AwaitingConnection {
+    data: Data,
+}
 
 impl AwaitingConnection {
     #[must_use]
-    fn new() -> Self {
-        Self {}
+    fn new(data: Data) -> Self {
+        Self { data }
     }
 }
 
@@ -1081,33 +1116,39 @@ impl State for AwaitingConnection {
         "AwaitingConnection".to_string()
     }
 
+    fn state_data(&mut self) -> &mut Data {
+        &mut self.data
+    }
+    fn state_data_ro(&self) -> &Data {
+        &self.data
+    }
     // Page 88.
-    fn t1(&self, data: &mut Data) -> Vec<Action> {
+    fn t1(&mut self) -> Vec<Action> {
         eprintln!("t1 expired while connecting, retrying");
-        if data.rc == data.n2 {
-            data.clear_iframe_queue();
+        if self.data.rc == self.data.n2 {
+            self.data.clear_iframe_queue();
             vec![
                 // Typo in spec: G, not g.
                 Action::DlError(DlError::G),
-                Action::State(Box::new(Disconnected::new())),
+                Action::State(Box::new(Disconnected::new(self.data.me.clone()))),
             ]
         } else {
-            data.rc += 1;
-            data.select_t1_value();
-            data.t1.start(data.srt);
+            self.data.rc += 1;
+            self.data.select_t1_value();
+            self.data.t1.start(self.data.srt);
             vec![Action::SendSabm(true)]
         }
     }
 
     // Page 88.
-    fn ua(&self, data: &mut Data, packet: &Ua) -> Vec<Action> {
+    fn ua(&mut self, packet: &Ua) -> Vec<Action> {
         let f = packet.poll;
         if !f {
             return vec![Action::DlError(DlError::D)];
         }
-        if data.layer3_initiated {
+        if self.data.layer3_initiated {
             debug!("DL-CONNECT CONFIRM");
-        } else if data.vs != data.va {
+        } else if self.data.vs != self.data.va {
             // 1998 spec:
             // We're awaiting a connection confirmation, but vs!=va? What does
             // that mean?
@@ -1123,45 +1164,50 @@ impl State for AwaitingConnection {
             //
             // In addition, there's a bug in the 2017 spec. This path says to
             // start T1, then immediately stop it again.
-            data.srt = data.srt_default;
-            data.t1v = data.srt + data.srt;
+            self.data.srt = self.data.srt_default;
+            self.data.t1v = self.data.srt + self.data.srt;
             debug!("DL-CONNECT CONFIRM, vs!=va");
             warn!("Strange state entered: UA received while vs != va");
         }
-        data.t1.stop();
+        self.data.t1.stop();
 
         // 1998 spec says "stop T3".
         // 2017 spec says "start T3" (page 89), which makes much more sense.
-        data.t3.start(data.t3v);
+        self.data.t3.start(self.data.t3v);
 
-        data.vs = 0;
-        data.va = 0;
-        data.vr = 0;
-        data.select_t1_value();
+        self.data.vs = 0;
+        self.data.va = 0;
+        self.data.vr = 0;
+        self.data.select_t1_value();
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![Action::State(Box::new(Connected::new(
             ConnectedState::Connected,
+            data,
         )))]
     }
 
     // Page 86.
-    fn sabm(&self, _data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+    fn sabm(&mut self, _src: &Addr, packet: &Sabm) -> Vec<Action> {
         vec![Action::SendUa(packet.poll)]
     }
 
     // Page 88.
-    fn sabme(&self, _data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+    fn sabme(&mut self, _src: &Addr, packet: &Sabme) -> Vec<Action> {
         // TODO: This is supposed to transition to "awaiting connect 2.2".
         vec![Action::SendDm(packet.poll)]
     }
 }
 
 /// TODO: document the meaning of this state.
-struct AwaitingRelease {}
+struct AwaitingRelease {
+    data: Data,
+}
 
 impl AwaitingRelease {
     #[must_use]
-    fn new() -> Self {
-        Self {}
+    fn new(data: Data) -> Self {
+        Self { data }
     }
 }
 
@@ -1170,42 +1216,52 @@ impl State for AwaitingRelease {
     fn name(&self) -> String {
         "AwaitingRelease".to_string()
     }
+    fn state_data(&mut self) -> &mut Data {
+        &mut self.data
+    }
+    fn state_data_ro(&self) -> &Data {
+        &self.data
+    }
 
     // Page 91.
-    fn dm(&self, data: &mut Data, p: &Dm) -> Vec<Action> {
+    fn dm(&mut self, p: &Dm) -> Vec<Action> {
         if !p.poll {
             return vec![];
         }
-        data.t1.stop();
-        vec![Action::State(Box::new(Disconnected::new()))]
+        self.data.t1.stop();
+        vec![Action::State(Box::new(Disconnected::new(
+            self.data.me.clone(),
+        )))]
     }
 
     // Page 90.
-    fn ua(&self, data: &mut Data, p: &Ua) -> Vec<Action> {
+    fn ua(&mut self, p: &Ua) -> Vec<Action> {
         if !p.poll {
             return vec![Action::DlError(DlError::D)];
         }
         debug!("DL-DISCONNECT confirm");
-        data.t1.stop();
-        vec![Action::State(Box::new(Disconnected::new()))]
+        self.data.t1.stop();
+        vec![Action::State(Box::new(Disconnected::new(
+            self.data.me.clone(),
+        )))]
     }
 
     // Page 91.
-    fn t1(&self, data: &mut Data) -> Vec<Action> {
-        if data.rc == data.n2 {
+    fn t1(&mut self) -> Vec<Action> {
+        if self.data.rc == self.data.n2 {
             debug!("DL-DISCONNECT confirm");
             // The spec doesn't say, but if we're going disconnected, then
             // there's no need for timers.
-            data.t1.stop();
-            data.t3.stop();
+            self.data.t1.stop();
+            self.data.t3.stop();
             return vec![
                 Action::DlError(DlError::H),
-                Action::State(Box::new(Disconnected::new())),
+                Action::State(Box::new(Disconnected::new(self.data.me.clone()))),
             ];
         }
-        data.rc += 1;
-        data.select_t1_value();
-        data.t1.start(data.t1v);
+        self.data.rc += 1;
+        self.data.select_t1_value();
+        self.data.t1.start(self.data.t1v);
         vec![Action::SendDisc(true)]
     }
 
@@ -1220,95 +1276,110 @@ enum ConnectedState {
 /// TODO: document the meaning of this state.
 struct Connected {
     connected_state: ConnectedState,
+    data: Data,
 }
 
 impl Connected {
     #[must_use]
-    fn new(connected_state: ConnectedState) -> Self {
-        Self { connected_state }
+    fn new(connected_state: ConnectedState, data: Data) -> Self {
+        Self {
+            connected_state,
+            data,
+        }
     }
 
     // Page 95
     #[must_use]
-    fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
-        data.peer_receiver_busy = false;
-        let mut act = data.check_need_for_response(cr, packet.poll);
-        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
-            act.extend(data.nr_error_recovery());
-            act.push(Action::State(Box::new(AwaitingConnection::new())));
+    fn rr_connected(&mut self, packet: &Rr, cr: bool) -> Vec<Action> {
+        self.data.peer_receiver_busy = false;
+        let mut act = self.data.check_need_for_response(cr, packet.poll);
+        if !in_range(self.data.va, packet.nr, self.data.vs, self.data.modulus) {
+            act.extend(self.data.nr_error_recovery());
+            let me = self.data.me.clone();
+            let data = std::mem::replace(&mut self.data, Data::new(me));
+            act.push(Action::State(Box::new(AwaitingConnection::new(data))));
         } else {
-            act.extend(data.check_iframe_acked(packet.nr));
+            act.extend(self.data.check_iframe_acked(packet.nr));
         }
         act
     }
 
     // Page 99.
     #[must_use]
-    fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
-        data.peer_receiver_busy = false;
+    fn rr_timer_recovery(&mut self, packet: &Rr, cr: bool) -> Vec<Action> {
+        self.data.peer_receiver_busy = false;
         if !cr && packet.poll {
-            data.t1.stop();
-            data.select_t1_value();
-            if !in_range(data.va, packet.nr, data.vs, data.modulus) {
-                let mut act = data.nr_error_recovery();
-                act.push(Action::State(Box::new(AwaitingConnection::new())));
+            self.data.t1.stop();
+            self.data.select_t1_value();
+            if !in_range(self.data.va, packet.nr, self.data.vs, self.data.modulus) {
+                let mut act = self.data.nr_error_recovery();
+                let me = self.data.me.clone();
+                let data = std::mem::replace(&mut self.data, Data::new(me));
+                act.push(Action::State(Box::new(AwaitingConnection::new(data))));
                 return act;
             }
-            let mut act = data.update_ack(packet.nr);
-            if data.vs == data.va {
-                data.t3.start(data.t3v);
-                data.rc = 0; // Added in 2017 spec, page 95.
+            let mut act = self.data.update_ack(packet.nr);
+            if self.data.vs == self.data.va {
+                self.data.t3.start(self.data.t3v);
+                self.data.rc = 0; // Added in 2017 spec, page 95.
+                let me = self.data.me.clone();
+                let data = std::mem::replace(&mut self.data, Data::new(me));
                 act.push(Action::State(Box::new(Connected::new(
                     ConnectedState::Connected,
+                    data,
                 ))));
-            } else {
-                act.extend(data.invoke_retransmission(packet.nr));
-
-                // The following added in 2017 spec, page 95.
-                data.t3.stop();
-                data.t1.start(data.t1v);
-                data.acknowledge_pending = true;
+                return act;
             }
+            act.extend(self.data.invoke_retransmission(packet.nr));
+
+            // The following added in 2017 spec, page 95.
+            self.data.t3.stop();
+            self.data.t1.start(self.data.t1v);
+            self.data.acknowledge_pending = true;
             return act;
         }
         let mut act = Vec::new();
         // 2017 spec bug on page 95: no 'no' path from this if.
         if cr && packet.poll {
-            act.push(data.enquiry_response(true));
+            act.push(self.data.enquiry_response(true));
         }
-        if in_range(data.va, packet.nr, data.vs, data.modulus) {
-            act.extend(data.update_ack(packet.nr));
+        if in_range(self.data.va, packet.nr, self.data.vs, self.data.modulus) {
+            act.extend(self.data.update_ack(packet.nr));
         } else {
-            act.extend(data.nr_error_recovery());
-            act.push(Action::State(Box::new(AwaitingConnection::new())));
+            act.extend(self.data.nr_error_recovery());
+            let me = self.data.me.clone();
+            let data = std::mem::replace(&mut self.data, Data::new(me));
+            act.push(Action::State(Box::new(AwaitingConnection::new(data))));
         }
         act
     }
 
     // Page 93 and page 99.
-    fn sabm_or_sabme(&self, data: &mut Data, poll: bool) -> Vec<Action> {
-        data.clear_exception_conditions();
-        if data.vs != data.va {
-            data.iframe_queue.clear();
+    fn sabm_or_sabme(&mut self, poll: bool) -> Vec<Action> {
+        self.data.clear_exception_conditions();
+        if self.data.vs != self.data.va {
+            self.data.iframe_queue.clear();
             debug!("DL-Connect indication");
         }
-        data.t1.stop();
+        self.data.t1.stop();
 
         // 2017 spec says to stop both T1 and T3 in state timer recovery. That
         // can't be right, can it?
-        data.t3.start(data.t3v);
-        data.va = 0;
-        data.vs = 0;
-        data.vr = 0; // 1998 spec typos this as another vs=0.
+        self.data.t3.start(self.data.t3v);
+        self.data.va = 0;
+        self.data.vs = 0;
+        self.data.vr = 0; // 1998 spec typos this as another vs=0.
         if let ConnectedState::Connected = self.connected_state {
             // Added in 2017 spec, but only for Connected.
             // TODO: should this be set also for TimerRecovery?
-            data.rc = 0;
+            self.data.rc = 0;
         }
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![
             Action::DlError(DlError::F),
             Action::SendUa(poll),
-            Action::State(Box::new(Connected::new(ConnectedState::Connected))),
+            Action::State(Box::new(Connected::new(ConnectedState::Connected, data))),
         ]
     }
 }
@@ -1320,19 +1391,27 @@ impl State for Connected {
             ConnectedState::TimerRecovery => "TimerRecovery".to_string(),
         }
     }
+    fn state_data(&mut self) -> &mut Data {
+        &mut self.data
+    }
+    fn state_data_ro(&self) -> &Data {
+        &self.data
+    }
     fn is_state_connected(&self) -> bool {
         true
     }
 
     // Page 92 & 98.
-    fn disconnect(&self, data: &mut Data) -> Vec<Action> {
-        data.clear_iframe_queue();
-        data.rc = 0;
-        data.t1.start(data.srt); // TODO: with what timer?
-        data.t3.stop();
+    fn disconnect(&mut self) -> Vec<Action> {
+        self.data.clear_iframe_queue();
+        self.data.rc = 0;
+        self.data.t1.start(self.data.srt); // TODO: with what timer?
+        self.data.t3.stop();
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![
             Action::SendDisc(true),
-            Action::State(Box::new(AwaitingRelease::new())),
+            Action::State(Box::new(AwaitingRelease::new(data))),
         ]
     }
 
@@ -1343,66 +1422,66 @@ impl State for Connected {
     //
     // This seems like the right thing to do. But in the future maybe we'll
     // implement the equivalent of SEQPACKET.
-    fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
-        data.obuf.extend(payload);
-        if data.obuf.len() > MAX_OBUF_SIZE {
+    fn data(&mut self, payload: &[u8]) -> Vec<Action> {
+        self.data.obuf.extend(payload);
+        if self.data.obuf.len() > MAX_OBUF_SIZE {
             panic!(
                 "TODO: handle better. Output buffer got too large. {} > {}",
-                data.obuf.len(),
+                self.data.obuf.len(),
                 MAX_OBUF_SIZE
             );
         }
-        data.flush()
+        self.data.flush()
     }
 
     // Page 93.
     //
     // src is ignored, because it's presumed to already have been checked, in
     // this state.
-    fn sabm(&self, data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
-        data.set_version_2();
-        self.sabm_or_sabme(data, packet.poll)
+    fn sabm(&mut self, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+        self.data.set_version_2();
+        self.sabm_or_sabme(packet.poll)
     }
 
     // Page 93.
     //
     // src is ignored, because it's presumed to already have been checked, in
     // this state.
-    fn sabme(&self, data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
-        data.set_version_2_2();
-        self.sabm_or_sabme(data, packet.poll)
+    fn sabme(&mut self, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+        self.data.set_version_2_2();
+        self.sabm_or_sabme(packet.poll)
     }
 
     // Page 93 & 101.
     //
     // Done.
-    fn dm(&self, data: &mut Data, _packet: &Dm) -> Vec<Action> {
+    fn dm(&mut self, _packet: &Dm) -> Vec<Action> {
         debug!("DL-DISCONNECT");
-        data.clear_iframe_queue();
-        data.t1.stop();
-        data.t3.stop();
+        self.data.clear_iframe_queue();
+        self.data.t1.stop();
+        self.data.t3.stop();
         vec![
             Action::DlError(DlError::E),
-            Action::State(Box::new(Disconnected::new())),
+            Action::State(Box::new(Disconnected::new(self.data.me.clone()))),
         ]
     }
 
     // Page 93 & 100.
     //
     // Done.
-    fn disc(&self, data: &mut Data, p: &Disc) -> Vec<Action> {
-        data.clear_iframe_queue();
-        data.t1.stop();
-        data.t3.stop();
+    fn disc(&mut self, p: &Disc) -> Vec<Action> {
+        self.data.clear_iframe_queue();
+        self.data.t1.stop();
+        self.data.t3.stop();
         vec![
             Action::SendUa(p.poll),
             Action::EOF,
-            Action::State(Box::new(Disconnected::new())),
+            Action::State(Box::new(Disconnected::new(self.data.me.clone()))),
         ]
     }
 
     // Page 96 & 102.
-    fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
+    fn iframe(&mut self, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
             // 2017 spec page 93 says to DlError::O if the iframe *is* a
             // command. That's not even remotely correct, since O means packet
@@ -1411,43 +1490,52 @@ impl State for Connected {
             // there the yes/no is not even labelled.
             return vec![Action::DlError(DlError::S)];
         }
-        if p.payload.len() > data.n1 {
-            data.layer3_initiated = false;
+        if p.payload.len() > self.data.n1 {
+            self.data.layer3_initiated = false;
             debug!("Discarding frame for being too big");
+            let e = self.data.establish_data_link();
+            let me = self.data.me.clone();
+            let data = std::mem::replace(&mut self.data, Data::new(me));
             return vec![
-                data.establish_data_link(),
+                e,
                 Action::DlError(DlError::O),
-                Action::State(Box::new(AwaitingConnection::new())),
+                Action::State(Box::new(AwaitingConnection::new(data))),
             ];
         }
-        if !in_range(data.va, p.nr, data.vs, data.modulus) {
+        if !in_range(self.data.va, p.nr, self.data.vs, self.data.modulus) {
             debug!("Discarding frame for being out of range");
-            let mut acts = data.nr_error_recovery();
-            acts.push(Action::State(Box::new(AwaitingConnection::new())));
+            let mut acts = self.data.nr_error_recovery();
+            let me = self.data.me.clone();
+            let data = std::mem::replace(&mut self.data, Data::new(me));
+            acts.push(Action::State(Box::new(AwaitingConnection::new(data))));
             return acts;
         }
         let mut actions = vec![];
         match self.connected_state {
-            ConnectedState::Connected => actions.extend(data.check_iframe_acked(p.nr)),
-            ConnectedState::TimerRecovery => actions.extend(data.update_ack(p.nr)),
+            ConnectedState::Connected => actions.extend(self.data.check_iframe_acked(p.nr)),
+            ConnectedState::TimerRecovery => actions.extend(self.data.update_ack(p.nr)),
         }
-        if data.own_receiver_busy {
+        if self.data.own_receiver_busy {
             // discord (implicit)
             debug!("Discarding iframe because busy and being polled");
             if p.poll {
-                actions.push(Action::SendRnr(true, data.vr, /* command */ false));
-                data.acknowledge_pending = false;
+                actions.push(Action::SendRnr(
+                    true,
+                    self.data.vr,
+                    /* command */ false,
+                ));
+                self.data.acknowledge_pending = false;
             }
             return actions;
         }
 
-        if p.ns == data.vr {
+        if p.ns == self.data.vr {
             debug!("iframe in order {}", p.ns);
             // Frame is in order.
-            data.vr = (data.vr + 1) % data.modulus;
-            data.reject_exception = false;
-            if data.sreject_exception > 0 {
-                data.sreject_exception -= 1;
+            self.data.vr = (self.data.vr + 1) % self.data.modulus;
+            self.data.reject_exception = false;
+            if self.data.sreject_exception > 0 {
+                self.data.sreject_exception -= 1;
             }
             actions.push(Action::Deliver(p.payload.clone()));
             // TODO: check for stored out of order frames
@@ -1456,130 +1544,150 @@ impl State for Connected {
             false {
                 // retrieve stored vr in frame
                 // Deliver
-                data.vr = (data.vr + 1) % data.modulus;
+                self.data.vr = (self.data.vr + 1) % self.data.modulus;
             }
             if p.poll {
-                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
-                data.acknowledge_pending = false;
+                actions.push(Action::SendRr(/*final*/ true, self.data.vr, false));
+                self.data.acknowledge_pending = false;
                 return actions;
             }
-            if !data.acknowledge_pending {
+            if !self.data.acknowledge_pending {
                 // LM seize request (?).
-                data.acknowledge_pending = true;
+                self.data.acknowledge_pending = true;
             }
             return actions;
         }
-        debug!("Iframe not in order {} {}", p.ns, data.vr);
-        if data.reject_exception {
+        debug!("Iframe not in order {} {}", p.ns, self.data.vr);
+        if self.data.reject_exception {
             // discard frame (implicit)
             if p.poll {
-                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
-                data.acknowledge_pending = false;
+                actions.push(Action::SendRr(/*final*/ true, self.data.vr, false));
+                self.data.acknowledge_pending = false;
             }
             return actions;
         }
-        if !data.srej_enabled {
+        if !self.data.srej_enabled {
             // discard iframe (implicit)
-            data.reject_exception = true;
-            // TODO: actions.push(Action::SendRej(final=poll, data.vr)
-            data.acknowledge_pending = false;
+            self.data.reject_exception = true;
+            // TODO: actions.push(Action::SendRej(final=poll, self.data.vr)
+            self.data.acknowledge_pending = false;
             return actions;
         }
         // TODO: save contents of iframe
-        if data.sreject_exception > 0 {
-            data.sreject_exception += 1;
+        if self.data.sreject_exception > 0 {
+            self.data.sreject_exception += 1;
             // TODO: actions.push(Action::SendSrej(final=false, nr=p.ns));
-            data.acknowledge_pending = false;
+            self.data.acknowledge_pending = false;
             return actions;
         }
         // if ns > vr + 1
         // TODO: Maybe a version of if in_range(p.ns) {
-        if p.ns != (data.vr + 1) % data.modulus {
+        if p.ns != (self.data.vr + 1) % self.data.modulus {
             // discard iframe (implicit)
-            // TODO: actions.push(Action::SendRej(p.poll, data.vr));
-            data.acknowledge_pending = false;
+            // TODO: actions.push(Action::SendRej(p.poll, self.data.vr));
+            self.data.acknowledge_pending = false;
             return actions;
         }
-        data.sreject_exception += 1;
-        // TODO: actions.push(Action::SendSrej(final=false, nr=data.vr));
-        data.acknowledge_pending = false;
+        self.data.sreject_exception += 1;
+        // TODO: actions.push(Action::SendSrej(final=false, nr=self.data.vr));
+        self.data.acknowledge_pending = false;
         actions
     }
 
     // Page 93 & 99.
-    fn t1(&self, data: &mut Data) -> Vec<Action> {
-        data.rc = match self.connected_state {
+    fn t1(&mut self) -> Vec<Action> {
+        self.data.rc = match self.connected_state {
             ConnectedState::Connected => 1,
-            ConnectedState::TimerRecovery => data.rc + 1,
+            ConnectedState::TimerRecovery => self.data.rc + 1,
         };
-        if data.rc != data.n2 {
+        if self.data.rc != self.data.n2 {
+            let e = self.data.transmit_enquiry();
+            let me = self.data.me.clone();
+            let data = std::mem::replace(&mut self.data, Data::new(me));
             return vec![
-                data.transmit_enquiry(),
-                Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
+                e,
+                Action::State(Box::new(Connected::new(
+                    ConnectedState::TimerRecovery,
+                    data,
+                ))),
             ];
         }
-        data.clear_iframe_queue(); // Spec says "discard" iframe queue.
+        self.data.clear_iframe_queue(); // Spec says "discard" iframe queue.
         debug!("DL-DISCONNECT request");
         vec![
-            Action::DlError(match (data.vs == data.va, data.peer_receiver_busy) {
-                (false, _) => DlError::I,
-                (true, true) => DlError::U,
-                (true, false) => DlError::T,
-            }),
+            Action::DlError(
+                match (self.data.vs == self.data.va, self.data.peer_receiver_busy) {
+                    (false, _) => DlError::I,
+                    (true, true) => DlError::U,
+                    (true, false) => DlError::T,
+                },
+            ),
             Action::SendDm(true), // TODO: spec (page 99) doesn't say if it should be true or false.
-            Action::State(Box::new(Disconnected::new())),
+            Action::State(Box::new(Disconnected::new(self.data.me.clone()))),
         ]
     }
 
     // Page 93 (Connected only).
-    fn t3(&self, data: &mut Data) -> Vec<Action> {
+    fn t3(&mut self) -> Vec<Action> {
         if let ConnectedState::TimerRecovery = self.connected_state {
             error!("T3 should not be running in TimerRecovery");
         }
-        data.rc = 0;
+        self.data.rc = 0;
+        let e = self.data.transmit_enquiry();
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![
-            Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
-            data.transmit_enquiry(),
+            e,
+            Action::State(Box::new(Connected::new(
+                ConnectedState::TimerRecovery,
+                data,
+            ))),
         ]
     }
 
     // Page 93 & 100.
     //
     // 2017 spec says DlError::K, which is undocumented.
-    fn ua(&self, data: &mut Data, _ua: &Ua) -> Vec<Action> {
-        data.layer3_initiated = false;
+    fn ua(&mut self, _ua: &Ua) -> Vec<Action> {
+        self.data.layer3_initiated = false;
+        let e = self.data.establish_data_link();
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![
+            e,
             Action::DlError(DlError::C),
-            data.establish_data_link(),
-            Action::State(Box::new(AwaitingConnection::new())),
+            Action::State(Box::new(AwaitingConnection::new(data))),
         ]
     }
 
     // Page 94 & 101.
     //
     // For TimerRecovery, see note K.
-    fn frmr(&self, data: &mut Data) -> Vec<Action> {
-        data.layer3_initiated = false;
+    fn frmr(&mut self) -> Vec<Action> {
+        self.data.layer3_initiated = false;
+        let e = self.data.establish_data_link();
+        let me = self.data.me.clone();
+        let data = std::mem::replace(&mut self.data, Data::new(me));
         vec![
+            e,
             Action::DlError(DlError::K),
-            data.establish_data_link(),
-            Action::State(Box::new(AwaitingConnection::new())),
+            Action::State(Box::new(AwaitingConnection::new(data))),
         ]
     }
 
     // Page 94 & 100.
-    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
-        let mut act = data.ui_check(cr, packet.payload.len());
+    fn ui(&mut self, cr: bool, packet: &Ui) -> Vec<Action> {
+        let mut act = self.data.ui_check(cr, packet.payload.len());
         if packet.push {
-            act.push(data.enquiry_response(true));
+            act.push(self.data.enquiry_response(true));
         }
         act
     }
 
-    fn rr(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+    fn rr(&mut self, packet: &Rr, cr: bool) -> Vec<Action> {
         match self.connected_state {
-            ConnectedState::Connected => self.rr_connected(data, packet, cr),
-            ConnectedState::TimerRecovery => self.rr_timer_recovery(data, packet, cr),
+            ConnectedState::Connected => self.rr_connected(packet, cr),
+            ConnectedState::TimerRecovery => self.rr_timer_recovery(packet, cr),
         }
     }
 }
@@ -1603,8 +1711,8 @@ fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
 
 /// Create new state machine, starting in state `Disconnected`.
 #[must_use]
-pub fn new() -> Box<dyn State> {
-    Box::new(Disconnected::new())
+pub fn new(me: Addr) -> Box<dyn State> {
+    Box::new(Disconnected::new(me))
 }
 
 /// Data delivery object.
@@ -1628,31 +1736,27 @@ pub enum Res {
 ///
 /// A set of return events and possibly a new state is returned.
 #[must_use]
-pub fn handle(
-    state: &dyn State,
-    data: &mut Data,
-    packet: &Event,
-) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
+pub fn handle(state: &mut dyn State, packet: &Event) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
-        Event::Connect(addr, ext) => state.connect(data, addr, *ext),
-        Event::Disconnect => state.disconnect(data),
-        Event::Data(payload) => state.data(data, payload),
-        Event::T1 => state.t1(data),
-        Event::T3 => state.t3(data),
-        Event::Sabm(p, src) => state.sabm(data, src, p),
-        Event::Sabme(p, src) => state.sabme(data, src, p),
-        Event::Dm(dm) => state.dm(data, dm),
-        Event::Ui(p, cr) => state.ui(data, *cr, p),
-        Event::Disc(p) => state.disc(data, p),
-        Event::Iframe(p, command_response) => state.iframe(data, p, *command_response),
-        Event::Ua(p) => state.ua(data, p),
-        Event::Rr(p, command) => state.rr(data, p, *command),
-        Event::Rnr(p) => state.rnr(data, p),
-        Event::Frmr(_) => state.frmr(data),
-        Event::Rej(p) => state.rej(data, p),
-        Event::Srej(p) => state.srej(data, p),
-        Event::Xid(p) => state.xid(data, p),
-        Event::Test(p) => state.test(data, p),
+        Event::Connect(addr, ext) => state.connect(addr, *ext),
+        Event::Disconnect => state.disconnect(),
+        Event::Data(payload) => state.data(payload),
+        Event::T1 => state.t1(),
+        Event::T3 => state.t3(),
+        Event::Sabm(p, src) => state.sabm(src, p),
+        Event::Sabme(p, src) => state.sabme(src, p),
+        Event::Dm(dm) => state.dm(dm),
+        Event::Ui(p, cr) => state.ui(*cr, p),
+        Event::Disc(p) => state.disc(p),
+        Event::Iframe(p, command_response) => state.iframe(p, *command_response),
+        Event::Ua(p) => state.ua(p),
+        Event::Rr(p, command) => state.rr(p, *command),
+        Event::Rnr(p) => state.rnr(p),
+        Event::Frmr(_) => state.frmr(),
+        Event::Rej(p) => state.rej(p),
+        Event::Srej(p) => state.srej(p),
+        Event::Xid(p) => state.xid(p),
+        Event::Test(p) => state.test(p),
     };
     let mut ret = Vec::new();
 
@@ -1663,8 +1767,8 @@ pub fn handle(
             Action::State(_) => {} // Ignore state change at this stage.
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
                 command_response_la: false, // TODO: same
                 digipeater: vec![],
@@ -1673,8 +1777,8 @@ pub fn handle(
                 packet_type: PacketType::Iframe(iframe.clone()),
             })),
             SendDisc(poll) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
                 command_response_la: false, // TODO: same
                 digipeater: vec![],
@@ -1683,8 +1787,8 @@ pub fn handle(
                 packet_type: PacketType::Disc(Disc { poll: *poll }),
             })),
             SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
                 command_response_la: false, // TODO: same
                 digipeater: vec![],
@@ -1693,8 +1797,8 @@ pub fn handle(
                 packet_type: PacketType::Ua(Ua { poll: *poll }),
             })),
             SendRr(poll, nr, command) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: *command,
                 command_response_la: !*command,
                 digipeater: vec![],
@@ -1706,8 +1810,8 @@ pub fn handle(
                 }),
             })),
             SendRnr(poll, nr, cr) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: *cr,
                 command_response_la: !*cr,
                 digipeater: vec![],
@@ -1719,8 +1823,8 @@ pub fn handle(
                 }),
             })),
             SendDm(poll) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
                 command_response_la: false, // TODO: same
                 digipeater: vec![],
@@ -1729,8 +1833,8 @@ pub fn handle(
                 packet_type: PacketType::Dm(Dm { poll: *poll }),
             })),
             SendSabm(poll) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: state.state_data().me.clone(),
+                dst: state.state_data().peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
                 command_response_la: false, // TODO: same
                 digipeater: vec![],
@@ -1776,19 +1880,14 @@ mod tests {
 
     #[test]
     fn disconnected_outgoing_timeout() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
-        let con = Disconnected::new();
+        let con = Disconnected::new(Addr::new("M0THC-1")?);
 
         // First attempt.
         dbg!("First attempt");
-        let (con, events) = handle(
-            &con,
-            &mut data,
-            &Event::Connect(Addr::new("M0THC-2")?, false),
-        );
+        let (con, events) = handle(&con, &Event::Connect(Addr::new("M0THC-2")?, false));
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+        assert_eq!(con.state_data_ro().peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
                 src: Addr::new("M0THC-1")?,
@@ -1806,13 +1905,13 @@ mod tests {
 
         for retry in 1.. {
             dbg!("Retry", retry);
-            let (c2, events) = handle(&*con, &mut data, &Event::T1);
+            let (c2, events) = handle(&*con, &Event::T1);
             if retry == 3 {
                 assert_eq!(c2.unwrap().name(), "Disconnected");
                 break;
             } else {
                 assert!(matches![c2, None]);
-                assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+                assert_eq!(con.state_data_ro().peer, Some(Addr::new("M0THC-2")?));
                 assert_all(
                     &[ReturnEvent::Packet(Packet {
                         src: Addr::new("M0THC-1")?,
@@ -1834,18 +1933,15 @@ mod tests {
 
     #[test]
     fn disconnected_incoming() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
-        data.able_to_establish = true; // TODO: implement some sort of listen()
-        let con = Disconnected::new();
+        let mut con = Disconnected::new_listen(Addr::new("M0THC-1")?);
 
         let (con, events) = handle(
             &con,
-            &mut data,
             &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")?),
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "Connected");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+        assert_eq!(state.state_data().peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
                 src: Addr::new("M0THC-1")?,
@@ -1872,7 +1968,6 @@ mod tests {
         eprintln!("Receive data packet");
         let (c2, events) = handle(
             &con,
-            &mut data,
             &Event::Iframe(
                 Iframe {
                     nr: 0,
@@ -1905,8 +2000,7 @@ mod tests {
 
         eprintln!("Receive repeated packet");
         let (c2, events) = handle(
-            &con,
-            &mut data,
+            &mut con,
             &Event::Iframe(
                 Iframe {
                     nr: 0,
@@ -1923,8 +2017,7 @@ mod tests {
 
         eprintln!("Receive next packet");
         let (c2, events) = handle(
-            &con,
-            &mut data,
+            &mut con,
             &Event::Iframe(
                 Iframe {
                     nr: 0,
@@ -1961,8 +2054,8 @@ mod tests {
     fn disconnect() -> Result<()> {
         let mut data = Data::new(Addr::new("M0THC-1")?);
         data.peer = Some(Addr::new("M0THC-2")?);
-        let con = Connected::new(ConnectedState::Connected);
-        let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
+        let con = Connected::new(ConnectedState::Connected, data);
+        let (c2, events) = handle(&con, &Event::Disc(Disc { poll: true }));
         assert_eq!(c2.unwrap().name(), "Disconnected");
         assert_all(
             &[

@@ -10,7 +10,6 @@ use tokio::io::AsyncWriteExt;
 
 pub struct Client {
     state: Box<dyn state::State>,
-    data: state::Data,
     port: tokio_serial::SerialStream,
     kiss_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     frame_rx: tokio::sync::mpsc::Receiver<Packet>,
@@ -58,8 +57,7 @@ impl Client {
             eof: false,
             incoming: VecDeque::new(),
             port,
-            state: state::new(),
-            data: state::Data::new(me),
+            state: state::new(me),
         };
         cli.actions(Event::Connect(peer, ext)).await?;
         loop {
@@ -139,13 +137,15 @@ impl Client {
     }
     fn timer_13(&self) -> (tokio::time::Sleep, tokio::time::Sleep) {
         let timer1 = tokio::time::sleep(
-            self.data
+            self.state
+                .state_data_ro()
                 .t1
                 .remaining()
                 .unwrap_or(std::time::Duration::from_secs(86400)),
         );
         let timer3 = tokio::time::sleep(
-            self.data
+            self.state
+                .state_data_ro()
                 .t3
                 .remaining()
                 .unwrap_or(std::time::Duration::from_secs(86400)),
@@ -168,7 +168,7 @@ impl Client {
     }
 
     async fn actions(&mut self, event: Event) -> Result<()> {
-        let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
+        let (state, actions) = state::handle(&mut *self.state, &event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
         }
@@ -184,7 +184,7 @@ impl Client {
                     // println!("Do action: {act:?}");
                 }
             }
-            if let Some(frame) = act.serialize(self.data.ext()) {
+            if let Some(frame) = act.serialize(self.state.state_data().ext()) {
                 let frame = crate::escape(&frame);
                 self.port.write_all(&frame).await?;
                 self.port.flush().await?;

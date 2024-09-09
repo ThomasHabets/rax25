@@ -61,7 +61,6 @@ use crate::{Addr, Hub, Packet, PacketType};
 #[must_use]
 pub struct Client {
     kiss: Box<dyn Hub>,
-    pub(crate) data: state::Data,
     state: Box<dyn state::State>,
     eof: bool,
 
@@ -83,8 +82,7 @@ impl Client {
         Self {
             kiss,
             eof: false,
-            data: state::Data::new(me),
-            state: state::new(),
+            state: state::new(me),
             incoming: std::collections::VecDeque::new(),
         }
     }
@@ -93,7 +91,7 @@ impl Client {
     pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
         self.actions(state::Event::Connect(addr.clone(), ext));
         loop {
-            let dead = self.data.next_timer_remaining();
+            let dead = self.state.state_data().next_timer_remaining();
             let packet = self
                 .kiss
                 .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)))?;
@@ -101,7 +99,9 @@ impl Client {
                 let packet = Packet::parse(&packet)?;
                 // dbg!(&packet);
                 // TODO: check addresses.
-                if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
+                if packet.dst.call() == self.state.state_data().me.call()
+                    && packet.src.call() == addr.call()
+                {
                     self.actions_packet(&packet)?;
                     if self.state.is_state_connected() {
                         debug!("Connection successful");
@@ -109,10 +109,10 @@ impl Client {
                     }
                 }
             }
-            if self.data.t1_expired() {
+            if self.state.state_data().t1_expired() {
                 self.actions(state::Event::T1);
             }
-            if self.data.t3_expired() {
+            if self.state.state_data().t3_expired() {
                 self.actions(state::Event::T3);
             }
             if self.state.is_state_disconnected() {
@@ -139,24 +139,24 @@ impl Client {
                 .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))?;
             if let Some(packet) = packet {
                 if let Ok(packet) = Packet::parse(&packet) {
-                    if packet.dst.call() != self.data.me.call() {
+                    if packet.dst.call() != self.state.state_data().me.call() {
                         continue;
                     }
                     match packet.packet_type {
                         PacketType::Sabm(_) => {
                             let mut new_client =
-                                Client::new(self.data.me.clone(), self.kiss.clone());
-                            new_client.data.peer = Some(packet.src.clone());
-                            new_client.data.able_to_establish = true;
+                                Client::new(self.state.state_data().me.clone(), self.kiss.clone());
+                            new_client.state.state_data().peer = Some(packet.src.clone());
+                            new_client.state.state_data().able_to_establish = true;
                             new_client.actions_packet(&packet)?;
                             return Ok(Some(new_client));
                         }
                         PacketType::Sabme(_) => {
                             let mut new_client =
-                                Client::new(self.data.me.clone(), self.kiss.clone());
-                            new_client.data.peer = Some(packet.src.clone());
-                            new_client.data.set_version_2_2();
-                            new_client.data.able_to_establish = true;
+                                Client::new(self.state.state_data().me.clone(), self.kiss.clone());
+                            new_client.state.state_data().peer = Some(packet.src.clone());
+                            new_client.state.state_data().set_version_2_2();
+                            new_client.state.state_data().able_to_establish = true;
                             new_client.actions_packet(&packet)?;
                             return Ok(Some(new_client));
                         }
@@ -198,8 +198,8 @@ impl Client {
                 .recv_timeout(std::time::Duration::from_millis(100))?
                 .ok_or(Error::msg("did not get a packet in time"))?,
         )?;
-        if packet.src.call() != self.data.peer.as_ref().unwrap().call()
-            || packet.dst.call() != self.data.me.call()
+        if packet.src.call() != self.state.state_data().peer.as_ref().unwrap().call()
+            || packet.dst.call() != self.state.state_data().me.call()
         {
             Ok(None)
         } else {
@@ -280,7 +280,7 @@ impl Client {
     /// State machine side effects are then actioned, including possible
     /// state transitions.
     fn actions(&mut self, event: state::Event) {
-        let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
+        let (state, actions) = state::handle(&mut *self.state, &event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
         }
@@ -300,7 +300,7 @@ impl Client {
                 _ => {}
             }
 
-            if let Some(frame) = act.serialize(self.data.ext()) {
+            if let Some(frame) = act.serialize(self.state.state_data().ext()) {
                 self.kiss.send(&frame).unwrap();
             }
         }
@@ -318,7 +318,7 @@ mod tests {
     fn client() -> Result<()> {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
-        c.data.srt_default = std::time::Duration::from_millis(1);
+        c.state_data().srt_default = std::time::Duration::from_millis(1);
         c.connect(&Addr::new("M0THC-2")?, false)?;
         c.write(&vec![1, 2, 3])?;
         let reply = c.try_read()?.unwrap();
@@ -349,7 +349,7 @@ mod tests {
     fn listen_timeout() -> Result<()> {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
-        c.data.srt_default = std::time::Duration::from_millis(1);
+        c.state_data().srt_default = std::time::Duration::from_millis(1);
         assert!(matches![
             c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
             None
@@ -374,7 +374,7 @@ mod tests {
             .serialize(false),
         );
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
-        c.data.srt_default = std::time::Duration::from_millis(1);
+        c.state_data().srt_default = std::time::Duration::from_millis(1);
         assert!(matches![
             c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
             None
@@ -399,7 +399,7 @@ mod tests {
             .serialize(false),
         );
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
-        c.data.srt_default = std::time::Duration::from_millis(1);
+        c.state_data().srt_default = std::time::Duration::from_millis(1);
         let _new_conn = c
             .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
             .expect("Expected new incoming connection");
