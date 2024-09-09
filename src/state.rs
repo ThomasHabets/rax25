@@ -158,6 +158,7 @@ pub enum Action {
     DlError(DlError),
     SendUa(bool),
     SendRr(/* poll */ bool, u8, /* command */ bool),
+    SendRej(/* poll */ bool, u8),
     SendRnr(/* poll */ bool, u8, /* command */ bool),
     SendDisc(bool),
     SendIframe(Iframe),
@@ -1484,7 +1485,7 @@ impl State for Connected {
         if !data.srej_enabled {
             // discard iframe (implicit)
             data.reject_exception = true;
-            // TODO: actions.push(Action::SendRej(final=poll, data.vr)
+            actions.push(Action::SendRej(/*final*/ p.poll, data.vr));
             data.acknowledge_pending = false;
             return actions;
         }
@@ -1499,7 +1500,7 @@ impl State for Connected {
         // TODO: Maybe a version of if in_range(p.ns) {
         if p.ns != (data.vr + 1) % data.modulus {
             // discard iframe (implicit)
-            // TODO: actions.push(Action::SendRej(p.poll, data.vr));
+            actions.push(Action::SendRej(p.poll, data.vr));
             data.acknowledge_pending = false;
             return actions;
         }
@@ -1696,6 +1697,19 @@ pub fn handle(
                 rr_dist1: false,
                 rr_extseq: false,
                 packet_type: PacketType::Ua(Ua { poll: *poll }),
+            })),
+            SendRej(poll, nr) => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                command_response: false,
+                command_response_la: true,
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Rej(Rej {
+                    poll: *poll,
+                    nr: *nr,
+                }),
             })),
             SendRr(poll, nr, command) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
@@ -1909,7 +1923,7 @@ mod tests {
         );
 
         eprintln!("Receive repeated packet");
-        let (c2, _events) = handle(
+        let (c2, events) = handle(
             &con,
             &mut data,
             &Event::Iframe(
@@ -1924,7 +1938,20 @@ mod tests {
             ),
         );
         assert!(matches![c2, None]);
-        // assert_all(&[], &events, "iframe");
+        assert_all(
+            &[ReturnEvent::Packet(Packet {
+                src: Addr::new("M0THC-1")?,
+                dst: Addr::new("M0THC-2")?,
+                command_response: false,
+                command_response_la: true,
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
+            })],
+            &events,
+            "iframe",
+        );
 
         eprintln!("Receive next packet");
         let (c2, events) = handle(
