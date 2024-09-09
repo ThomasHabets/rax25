@@ -19,6 +19,9 @@ pub struct Client {
     incoming: VecDeque<u8>,
 }
 
+// Receive bytes, and respond on another channel with parsed frames.
+//
+// TODO: don't let sending back frames block receiving data, or we'll deadlock.
 async fn kisser(mut kiss_rx: mpsc::Receiver<Vec<u8>>, frame_tx: mpsc::Sender<Packet>) {
     let mut buf = VecDeque::new();
     while let Some(bytes) = kiss_rx.recv().await {
@@ -65,7 +68,6 @@ impl Client {
         };
         loop {
             cli.wait_event().await?;
-            debug!("State after waiting: {}", cli.state.name());
             if cli.state.is_state_connected() {
                 return Ok(cli);
             }
@@ -77,8 +79,9 @@ impl Client {
         port: tokio_serial::SerialStream,
         ext: bool,
     ) -> Result<Self> {
-        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(10);
+        // TODO: change these limits to more reasonable ones, once kisser() is block free.
+        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100000);
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(100000);
         tokio::spawn(async move {
             kisser(kiss_rx, frame_tx).await;
         });
@@ -109,12 +112,24 @@ impl Client {
         tokio::pin!(t3);
 
         let mut buf = [0; 1024];
+        debug!(
+            "async con pre state: {} {:?} {:?}",
+            self.state.name(),
+            self.data.t1.remaining(),
+            self.data.t3.remaining()
+        );
         tokio::select! {
-            () = &mut t1 => {self.actions(Event::T1).await?},
-            () = &mut t3 => {self.actions(Event::T3).await?},
+            () = &mut t1 => {
+                debug!("async con event: T1");
+                self.actions(Event::T1).await?;
+            },
+            () = &mut t3 => {
+                debug!("async con event: T3");
+                self.actions(Event::T3).await?
+            },
             frame = self.frame_rx.recv() => {
                 let frame = frame.ok_or(Error::msg("KISS decoder closed channel"))?;
-                debug!("Got frame: {frame:?}");
+                debug!("async con event: frame: {:?}", frame.packet_type);
                 self.actions_packet(&frame).await?;
             },
             res = self.port.read(&mut buf) => match res {
@@ -125,6 +140,7 @@ impl Client {
             Err(e) => eprintln!("Error reading from serial port: {e:?}"),
             },
         }
+        debug!("async con post state: {}", self.state.name());
         Ok(())
     }
     async fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
