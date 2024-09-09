@@ -42,11 +42,24 @@ async fn main() -> Result<()> {
     let mut client =
         Client::connect(Addr::new("M0THC-1")?, Addr::new("M0THC-2")?, port, opt.ext).await?;
     println!("Connected");
+    let mut sigint = {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::interrupt())?
+    };
     loop {
         let mut buf = [0; 1024];
         tokio::select! {
+            _ = sigint.recv() => {
+                eprintln!("Sigint received");
+                break;
+            },
             res = stdin.read(&mut buf) => {
-                let buf = &buf[..res?];
+                let res = res?;
+                if res == 0 {
+                    eprintln!("Got EOF from stdin");
+                    break;
+                }
+                let buf = &buf[..res];
                 if buf ==  [101, 120, 105, 116, 10] {
                     eprintln!("Got 'exit' from user");
                     break;
@@ -77,5 +90,6 @@ async fn main() -> Result<()> {
     }
     eprintln!("End of main loop");
     client.disconnect().await?;
+    eprintln!("Disconnected");
     Ok(())
 }
