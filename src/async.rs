@@ -7,6 +7,7 @@ use anyhow::{Error, Result};
 use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 pub struct Client {
     state: Box<dyn state::State>,
@@ -18,39 +19,68 @@ pub struct Client {
     incoming: VecDeque<u8>,
 }
 
+async fn kisser(mut kiss_rx: mpsc::Receiver<Vec<u8>>, frame_tx: mpsc::Sender<Packet>) {
+    let mut buf = VecDeque::new();
+    while let Some(bytes) = kiss_rx.recv().await {
+        debug!("Got {} KISS bytes", bytes.len());
+        buf.extend(bytes);
+        while let Some((a, b)) = crate::find_frame(&buf) {
+            if b - a < 14 {
+                buf.drain(..(a + 1));
+                continue;
+            }
+            let pb: Vec<_> = buf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
+            buf.drain(..b);
+            let pb = crate::unescape(&pb);
+            match Packet::parse(&pb) {
+                Ok(packet) => {
+                    frame_tx.send(packet).await.expect("failed to send frame");
+                }
+                Err(e) => {
+                    debug!("Failed to parse packet: {e:?}");
+                }
+            }
+        }
+    }
+    eprintln!("KISS parser ending: {}", frame_tx.is_closed());
+}
+
 impl Client {
+    pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
+        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(10);
+        tokio::spawn(async move {
+            kisser(kiss_rx, frame_tx).await;
+        });
+        let mut data = state::Data::new(me);
+        data.able_to_establish = true;
+        let mut cli = Self {
+            kiss_tx,
+            frame_rx,
+            eof: false,
+            incoming: VecDeque::new(),
+            port,
+            state: state::new(),
+            data,
+        };
+        loop {
+            cli.wait_event().await?;
+            debug!("State after waiting: {}", cli.state.name());
+            if cli.state.is_state_connected() {
+                return Ok(cli);
+            }
+        }
+    }
     pub async fn connect(
         me: Addr,
         peer: Addr,
         port: tokio_serial::SerialStream,
         ext: bool,
     ) -> Result<Self> {
-        let (kiss_tx, mut kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
+        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(10);
         tokio::spawn(async move {
-            let mut buf = VecDeque::new();
-            while let Some(bytes) = kiss_rx.recv().await {
-                debug!("Got {} KISS bytes", bytes.len());
-                buf.extend(bytes);
-                while let Some((a, b)) = crate::find_frame(&buf) {
-                    if b - a < 14 {
-                        buf.drain(..(a + 1));
-                        continue;
-                    }
-                    let pb: Vec<_> = buf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
-                    buf.drain(..b);
-                    let pb = crate::unescape(&pb);
-                    match Packet::parse(&pb) {
-                        Ok(packet) => {
-                            frame_tx.send(packet).await.expect("failed to send frame");
-                        }
-                        Err(e) => {
-                            debug!("Failed to parse packet: {e:?}");
-                        }
-                    }
-                }
-            }
-            eprintln!("KISS parser ending: {}", frame_tx.is_closed());
+            kisser(kiss_rx, frame_tx).await;
         });
         let mut cli = Self {
             kiss_tx,
