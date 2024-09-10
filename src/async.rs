@@ -4,7 +4,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{Error, Result};
-use log::debug;
+use log::{debug, error};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -19,30 +19,83 @@ pub struct Client {
     incoming: VecDeque<u8>,
 }
 
+fn kisser_read(ibuf: &mut VecDeque<u8>) -> Vec<Packet> {
+    let mut ret = Vec::new();
+    while let Some((a, b)) = crate::find_frame(ibuf) {
+        if b - a < 14 {
+            ibuf.drain(..(a + 1));
+            continue;
+        }
+        let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
+        ibuf.drain(..b);
+        let pb = crate::unescape(&pb);
+        match Packet::parse(&pb) {
+            Ok(packet) => {
+                debug!("parsed {packet:?}");
+                ret.push(packet);
+            }
+            Err(e) => {
+                debug!("Failed to parse packet: {e:?}");
+            }
+        }
+    }
+    ret
+}
+
 // Receive bytes, and respond on another channel with parsed frames.
-//
-// TODO: don't let sending back frames block receiving data, or we'll deadlock.
 async fn kisser(mut kiss_rx: mpsc::Receiver<Vec<u8>>, frame_tx: mpsc::Sender<Packet>) {
-    let mut buf = VecDeque::new();
-    while let Some(bytes) = kiss_rx.recv().await {
-        debug!("Got {} KISS bytes", bytes.len());
-        buf.extend(bytes);
-        while let Some((a, b)) = crate::find_frame(&buf) {
-            if b - a < 14 {
-                buf.drain(..(a + 1));
-                continue;
-            }
-            let pb: Vec<_> = buf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
-            buf.drain(..b);
-            let pb = crate::unescape(&pb);
-            match Packet::parse(&pb) {
-                Ok(packet) => {
-                    frame_tx.send(packet).await.expect("failed to send frame");
+    let mut ibuf = VecDeque::new();
+    let mut obuf: VecDeque<Packet> = VecDeque::new();
+
+    // Loop until there's no more input.
+    loop {
+        // Send any outstanding frames.
+        while !obuf.is_empty() && frame_tx.capacity() > 0 {
+            let p = obuf.pop_front().unwrap();
+            frame_tx.send(p).await.unwrap();
+        }
+
+        // If we're only reading.
+        if obuf.is_empty() {
+            match kiss_rx.recv().await {
+                Some(bytes) => {
+                    debug!("Got {} KISS bytes", bytes.len());
+                    ibuf.extend(bytes);
+                    obuf.extend(kisser_read(&mut ibuf));
                 }
-                Err(e) => {
-                    debug!("Failed to parse packet: {e:?}");
-                }
+                None => break,
             }
+            continue;
+        }
+
+        // If we're reading and writing.
+        // This path has a packet copy.
+        //
+        // TODO: is there a way to avoid this copy?
+        let to_send = obuf.front().cloned().unwrap(); // We know there's at least one.
+        tokio::select! {
+            bytes = kiss_rx.recv() => {
+                match bytes {
+                    Some(bytes) => {
+                        debug!("Got {} KISS bytes", bytes.len());
+                        ibuf.extend(bytes);
+                        obuf.extend(kisser_read(&mut ibuf));
+                    },
+                    None => break,
+                }
+            },
+            err = frame_tx.send(to_send) => {
+                err.unwrap();
+                obuf.pop_front();
+            },
+        }
+    }
+    for frame in obuf {
+        if frame_tx.is_closed() {
+            break;
+        }
+        if let Err(e) = frame_tx.send(frame).await {
+            error!("Failed to send frame: {e}");
         }
     }
     eprintln!("KISS parser ending: {}", frame_tx.is_closed());
@@ -80,8 +133,8 @@ impl Client {
         ext: bool,
     ) -> Result<Self> {
         // TODO: change these limits to more reasonable ones, once kisser() is block free.
-        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100000);
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(100000);
+        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(2);
         tokio::spawn(async move {
             kisser(kiss_rx, frame_tx).await;
         });

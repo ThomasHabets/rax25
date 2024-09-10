@@ -1473,7 +1473,7 @@ impl State for Connected {
             }
             return actions;
         }
-        debug!("Iframe not in order {} {}", p.ns, data.vr);
+        debug!("Iframe not in order got={} want={}", p.ns, data.vr);
         if data.reject_exception {
             // discard frame (implicit)
             if p.poll {
@@ -1484,6 +1484,12 @@ impl State for Connected {
         }
         if !data.srej_enabled {
             // discard iframe (implicit)
+            //
+            // TODO: should we maybe wait a bit with sending a REJ?
+            // Empirically I got a bunch of duplicated packets, and
+            // that just wrecks havoc with retransmits.
+            //
+            // Maybe skip a duplicate?
             data.reject_exception = true;
             actions.push(Action::SendRej(/*final*/ p.poll, data.vr));
             data.acknowledge_pending = false;

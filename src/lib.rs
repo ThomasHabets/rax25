@@ -138,7 +138,7 @@ impl Addr {
 /// AX.25 packet, of all types.
 ///
 /// Maybe this should be replaced by a protobuf.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Packet {
     src: Addr,
     dst: Addr,
@@ -151,7 +151,7 @@ pub struct Packet {
 }
 
 /// All packet types.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PacketType {
     Sabm(Sabm),
     Sabme(Sabme),
@@ -850,6 +850,7 @@ pub(crate) fn unescape(data: &[u8]) -> Vec<u8> {
             unescaped.push(byte);
         }
     }
+    assert!(!is_escaped);
     unescaped
 }
 
