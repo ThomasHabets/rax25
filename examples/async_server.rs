@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     println!("Awaiting connection");
     let mut client = Client::accept(Addr::new(&opt.src)?, port).await?;
     println!("Connected");
+    client.write(b"Welcome to the server!\n").await?;
     loop {
         tokio::select! {
             data = client.read() => {
