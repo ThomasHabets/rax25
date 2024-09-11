@@ -1697,8 +1697,8 @@ pub fn handle(
             SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
+                command_response: false,
+                command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
@@ -1875,8 +1875,8 @@ mod tests {
             &[ReturnEvent::Packet(Packet {
                 src: Addr::new("M0THC-1")?,
                 dst: Addr::new("M0THC-2")?,
-                command_response: true,
-                command_response_la: false,
+                command_response: false,
+                command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
@@ -2008,8 +2008,8 @@ mod tests {
                 ReturnEvent::Packet(Packet {
                     src: Addr::new("M0THC-1")?,
                     dst: Addr::new("M0THC-2")?,
-                    command_response: true,
-                    command_response_la: false,
+                    command_response: false,
+                    command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
                     rr_extseq: false,
