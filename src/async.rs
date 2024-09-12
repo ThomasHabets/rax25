@@ -93,20 +93,21 @@ impl Client {
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.data.ext())));
     }
     async fn wait_event(&mut self) -> Result<()> {
+        let mut buf = [0; 1024];
+        while let Some(p) = self.incoming_frames.pop_front() {
+            debug!("processing packet {:?}", p.packet_type);
+            self.actions_packet(&p).await?;
+            debug!(
+                "post packet: {} {:?} {:?}",
+                self.state.name(),
+                self.data.t1.remaining(),
+                self.data.t3.remaining()
+            );
+        }
         let (t1, t3) = self.timer_13();
         tokio::pin!(t1);
         tokio::pin!(t3);
 
-        let mut buf = [0; 1024];
-        debug!(
-            "async con pre state: {} {:?} {:?}",
-            self.state.name(),
-            self.data.t1.remaining(),
-            self.data.t3.remaining()
-        );
-        while let Some(p) = self.incoming_frames.pop_front() {
-            self.actions_packet(&p).await?;
-        }
         tokio::select! {
             () = &mut t1 => {
                 debug!("async con event: T1");
@@ -126,7 +127,12 @@ impl Client {
             Err(e) => eprintln!("Error reading from serial port: {e:?}"),
             },
         }
-        debug!("async con post state: {}", self.state.name());
+        debug!(
+            "async con post state: {} {:?} {:?}",
+            self.state.name(),
+            self.data.t1.remaining(),
+            self.data.t3.remaining()
+        );
         Ok(())
     }
     async fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
