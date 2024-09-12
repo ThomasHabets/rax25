@@ -461,11 +461,22 @@ impl Packet {
 
     /// Parse packet from bytes.
     ///
-    /// Source address `rbit_ext` is used to indicate that the packet is using
-    /// the mod-128 extended format, just like the Linux kernel does.
+    /// A packet with sequence numbers in it (S and I frames) cannot be parsed
+    /// without knowing if it's extended or not, because the control field is
+    /// either one or two bytes.
     ///
-    /// That doesn't actually appear to be a standard, so we should probably
-    /// allow the caller to override, forcing use of extended or non-extended.
+    /// Ideally you already know, because you sent, received, or at least saw
+    /// the SABM (not extended) or SABME (extended).
+    ///
+    /// The Linux stack uses the `rbit_ext` reserved bit in the source address
+    /// to indicate extended mode. This is the used by the other Linux tooling
+    /// like `axlisten`. But it's nonstandard.
+    ///
+    /// In theory other heuristics can be provided, to try to brute force the
+    /// mode. But really, it's best if you know ahead of time.
+    ///
+    /// This code supports using the Linux bit, by providing `None` as `ext`, as
+    /// opposed to `Some(bool)`.
     pub fn parse(bytes: &[u8], ext: Option<bool>) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
