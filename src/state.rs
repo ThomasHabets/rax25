@@ -1571,7 +1571,9 @@ impl State for Connected {
                 (true, true) => DlError::U,
                 (true, false) => DlError::T,
             }),
-            Action::SendDm { pf: true }, // TODO: spec (page 99) doesn't say if it should be true or false.
+            // 1998 spec (page 99) doesn't say if it should be true or false.
+            // 2017 spec adds that pf should be false.
+            Action::SendDm { pf: false },
             Action::State(Box::new(Disconnected::new())),
         ]
     }
