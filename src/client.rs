@@ -98,7 +98,7 @@ impl Client {
                 .kiss
                 .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)))?;
             if let Some(packet) = packet {
-                let packet = Packet::parse(&packet)?;
+                let packet = Packet::parse(&packet, Some(self.data.ext()))?;
                 // dbg!(&packet);
                 // TODO: check addresses.
                 if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
@@ -138,7 +138,7 @@ impl Client {
                 .kiss
                 .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))?;
             if let Some(packet) = packet {
-                if let Ok(packet) = Packet::parse(&packet) {
+                if let Ok(packet) = Packet::parse(&packet, None) {
                     if packet.dst.call() != self.data.me.call() {
                         continue;
                     }
@@ -197,6 +197,7 @@ impl Client {
                 .kiss
                 .recv_timeout(std::time::Duration::from_millis(100))?
                 .ok_or(Error::msg("did not get a packet in time"))?,
+            Some(self.data.ext()),
         )?;
         if packet.src.call() != self.data.peer.as_ref().unwrap().call()
             || packet.dst.call() != self.data.me.call()

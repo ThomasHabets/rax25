@@ -4,22 +4,21 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{Error, Result};
-use log::{debug, error};
+use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
 
 pub struct Client {
     state: Box<dyn state::State>,
     data: state::Data,
     port: tokio_serial::SerialStream,
-    kiss_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
-    frame_rx: tokio::sync::mpsc::Receiver<Packet>,
     eof: bool,
     incoming: VecDeque<u8>,
+    incoming_kiss: VecDeque<u8>,
+    incoming_frames: VecDeque<Packet>,
 }
 
-fn kisser_read(ibuf: &mut VecDeque<u8>) -> Vec<Packet> {
+fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
         if b - a < 14 {
@@ -29,7 +28,7 @@ fn kisser_read(ibuf: &mut VecDeque<u8>) -> Vec<Packet> {
         let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
         ibuf.drain(..b);
         let pb = crate::unescape(&pb);
-        match Packet::parse(&pb) {
+        match Packet::parse(&pb, ext) {
             Ok(packet) => {
                 debug!("parsed {packet:?}");
                 ret.push(packet);
@@ -42,79 +41,15 @@ fn kisser_read(ibuf: &mut VecDeque<u8>) -> Vec<Packet> {
     ret
 }
 
-// Receive bytes, and respond on another channel with parsed frames.
-async fn kisser(mut kiss_rx: mpsc::Receiver<Vec<u8>>, frame_tx: mpsc::Sender<Packet>) {
-    let mut ibuf = VecDeque::new();
-    let mut obuf: VecDeque<Packet> = VecDeque::new();
-
-    // Loop until there's no more input.
-    loop {
-        // Send any outstanding frames.
-        while !obuf.is_empty() && frame_tx.capacity() > 0 {
-            let p = obuf.pop_front().unwrap();
-            frame_tx.send(p).await.unwrap();
-        }
-
-        // If we're only reading.
-        if obuf.is_empty() {
-            match kiss_rx.recv().await {
-                Some(bytes) => {
-                    debug!("Got {} KISS bytes", bytes.len());
-                    ibuf.extend(bytes);
-                    obuf.extend(kisser_read(&mut ibuf));
-                }
-                None => break,
-            }
-            continue;
-        }
-
-        // If we're reading and writing.
-        // This path has a packet copy.
-        //
-        // TODO: is there a way to avoid this copy?
-        let to_send = obuf.front().cloned().unwrap(); // We know there's at least one.
-        tokio::select! {
-            bytes = kiss_rx.recv() => {
-                match bytes {
-                    Some(bytes) => {
-                        debug!("Got {} KISS bytes", bytes.len());
-                        ibuf.extend(bytes);
-                        obuf.extend(kisser_read(&mut ibuf));
-                    },
-                    None => break,
-                }
-            },
-            err = frame_tx.send(to_send) => {
-                err.unwrap();
-                obuf.pop_front();
-            },
-        }
-    }
-    for frame in obuf {
-        if frame_tx.is_closed() {
-            break;
-        }
-        if let Err(e) = frame_tx.send(frame).await {
-            error!("Failed to send frame: {e}");
-        }
-    }
-    eprintln!("KISS parser ending: {}", frame_tx.is_closed());
-}
-
 impl Client {
     pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
-        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(10);
-        tokio::spawn(async move {
-            kisser(kiss_rx, frame_tx).await;
-        });
         let mut data = state::Data::new(me);
         data.able_to_establish = true;
         let mut cli = Self {
-            kiss_tx,
-            frame_rx,
             eof: false,
             incoming: VecDeque::new(),
+            incoming_frames: VecDeque::new(),
+            incoming_kiss: VecDeque::new(),
             port,
             state: state::new(),
             data,
@@ -132,17 +67,11 @@ impl Client {
         port: tokio_serial::SerialStream,
         ext: bool,
     ) -> Result<Self> {
-        // TODO: change these limits to more reasonable ones, once kisser() is block free.
-        let (kiss_tx, kiss_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<Packet>(2);
-        tokio::spawn(async move {
-            kisser(kiss_rx, frame_tx).await;
-        });
         let mut cli = Self {
-            kiss_tx,
-            frame_rx,
             eof: false,
             incoming: VecDeque::new(),
+            incoming_frames: VecDeque::new(),
+            incoming_kiss: VecDeque::new(),
             port,
             state: state::new(),
             data: state::Data::new(me),
@@ -159,6 +88,10 @@ impl Client {
             }
         }
     }
+    fn extract_packets(&mut self) {
+        self.incoming_frames
+            .extend(kisser_read(&mut self.incoming_kiss, Some(self.data.ext())));
+    }
     async fn wait_event(&mut self) -> Result<()> {
         let (t1, t3) = self.timer_13();
         tokio::pin!(t1);
@@ -171,6 +104,9 @@ impl Client {
             self.data.t1.remaining(),
             self.data.t3.remaining()
         );
+        while let Some(p) = self.incoming_frames.pop_front() {
+            self.actions_packet(&p).await?;
+        }
         tokio::select! {
             () = &mut t1 => {
                 debug!("async con event: T1");
@@ -180,15 +116,12 @@ impl Client {
                 debug!("async con event: T3");
                 self.actions(Event::T3).await?
             },
-            frame = self.frame_rx.recv() => {
-                let frame = frame.ok_or(Error::msg("KISS decoder closed channel"))?;
-                debug!("async con event: frame: {:?}", frame.packet_type);
-                self.actions_packet(&frame).await?;
-            },
             res = self.port.read(&mut buf) => match res {
             Ok(n) => {
                 debug!("Read {n} bytes from serial port");
-                self.kiss_tx.send(buf[..n].to_vec()).await?;
+                let buf = &buf[..n];
+                self.incoming_kiss.extend(buf);
+                self.extract_packets();
             },
             Err(e) => eprintln!("Error reading from serial port: {e:?}"),
             },

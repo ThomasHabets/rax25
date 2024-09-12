@@ -466,7 +466,7 @@ impl Packet {
     ///
     /// That doesn't actually appear to be a standard, so we should probably
     /// allow the caller to override, forcing use of extended or non-extended.
-    pub fn parse(bytes: &[u8]) -> Result<Self> {
+    pub fn parse(bytes: &[u8], ext: Option<bool>) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
             return Err(Error::msg(format!(
@@ -483,7 +483,10 @@ impl Packet {
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
-        let ext = src.rbit_ext;
+        let ext = match ext {
+            Some(v) => v,
+            None => src.rbit_ext,
+        };
 
         // TODO: parse digipeater.
         let control1 = bytes[14];
@@ -632,7 +635,7 @@ impl FakeKiss {
 #[cfg(test)]
 impl Hub for FakeKiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        let packet = Packet::parse(frame)?;
+        let packet = Packet::parse(frame, None)?;
         match &packet.packet_type {
             PacketType::Sabm(_) | PacketType::Sabme(_) => {
                 self.queue.push_back(
@@ -859,7 +862,7 @@ impl Hub for Kiss {
         todo!()
     }
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        let parsed = Packet::parse(frame)?;
+        let parsed = Packet::parse(frame, None)?;
         debug!("Sending frame… {frame:?}: {parsed:?}");
         self.port.write_all(&escape(frame))?;
         self.port.flush()?;
@@ -900,7 +903,7 @@ impl Hub for Kiss {
                 let bytes = unescape(&bytes);
                 if bytes.len() > 14 {
                     debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
-                    match Packet::parse(&bytes) {
+                    match Packet::parse(&bytes, None) {
                         Ok(packet) => debug!("... Decoded as: {:?}", packet),
                         Err(e) => {
                             debug!("... Failed to decode: {:?}", e);
