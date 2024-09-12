@@ -28,7 +28,7 @@ use crate::{
 /// like "connect", or "send this data".
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Connect(Addr, /* extended */ bool),
+    Connect { addr: Addr, ext: bool },
     Disconnect,
     Data(Vec<u8>),
     T1,
@@ -156,14 +156,14 @@ impl std::fmt::Display for DlError {
 pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
-    SendUa(bool),
-    SendRr(/* poll */ bool, u8, /* command */ bool),
-    SendRej(/* poll */ bool, u8),
-    SendRnr(/* poll */ bool, u8, /* command */ bool),
-    SendDisc(bool),
+    SendUa { pf: bool },
+    SendRr { pf: bool, nr: u8, command: bool },
+    SendRej { pf: bool, nr: u8 },
+    SendRnr { pf: bool, nr: u8, command: bool },
+    SendDisc { pf: bool },
     SendIframe(Iframe),
-    SendDm(bool),
-    SendSabm(bool),
+    SendDm { pf: bool },
+    SendSabm { pf: bool },
     Deliver(Vec<u8>),
     EOF,
 }
@@ -562,7 +562,7 @@ impl Data {
     ///
     /// Page 106.
     #[must_use]
-    fn enquiry_response(&mut self, f: bool) -> Action {
+    fn enquiry_response(&mut self, pf: bool) -> Action {
         self.acknowledge_pending = false;
         // TODO: 2017 spec has a bit more complex diagram here. Some of it is
         // correct, but other stuff I'm not so sure of.
@@ -571,10 +571,18 @@ impl Data {
         // RNR if not `F==1 && (RR || RNR || I)`.
         if self.own_receiver_busy {
             // 1998 spec doesn't say, but 2017 spec says "Response".
-            Action::SendRnr(f, self.vr, /* command */ false)
+            Action::SendRnr {
+                pf,
+                nr: self.vr,
+                command: false,
+            }
         } else {
-            // Spec says commmand, which is wrong.
-            Action::SendRr(f, self.vr, /* command */ false)
+            // 1998 spec says commmand, which is wrong.
+            Action::SendRr {
+                pf,
+                nr: self.vr,
+                command: false,
+            }
         }
     }
 
@@ -630,9 +638,17 @@ impl Data {
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
-            Action::SendRnr(/* poll */ true, self.vr, /* command */ true)
+            Action::SendRnr {
+                pf: true,
+                nr: self.vr,
+                command: true,
+            }
         } else {
-            Action::SendRr(/* poll */ true, self.vr, /* command */ true)
+            Action::SendRr {
+                pf: true,
+                nr: self.vr,
+                command: true,
+            }
         }
     }
 
@@ -730,7 +746,7 @@ impl Data {
         self.t1.restart(self.srt); // TODO: srt or t1v?
 
         // SendSabm actually sends SABME if modulus is 128.
-        Action::SendSabm(true)
+        Action::SendSabm { pf: true }
     }
 
     /// Set values for extended sequence number connection.
@@ -974,10 +990,10 @@ impl Disconnected {
 
     // Page 85.
     #[must_use]
-    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, poll: bool) -> Vec<Action> {
+    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, pf: bool) -> Vec<Action> {
         debug!("DL-Connect indication");
         if !data.able_to_establish {
-            return vec![Action::SendDm(poll)];
+            return vec![Action::SendDm { pf }];
         }
         data.clear_exception_conditions();
         data.vs = 0;
@@ -989,7 +1005,7 @@ impl Disconnected {
         data.rc = 0;
         data.peer = Some(src);
         vec![
-            Action::SendUa(poll),
+            Action::SendUa { pf },
             Action::State(Box::new(Connected::new(ConnectedState::Connected))),
         ]
     }
@@ -1035,7 +1051,7 @@ impl State for Disconnected {
     fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
         let mut ret = data.ui_check(cr, packet.payload.len());
         if packet.push {
-            ret.push(Action::SendDm(true));
+            ret.push(Action::SendDm { pf: true });
         }
         ret
     }
@@ -1064,7 +1080,7 @@ impl State for Disconnected {
 
     // Page 84.
     fn disc(&self, _data: &mut Data, packet: &Disc) -> Vec<Action> {
-        vec![Action::SendDm(packet.poll)]
+        vec![Action::SendDm { pf: packet.poll }]
     }
 }
 
@@ -1099,7 +1115,7 @@ impl State for AwaitingConnection {
             data.rc += 1;
             data.select_t1_value();
             data.t1.start(data.srt);
-            vec![Action::SendSabm(true)]
+            vec![Action::SendSabm { pf: true }]
         }
     }
 
@@ -1149,13 +1165,13 @@ impl State for AwaitingConnection {
 
     // Page 86.
     fn sabm(&self, _data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
-        vec![Action::SendUa(packet.poll)]
+        vec![Action::SendUa { pf: packet.poll }]
     }
 
     // Page 88.
     fn sabme(&self, _data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
         // TODO: This is supposed to transition to "awaiting connect 2.2".
-        vec![Action::SendDm(packet.poll)]
+        vec![Action::SendDm { pf: packet.poll }]
     }
 }
 
@@ -1210,7 +1226,7 @@ impl State for AwaitingRelease {
         data.rc += 1;
         data.select_t1_value();
         data.t1.start(data.t1v);
-        vec![Action::SendDisc(true)]
+        vec![Action::SendDisc { pf: true }]
     }
 
     // TODO: More handlers.
@@ -1311,7 +1327,7 @@ impl Connected {
         }
         vec![
             Action::DlError(DlError::F),
-            Action::SendUa(poll),
+            Action::SendUa { pf: poll },
             Action::State(Box::new(Connected::new(ConnectedState::Connected))),
         ]
     }
@@ -1335,7 +1351,7 @@ impl State for Connected {
         data.t1.start(data.srt); // TODO: with what timer?
         data.t3.stop();
         vec![
-            Action::SendDisc(true),
+            Action::SendDisc { pf: true },
             Action::State(Box::new(AwaitingRelease::new())),
         ]
     }
@@ -1399,7 +1415,7 @@ impl State for Connected {
         data.t1.stop();
         data.t3.stop();
         vec![
-            Action::SendUa(p.poll),
+            Action::SendUa { pf: p.poll },
             Action::EOF,
             Action::State(Box::new(Disconnected::new())),
         ]
@@ -1439,7 +1455,11 @@ impl State for Connected {
             // discord (implicit)
             debug!("Discarding iframe because busy and being polled");
             if p.poll {
-                actions.push(Action::SendRnr(true, data.vr, /* command */ false));
+                actions.push(Action::SendRnr {
+                    pf: true,
+                    nr: data.vr,
+                    command: false,
+                });
                 data.acknowledge_pending = false;
             }
             return actions;
@@ -1463,7 +1483,11 @@ impl State for Connected {
                 data.vr = (data.vr + 1) % data.modulus;
             }
             if p.poll {
-                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
+                actions.push(Action::SendRr {
+                    pf: true,
+                    nr: data.vr,
+                    command: false,
+                });
                 data.acknowledge_pending = false;
                 return actions;
             }
@@ -1477,7 +1501,11 @@ impl State for Connected {
         if data.reject_exception {
             // discard frame (implicit)
             if p.poll {
-                actions.push(Action::SendRr(/*final*/ true, data.vr, false));
+                actions.push(Action::SendRr {
+                    pf: true,
+                    nr: data.vr,
+                    command: false,
+                });
                 data.acknowledge_pending = false;
             }
             return actions;
@@ -1491,7 +1519,10 @@ impl State for Connected {
             //
             // Maybe skip a duplicate?
             data.reject_exception = true;
-            actions.push(Action::SendRej(/*final*/ p.poll, data.vr));
+            actions.push(Action::SendRej {
+                pf: p.poll,
+                nr: data.vr,
+            });
             data.acknowledge_pending = false;
             return actions;
         }
@@ -1506,7 +1537,10 @@ impl State for Connected {
         // TODO: Maybe a version of if in_range(p.ns) {
         if p.ns != (data.vr + 1) % data.modulus {
             // discard iframe (implicit)
-            actions.push(Action::SendRej(p.poll, data.vr));
+            actions.push(Action::SendRej {
+                pf: p.poll,
+                nr: data.vr,
+            });
             data.acknowledge_pending = false;
             return actions;
         }
@@ -1537,7 +1571,7 @@ impl State for Connected {
                 (true, true) => DlError::U,
                 (true, false) => DlError::T,
             }),
-            Action::SendDm(true), // TODO: spec (page 99) doesn't say if it should be true or false.
+            Action::SendDm { pf: true }, // TODO: spec (page 99) doesn't say if it should be true or false.
             Action::State(Box::new(Disconnected::new())),
         ]
     }
@@ -1646,7 +1680,7 @@ pub fn handle(
     packet: &Event,
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
-        Event::Connect(addr, ext) => state.connect(data, addr, *ext),
+        Event::Connect { addr, ext } => state.connect(data, addr, *ext),
         Event::Disconnect => state.disconnect(data),
         Event::Data(payload) => state.data(data, payload),
         Event::T1 => state.t1(data),
@@ -1684,7 +1718,7 @@ pub fn handle(
                 rr_extseq: false,
                 packet_type: PacketType::Iframe(iframe.clone()),
             })),
-            SendDisc(poll) => ret.push(ReturnEvent::Packet(Packet {
+            SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
@@ -1692,9 +1726,9 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Disc(Disc { poll: *poll }),
+                packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
-            SendUa(poll) => ret.push(ReturnEvent::Packet(Packet {
+            SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: false,
@@ -1702,9 +1736,9 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Ua(Ua { poll: *poll }),
+                packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
-            SendRej(poll, nr) => ret.push(ReturnEvent::Packet(Packet {
+            SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: false,
@@ -1712,12 +1746,9 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Rej(Rej {
-                    poll: *poll,
-                    nr: *nr,
-                }),
+                packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
-            SendRr(poll, nr, command) => ret.push(ReturnEvent::Packet(Packet {
+            SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: *command,
@@ -1725,25 +1756,19 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Rr(Rr {
-                    poll: *poll,
-                    nr: *nr,
-                }),
+                packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
-            SendRnr(poll, nr, cr) => ret.push(ReturnEvent::Packet(Packet {
+            SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: *cr,
-                command_response_la: !*cr,
+                command_response: *command,
+                command_response_la: !*command,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Rnr(Rnr {
-                    poll: *poll,
-                    nr: *nr,
-                }),
+                packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
-            SendDm(poll) => ret.push(ReturnEvent::Packet(Packet {
+            SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
@@ -1751,9 +1776,9 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Dm(Dm { poll: *poll }),
+                packet_type: PacketType::Dm(Dm { poll: *pf }),
             })),
-            SendSabm(poll) => ret.push(ReturnEvent::Packet(Packet {
+            SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
                 command_response: true,     // TODO: what value?
@@ -1761,7 +1786,7 @@ pub fn handle(
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Sabm(Sabm { poll: *poll }),
+                packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             // TODO: can we avoid the copy?
             Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.to_vec()))),
@@ -1809,7 +1834,10 @@ mod tests {
         let (con, events) = handle(
             &con,
             &mut data,
-            &Event::Connect(Addr::new("M0THC-2")?, false),
+            &Event::Connect {
+                addr: Addr::new("M0THC-2")?,
+                ext: false,
+            },
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");

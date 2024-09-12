@@ -76,7 +76,7 @@ impl Client {
             state: state::new(),
             data: state::Data::new(me),
         };
-        cli.actions(Event::Connect(peer, ext)).await?;
+        cli.actions(Event::Connect { addr: peer, ext }).await?;
         loop {
             cli.wait_event().await?;
             debug!("State after waiting: {}", cli.state.name());

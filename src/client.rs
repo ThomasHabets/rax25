@@ -91,7 +91,10 @@ impl Client {
 
     /// Connect to a remote node, optionally using extended (mod-128) mode.
     pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
-        self.actions(state::Event::Connect(addr.clone(), ext));
+        self.actions(state::Event::Connect {
+            addr: addr.clone(),
+            ext,
+        });
         loop {
             let dead = self.data.next_timer_remaining();
             let packet = self
