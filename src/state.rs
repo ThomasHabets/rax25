@@ -658,7 +658,7 @@ impl Data {
     /// Page 107.
     #[must_use]
     fn check_iframe_acked(&mut self, nr: u8) -> Vec<Action> {
-        // Typo in spec. Says "peer busy".
+        // Typo in 1998 spec. Says "peer busy".
         if self.peer_receiver_busy {
             // 1998 spec says start T3, 2017 spec says stop it.
             // It doesn't make much sense to run both T1 and T3, so let's go
@@ -687,7 +687,8 @@ impl Data {
     ///
     /// As ACK moves forward, the iframe resend queue can be pruned.
     ///
-    /// In the spec this is just `va <- nr`, which hides the complexity.
+    /// In the 1998/2017 spec this is just `va <- nr`, which hides the
+    /// complexity.
     #[must_use]
     fn update_ack(&mut self, nr: u8) -> Vec<Action> {
         // dbg!(self.va, nr);
@@ -1107,7 +1108,7 @@ impl State for AwaitingConnection {
         if data.rc == data.n2 {
             data.clear_iframe_queue();
             vec![
-                // Typo in spec: G, not g.
+                // Typo in 1998 spec: G, not g.
                 Action::DlError(DlError::G),
                 Action::State(Box::new(Disconnected::new())),
             ]
@@ -1215,7 +1216,7 @@ impl State for AwaitingRelease {
         data.t1.stop();
         if data.rc == data.n2 {
             debug!("DL-DISCONNECT confirm");
-            // The spec doesn't say, but if we're going disconnected, then
+            // The 1998 spec doesn't say, but if we're going disconnected, then
             // there's no need for timers.
             data.t3.stop();
             return vec![
