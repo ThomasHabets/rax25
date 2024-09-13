@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::pcap::PcapWriter;
 use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
@@ -16,6 +17,8 @@ pub struct Client {
     incoming: VecDeque<u8>,
     incoming_kiss: VecDeque<u8>,
     incoming_frames: VecDeque<Packet>,
+
+    pcap: Option<PcapWriter>,
 }
 
 fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
@@ -42,10 +45,8 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 }
 
 impl Client {
-    pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
-        let mut data = state::Data::new(me);
-        data.able_to_establish = true;
-        let mut cli = Self {
+    fn internal_new(data: state::Data, port: tokio_serial::SerialStream) -> Self {
+        Self {
             eof: false,
             incoming: VecDeque::new(),
             incoming_frames: VecDeque::new(),
@@ -53,7 +54,14 @@ impl Client {
             port,
             state: state::new(),
             data,
-        };
+            pcap: None,
+        }
+    }
+
+    pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
+        let mut data = state::Data::new(me);
+        data.able_to_establish = true;
+        let mut cli = Self::internal_new(data, port);
         loop {
             cli.wait_event().await?;
             if cli.state.is_state_connected() {
@@ -61,32 +69,47 @@ impl Client {
             }
         }
     }
+    pub async fn connect_capture(
+        me: Addr,
+        peer: Addr,
+        port: tokio_serial::SerialStream,
+        ext: bool,
+        capture: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
+        let mut cli = Self::internal_new(state::Data::new(me), port);
+        if let Some(capture) = capture {
+            cli.capture(capture)?;
+        }
+        cli.connect2(peer, ext).await
+    }
+
     pub async fn connect(
         me: Addr,
         peer: Addr,
         port: tokio_serial::SerialStream,
         ext: bool,
     ) -> Result<Self> {
-        let mut cli = Self {
-            eof: false,
-            incoming: VecDeque::new(),
-            incoming_frames: VecDeque::new(),
-            incoming_kiss: VecDeque::new(),
-            port,
-            state: state::new(),
-            data: state::Data::new(me),
-        };
-        cli.actions(Event::Connect { addr: peer, ext }).await?;
+        Self::internal_new(state::Data::new(me), port)
+            .connect2(peer, ext)
+            .await
+    }
+    async fn connect2(mut self, peer: Addr, ext: bool) -> Result<Self> {
+        self.actions(Event::Connect { addr: peer, ext }).await?;
         loop {
-            cli.wait_event().await?;
-            debug!("State after waiting: {}", cli.state.name());
-            if cli.state.is_state_connected() {
-                return Ok(cli);
+            self.wait_event().await?;
+            debug!("State after waiting: {}", self.state.name());
+            if self.state.is_state_connected() {
+                return Ok(self);
             }
-            if cli.state.is_state_disconnected() {
+            if self.state.is_state_disconnected() {
                 return Err(Error::msg("connection timed out"));
             }
         }
+    }
+    fn capture(&mut self, filename: std::path::PathBuf) -> Result<()> {
+        let pcap = PcapWriter::create(filename)?;
+        self.pcap = Some(pcap);
+        Ok(())
     }
     fn extract_packets(&mut self) {
         self.incoming_frames
@@ -96,6 +119,9 @@ impl Client {
         let mut buf = [0; 1024];
         while let Some(p) = self.incoming_frames.pop_front() {
             debug!("processing packet {:?}", p.packet_type);
+            if let Some(f) = &mut self.pcap {
+                f.write(&p.serialize(self.data.ext()))?;
+            }
             self.actions_packet(&p).await?;
             debug!(
                 "post packet: {} {:?} {:?}",
@@ -223,6 +249,9 @@ impl Client {
                 }
             }
             if let Some(frame) = act.serialize(self.data.ext()) {
+                if let Some(f) = &mut self.pcap {
+                    f.write(&frame)?;
+                }
                 let frame = crate::escape(&frame);
                 self.port.write_all(&frame).await?;
                 self.port.flush().await?;

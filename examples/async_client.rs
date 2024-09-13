@@ -25,6 +25,9 @@ struct Opt {
     #[clap(short = 'v', default_value = "0")]
     v: usize,
 
+    #[clap(long)]
+    capture: Option<std::path::PathBuf>,
+
     #[clap()]
     dst: String,
 }
@@ -39,8 +42,14 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     let mut stdin = tokio::io::stdin();
-    let mut client =
-        Client::connect(Addr::new("M0THC-1")?, Addr::new("M0THC-2")?, port, opt.ext).await?;
+    let mut client = Client::connect_capture(
+        Addr::new("M0THC-1")?,
+        Addr::new("M0THC-2")?,
+        port,
+        opt.ext,
+        opt.capture,
+    )
+    .await?;
     println!("Connected");
     let mut sigint = {
         use tokio::signal::unix::{signal, SignalKind};

@@ -14,6 +14,8 @@ mod client;
 pub use client::Client;
 pub mod r#async;
 
+pub mod pcap;
+
 /// AX.25 address.
 ///
 /// The encoding for an AX.25 address includes some extra bits, so they're
