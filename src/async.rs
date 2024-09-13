@@ -117,6 +117,8 @@ impl Client {
     }
     async fn wait_event(&mut self) -> Result<()> {
         let mut buf = [0; 1024];
+
+        // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.incoming_frames.pop_front() {
             debug!("processing packet {:?}", p.packet_type);
             if let Some(f) = &mut self.pcap {
@@ -130,6 +132,16 @@ impl Client {
                 self.data.t3.remaining()
             );
         }
+
+        // wait_event is called when connecting, accepting, or attempting to
+        // read. In the first two cases there's no incoming bytes. In the
+        // last case we actually want to return the bytes ASAP. So we do that
+        // here, without waiting for timers, more packets, or more serial
+        // bytes.
+        if !self.incoming.is_empty() {
+            return Ok(());
+        }
+
         let (t1, t3) = self.timer_13();
         tokio::pin!(t1);
         tokio::pin!(t3);
