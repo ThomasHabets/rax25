@@ -9,6 +9,10 @@ use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
+/// An async AX.25 client.
+///
+/// Despite its name, it's used both for the initiating and listening side of a
+/// connection. Probably should be renamed.
 pub struct Client {
     state: Box<dyn state::State>,
     data: state::Data,
@@ -21,6 +25,9 @@ pub struct Client {
     pcap: Option<PcapWriter>,
 }
 
+/// Turn bytes into frames.
+///
+/// Given an input buffer `ibuf` of KISS data, drain all packets we can find.
 fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
