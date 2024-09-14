@@ -76,10 +76,15 @@ impl PcapWriter {
 
         // Snaplen. This implementation simply captures the whole packets. And
         // because it's AX.25 packets are more like 200 bytes.
-        write_u32(&mut f, 65536)?;
+        //
+        // Apparently 65535 is a normal value to use.
+        write_u32(&mut f, 65535)?;
 
         // Another option is LINKTYPE_AX25_KISS. But currently we have nothing
         // interesting to populate there, so just using LINKTYPE_AX25 for now.
+        //
+        // Here's also where some FCS bits could be set, but we're currently
+        // running without FCS.
         write_u32(&mut f, LINKTYPE_AX25)?;
         Ok(Self { f })
     }
