@@ -45,6 +45,7 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 }
 
 impl Client {
+    // TODO: This internal constructor should instead be a builder.
     fn internal_new(data: state::Data, port: tokio_serial::SerialStream) -> Self {
         Self {
             eof: false,
@@ -278,3 +279,5 @@ impl Drop for Client {
         self.sync_disconnect()
     }
 }
+/* vim: textwidth=80
+ */
