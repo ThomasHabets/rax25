@@ -84,7 +84,7 @@ impl ConnectionBuilder {
         }
         // TODO: rather than default to false, we should support trying extended
         // first, then standard.
-        cli.connect2(peer, self.extended.unwrap_or(false)).await
+        cli.connect(peer, self.extended.unwrap_or(false)).await
     }
 }
 
@@ -145,6 +145,9 @@ impl Client {
         }
     }
 
+    /// Accept a connection.
+    ///
+    /// TODO: make this internal, and have a nice builder API instead.
     pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
         let mut data = state::Data::new(me);
         data.able_to_establish = true;
@@ -156,31 +159,9 @@ impl Client {
             }
         }
     }
-    pub async fn connect_capture(
-        me: Addr,
-        peer: Addr,
-        port: tokio_serial::SerialStream,
-        ext: bool,
-        capture: Option<std::path::PathBuf>,
-    ) -> Result<Self> {
-        let mut cli = Self::internal_new(state::Data::new(me), port);
-        if let Some(capture) = capture {
-            cli.capture(capture)?;
-        }
-        cli.connect2(peer, ext).await
-    }
 
-    pub async fn connect(
-        me: Addr,
-        peer: Addr,
-        port: tokio_serial::SerialStream,
-        ext: bool,
-    ) -> Result<Self> {
-        Self::internal_new(state::Data::new(me), port)
-            .connect2(peer, ext)
-            .await
-    }
-    async fn connect2(mut self, peer: Addr, ext: bool) -> Result<Self> {
+    /// Initiate a connection.
+    async fn connect(mut self, peer: Addr, ext: bool) -> Result<Self> {
         self.actions(Event::Connect { addr: peer, ext }).await?;
         loop {
             self.wait_event().await?;
