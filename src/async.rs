@@ -63,7 +63,7 @@ impl ConnectionBuilder {
     /// clients first try one, then the other.
     ///
     /// TODO: Heuristics is not actually implemented, so passing None currently
-    /// forces extended mode to be on.
+    /// forces extended mode to be off, since that's more supported.
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
         self
@@ -82,9 +82,9 @@ impl ConnectionBuilder {
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
-        // TODO: rather than default to true, we should support trying extended
+        // TODO: rather than default to false, we should support trying extended
         // first, then standard.
-        cli.connect2(peer, self.extended.unwrap_or(true)).await
+        cli.connect2(peer, self.extended.unwrap_or(false)).await
     }
 }
 
