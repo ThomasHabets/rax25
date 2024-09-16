@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use tokio_serial::SerialPortBuilderExt;
 
-use rax25::r#async::Client;
+use rax25::r#async::ConnectionBuilder;
 use rax25::Addr;
 
 #[derive(Parser, Debug)]
@@ -18,6 +18,9 @@ struct Opt {
 
     #[clap(short = 'v', default_value = "0")]
     v: usize,
+
+    #[clap(long)]
+    capture: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -30,7 +33,13 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     println!("Awaiting connection");
-    let mut client = Client::accept(Addr::new(&opt.src)?, port).await?;
+    let mut client = {
+        let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
+        if let Some(capture) = opt.capture {
+            builder = builder.capture(capture);
+        }
+        builder.accept().await?
+    };
     println!("Connected");
     client.write(b"Welcome to the server!\n").await?;
     loop {

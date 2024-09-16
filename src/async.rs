@@ -90,6 +90,30 @@ impl ConnectionBuilder {
         // first, then standard.
         cli.connect(peer, self.extended.unwrap_or(false)).await
     }
+
+    /// Accept a single connection.
+    ///
+    /// For production services this is probably not what you want, since a
+    /// server tends to want to serve more than one connection both sequentially
+    /// and concurrently.
+    ///
+    /// But this crate doesn't yet have a multi-connection API. Maybe it
+    /// shouldn't, though, but instead rely on a TCP-based multiplexer?
+    pub async fn accept(self) -> Result<Client> {
+        let mut data = state::Data::new(self.me);
+        data.able_to_establish = true;
+        let mut cli = Client::internal_new(data, self.port);
+        // Extended attribute ignored. Should it be?
+        if let Some(capture) = self.capture {
+            cli.capture(capture)?;
+        }
+        loop {
+            cli.wait_event().await?;
+            if cli.state.is_state_connected() {
+                return Ok(cli);
+            }
+        }
+    }
 }
 
 /// An async AX.25 client.
@@ -146,21 +170,6 @@ impl Client {
             state: state::new(),
             data,
             pcap: None,
-        }
-    }
-
-    /// Accept a connection.
-    ///
-    /// TODO: make this internal, and have a nice builder API instead.
-    pub async fn accept(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
-        let mut data = state::Data::new(me);
-        data.able_to_establish = true;
-        let mut cli = Self::internal_new(data, port);
-        loop {
-            cli.wait_event().await?;
-            if cli.state.is_state_connected() {
-                return Ok(cli);
-            }
         }
     }
 
