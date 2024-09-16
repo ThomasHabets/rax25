@@ -1,4 +1,4 @@
-//! Synchronous API code.
+//! Synchronous API.
 //!
 //! This file implements the sync interface for an AX.25 connected mode client.
 //! A client struct can (confusingly) be either the initiating or server side of
