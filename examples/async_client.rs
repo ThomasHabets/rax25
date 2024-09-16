@@ -50,8 +50,9 @@ async fn main() -> Result<()> {
         builder = builder.capture(capture);
     }
 
-    let mut client = builder.connect(Addr::new("M0THC-2")?).await?;
-    println!("Connected");
+    let st = std::time::Instant::now();
+    let mut client = builder.connect(Addr::new(&opt.dst)?).await?;
+    println!("Connected after {:?}", std::time::Instant::now() - st);
     let mut sigint = {
         use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::interrupt())?
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
                     break;
                 }
                 let buf = &buf[..res];
-                if buf ==  [101, 120, 105, 116, 10] {
+                if buf ==  b"exit\n" {
                     eprintln!("Got 'exit' from user");
                     break;
                 }
