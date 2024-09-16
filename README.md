@@ -19,9 +19,9 @@ push to github.
 ## Technical details
 
 * The reserved bit used by the Linux kernel (and other Linux tools,
-  like `axlisten`) to indicate extended sequence numbers is set,
-  here. The other reserved bit that Linux sets for mod-8 is not set or
-  interpreted here.
+  like `axlisten`) to indicate extended sequence numbers is set. This
+  crate sets it too, but since we know the connection state, it's
+  ignored on reception.
 
 ## Reference documentation
 

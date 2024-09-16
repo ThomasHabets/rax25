@@ -1,3 +1,21 @@
+//! rax25 - Rust AX.25 connected more library.
+//!
+//! * https://github.com/ThomasHabets/rax25
+//! * https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
+//!
+//! # Status
+//!
+//! * Seems to work well.
+//! * Both 8 and 128 modulus supported.
+//! * REJ untested / probably broken.
+//! * SREJ untested / mostly broken.
+//! * The sync API is not great.
+//! * The Async API works well as long as you only need one connection active.
+//!
+//! ## Interoperability tested regularly
+//!
+//! * Linux kernel
+//! * Direwolf
 use anyhow::{Error, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
