@@ -275,9 +275,7 @@ impl Client {
     /// Disconnect an established connection.
     ///
     /// This currently does not wait for the UA response.
-    ///
-    /// TODO: make this a consuming function.
-    pub async fn disconnect(&mut self) -> Result<()> {
+    pub async fn disconnect(mut self) -> Result<()> {
         // TODO: wait for the UA
         self.actions(Event::Disconnect).await
     }
