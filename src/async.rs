@@ -1,3 +1,13 @@
+//! Async API.
+//!
+//! This is probably going to be the best API to use.
+//!
+//! There's currently no background task, so you'll want to have a `read()`
+//! outstanding most of the time. Otherwise events like timers and received
+//! packets don't happen.
+//!
+//! If the caller is not interested in the received data, then it's probably
+//! best to spawn a task that reads in a loop and discards.
 use std::collections::VecDeque;
 
 use crate::pcap::PcapWriter;
@@ -35,6 +45,7 @@ pub struct ConnectionBuilder {
 }
 
 impl ConnectionBuilder {
+    /// Create a new builder.
     pub fn new(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
         Ok(Self {
             me,
@@ -43,14 +54,28 @@ impl ConnectionBuilder {
             port,
         })
     }
+    /// Set or prevent extended mode.
+    ///
+    /// Extended mode allows for more outstanding packets, and thus fewer pauses
+    /// for ACK (RR) roundtrips, but is not supported by all implementations.
+    ///
+    /// Enable or disable extended mode with Some(bool), or use None to have
+    /// clients first try one, then the other.
+    ///
+    /// TODO: Heuristics is not actually implemented, so passing None currently
+    /// forces extended mode to be on.
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
         self
     }
+
+    /// Capture incoming and outgoing frames to a pcap file.
     pub fn capture(mut self, path: std::path::PathBuf) -> ConnectionBuilder {
         self.capture = Some(path);
         self
     }
+
+    /// Initiate a connection.
     pub async fn connect(self, peer: Addr) -> Result<Client> {
         let data = state::Data::new(self.me);
         let mut cli = Client::internal_new(data, self.port);
