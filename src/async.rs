@@ -9,6 +9,58 @@ use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
+/// Connection Builder.
+///
+/// ```no_run
+/// # async {
+/// use tokio_serial::SerialPortBuilderExt;
+/// use rax25::{Addr};
+/// use rax25::r#async::ConnectionBuilder;
+///
+/// let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async().unwrap();
+/// let mut b = ConnectionBuilder::new(Addr::new("M0THC-1").unwrap(), port).unwrap();
+/// b.extended(Some(true))
+///     .capture("foo.cap".into());
+/// let client = b.connect(Addr::new("M0THC-2").unwrap()).await.unwrap();
+/// # };
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub struct ConnectionBuilder {
+    me: Addr,
+    extended: Option<bool>,
+    capture: Option<std::path::PathBuf>,
+    port: tokio_serial::SerialStream,
+}
+
+impl ConnectionBuilder {
+    pub fn new(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
+        Ok(Self {
+            me,
+            extended: None,
+            capture: None,
+            port,
+        })
+    }
+    pub fn extended(&mut self, ext: Option<bool>) -> &mut ConnectionBuilder {
+        self.extended = ext;
+        self
+    }
+    pub fn capture(&mut self, path: std::path::PathBuf) -> &mut ConnectionBuilder {
+        self.capture = Some(path);
+        self
+    }
+    pub async fn connect(self, peer: Addr) -> Result<Client> {
+        let data = state::Data::new(self.me);
+        let mut cli = Client::internal_new(data, self.port);
+        if let Some(capture) = self.capture {
+            cli.capture(capture)?;
+        }
+        // TODO: rather than default to true, we should support trying extended
+        // first, then standard.
+        cli.connect2(peer, self.extended.unwrap_or(true)).await
+    }
+}
+
 /// An async AX.25 client.
 ///
 /// Despite its name, it's used both for the initiating and listening side of a
@@ -52,7 +104,7 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 }
 
 impl Client {
-    // TODO: This internal constructor should instead be a builder.
+    // TODO: now that we have a builder, these functions should be cleaned up.
     fn internal_new(data: state::Data, port: tokio_serial::SerialStream) -> Self {
         Self {
             eof: false,

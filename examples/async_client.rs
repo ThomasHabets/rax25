@@ -5,7 +5,7 @@ use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio_serial::SerialPortBuilderExt;
 
-use rax25::r#async::Client;
+use rax25::r#async::ConnectionBuilder;
 use rax25::Addr;
 
 #[derive(Parser, Debug)]
@@ -42,14 +42,15 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     let mut stdin = tokio::io::stdin();
-    let mut client = Client::connect_capture(
-        Addr::new("M0THC-1")?,
-        Addr::new("M0THC-2")?,
-        port,
-        opt.ext,
-        opt.capture,
-    )
-    .await?;
+    let mut builder = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?;
+    if opt.ext {
+        builder.extended(Some(opt.ext));
+    }
+    if let Some(capture) = opt.capture {
+        builder.capture(capture);
+    }
+
+    let mut client = builder.connect(Addr::new("M0THC-2")?).await?;
     println!("Connected");
     let mut sigint = {
         use tokio::signal::unix::{signal, SignalKind};
