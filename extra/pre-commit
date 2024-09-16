@@ -2,7 +2,7 @@
 
 export RUSTFLAGS="--deny warnings"
 
-cargo fmt -- --check || {
+cargo +nightly fmt -- --check || {
     echo "Run: cargo fmt" >&2
     exit 1
 }

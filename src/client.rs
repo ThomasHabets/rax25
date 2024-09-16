@@ -9,9 +9,9 @@
 //! ## Client
 //!
 //! ```no_run
-//! use std::sync::Arc;
+//! use rax25::{Addr, Client, Kiss};
 //! use std::sync::atomic::AtomicBool;
-//! use rax25::{Addr, Kiss, Client};
+//! use std::sync::Arc;
 //!
 //! let done = Arc::new(AtomicBool::new(false));
 //! let kiss = Kiss::new("/dev/rfcomm0")?;
@@ -25,26 +25,24 @@
 //! ## Server
 //!
 //! ```no_run
-//! use rax25::{Addr, Kiss, Client, BusKiss, BusHub};
+//! use rax25::{Addr, BusHub, BusKiss, Client, Kiss};
 //! use std::sync::{Arc, Mutex};
 //!
 //! let bus = Arc::new(Mutex::new(bus::Bus::<rax25::BusMessage>::new(10)));
 //! let mut bk = BusKiss::new("/dev/ttyS0", bus.clone())?;
 //! std::thread::spawn(move || {
-//!   bk.run();
+//!     bk.run();
 //! });
 //! let hub = BusHub::new(bus);
 //! let mut listener = Client::new(Addr::new("M0THC-1")?, Box::new(hub));
-//! let mut con = listener.accept(std::time::Instant::now() +
-//! std::time::Duration::from_secs(600))?
-//! .expect("connection timeout");
+//! let mut con = listener
+//!     .accept(std::time::Instant::now() + std::time::Duration::from_secs(600))?
+//!     .expect("connection timeout");
 //! eprintln!("Connected!");
 //! drop(listener);
 //! con.write("Hello client!\n".as_bytes())?;
 //! # Ok::<(), anyhow::Error>(())
 //! ```
-//!
-//!
 use anyhow::{Error, Result};
 use log::{debug, error};
 
