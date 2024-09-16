@@ -1,9 +1,12 @@
-use anyhow::Result;
-use clap::Parser;
-use rax25::{Addr, Client, Kiss};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use anyhow::Result;
+use clap::Parser;
+
+use rax25::sync::Client;
+use rax25::{Addr, Kiss};
 
 #[derive(Parser, Debug)]
 struct Opt {

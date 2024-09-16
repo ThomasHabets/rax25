@@ -10,9 +10,8 @@ pub mod state;
 
 const USE_FCS: bool = false;
 
-mod client;
-pub use client::Client;
 pub mod r#async;
+pub mod sync;
 
 pub mod pcap;
 

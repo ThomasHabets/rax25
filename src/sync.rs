@@ -1,17 +1,19 @@
-//! Client code.
+//! Synchronous API code.
 //!
-//! This file implements the interface for an AX.25 connected mode client.
-//! A client struct can (confusingly) be either the initiating or server
-//! side of a connection.
+//! This file implements the sync interface for an AX.25 connected mode client.
+//! A client struct can (confusingly) be either the initiating or server side of
+//! a connection.
 //!
 //! # Examples
 //!
 //! ## Client
 //!
 //! ```no_run
-//! use rax25::{Addr, Client, Kiss};
 //! use std::sync::atomic::AtomicBool;
 //! use std::sync::Arc;
+//!
+//! use rax25::sync::Client;
+//! use rax25::{Addr, Kiss};
 //!
 //! let done = Arc::new(AtomicBool::new(false));
 //! let kiss = Kiss::new("/dev/rfcomm0")?;
@@ -25,8 +27,10 @@
 //! ## Server
 //!
 //! ```no_run
-//! use rax25::{Addr, BusHub, BusKiss, Client, Kiss};
 //! use std::sync::{Arc, Mutex};
+//!
+//! use rax25::sync::Client;
+//! use rax25::{Addr, BusHub, BusKiss, Kiss};
 //!
 //! let bus = Arc::new(Mutex::new(bus::Bus::<rax25::BusMessage>::new(10)));
 //! let mut bk = BusKiss::new("/dev/ttyS0", bus.clone())?;
@@ -408,3 +412,5 @@ mod tests {
         Ok(())
     }
 }
+/* vim: textwidth=80
+ */

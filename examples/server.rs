@@ -1,11 +1,14 @@
-use anyhow::Result;
-use clap::Parser;
-use log::debug;
-use rax25::{Addr, BusHub, BusKiss, Client};
-
+//! Example server using the synchronous API.
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use clap::Parser;
+use log::debug;
+
+use rax25::sync::Client;
+use rax25::{Addr, BusHub, BusKiss};
 
 #[derive(Parser, Debug)]
 struct Opt {
