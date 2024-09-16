@@ -12,18 +12,20 @@ use tokio::io::AsyncWriteExt;
 /// Connection Builder.
 ///
 /// ```no_run
-/// # async {
-/// use tokio_serial::SerialPortBuilderExt;
-/// use rax25::{Addr};
 /// use rax25::r#async::ConnectionBuilder;
+/// use rax25::Addr;
+/// use tokio_serial::SerialPortBuilderExt;
 ///
-/// let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async().unwrap();
-/// let mut b = ConnectionBuilder::new(Addr::new("M0THC-1").unwrap(), port).unwrap();
-/// b.extended(Some(true))
-///     .capture("foo.cap".into());
-/// let client = b.connect(Addr::new("M0THC-2").unwrap()).await.unwrap();
-/// # };
-/// # Ok::<(), anyhow::Error>(())
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
+///     let client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
+///         .extended(Some(true))
+///         .capture("foo.cap".into())
+///         .connect(Addr::new("M0THC-2")?)
+///         .await?;
+///     Ok(())
+/// }
 /// ```
 pub struct ConnectionBuilder {
     me: Addr,
@@ -41,11 +43,11 @@ impl ConnectionBuilder {
             port,
         })
     }
-    pub fn extended(&mut self, ext: Option<bool>) -> &mut ConnectionBuilder {
+    pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
         self
     }
-    pub fn capture(&mut self, path: std::path::PathBuf) -> &mut ConnectionBuilder {
+    pub fn capture(mut self, path: std::path::PathBuf) -> ConnectionBuilder {
         self.capture = Some(path);
         self
     }

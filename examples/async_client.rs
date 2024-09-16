@@ -44,10 +44,10 @@ async fn main() -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut builder = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?;
     if opt.ext {
-        builder.extended(Some(opt.ext));
+        builder = builder.extended(Some(opt.ext));
     }
     if let Some(capture) = opt.capture {
-        builder.capture(capture);
+        builder = builder.capture(capture);
     }
 
     let mut client = builder.connect(Addr::new("M0THC-2")?).await?;
