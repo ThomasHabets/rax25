@@ -1,6 +1,6 @@
 [package]
 name = "rax25"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2021"
 license = "MIT"
 authors = ["Thomas Habets <thomas@habets.se>"]
