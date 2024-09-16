@@ -223,9 +223,15 @@ impl Client {
         self.incoming_frames
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.data.ext())));
     }
+
+    /// Wait for an event, and handle it.
+    ///
+    /// If there's a chance that the caller is interested, then return. If the
+    /// caller wants to wait more, they can call again.
     async fn wait_event(&mut self) -> Result<()> {
         let mut buf = [0; 1024];
 
+        let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.incoming_frames.pop_front() {
             debug!("processing packet {:?}", p.packet_type);
@@ -247,6 +253,12 @@ impl Client {
         // here, without waiting for timers, more packets, or more serial
         // bytes.
         if !self.incoming.is_empty() {
+            return Ok(());
+        }
+
+        // If the state changed, there's a good chance that the client wants to
+        // know.
+        if self.state.name() != state_name {
             return Ok(());
         }
 
