@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     let mut stdin = tokio::io::stdin();
-    let mut builder = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?;
+    let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
     if opt.ext {
         builder = builder.extended(Some(opt.ext));
     }
