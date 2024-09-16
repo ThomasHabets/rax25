@@ -8,6 +8,50 @@
 //!
 //! If the caller is not interested in the received data, then it's probably
 //! best to spawn a task that reads in a loop and discards.
+//!
+//! # Examples
+//!
+//! ## Client
+//!
+//! ```no_run
+//! use tokio_serial::SerialPortBuilderExt;
+//!
+//! use rax25::r#async::ConnectionBuilder;
+//! use rax25::Addr;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
+//!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
+//!         .extended(Some(true))
+//!         .capture("foo.cap".into())
+//!         .connect(Addr::new("M0THC-2")?)
+//!         .await?;
+//!     client.write(b"Client says hello!").await?;
+//!     println!("Got: {:?}", client.read().await?);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Server
+//!
+//! ```no_run
+//! use tokio_serial::SerialPortBuilderExt;
+//!
+//! use rax25::r#async::ConnectionBuilder;
+//! use rax25::Addr;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
+//!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-2")?, port)?
+//!         .accept()
+//!         .await?;
+//!     client.write(b"Server says hello!\n").await?;
+//!     println!("Got: {:?}", client.read().await?);
+//!     Ok(())
+//! }
+//! ```
 use std::collections::VecDeque;
 
 use crate::pcap::PcapWriter;
@@ -22,23 +66,6 @@ use tokio::io::AsyncWriteExt;
 /// Connection Builder.
 ///
 /// A builder for setting up a connection.
-///
-/// ```no_run
-/// use rax25::r#async::ConnectionBuilder;
-/// use rax25::Addr;
-/// use tokio_serial::SerialPortBuilderExt;
-///
-/// #[tokio::main]
-/// async fn main() -> anyhow::Result<()> {
-///     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
-///     let client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
-///         .extended(Some(true))
-///         .capture("foo.cap".into())
-///         .connect(Addr::new("M0THC-2")?)
-///         .await?;
-///     Ok(())
-/// }
-/// ```
 pub struct ConnectionBuilder {
     me: Addr,
     extended: Option<bool>,
