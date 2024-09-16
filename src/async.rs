@@ -21,6 +21,8 @@ use tokio::io::AsyncWriteExt;
 
 /// Connection Builder.
 ///
+/// A builder for setting up a connection.
+///
 /// ```no_run
 /// use rax25::r#async::ConnectionBuilder;
 /// use rax25::Addr;
@@ -59,7 +61,7 @@ impl ConnectionBuilder {
     /// Extended mode allows for more outstanding packets, and thus fewer pauses
     /// for ACK (RR) roundtrips, but is not supported by all implementations.
     ///
-    /// Enable or disable extended mode with Some(bool), or use None to have
+    /// Enable or disable extended mode with `Some(bool)`, or use `None` to have
     /// clients first try one, then the other.
     ///
     /// TODO: Heuristics is not actually implemented, so passing None currently
@@ -70,6 +72,8 @@ impl ConnectionBuilder {
     }
 
     /// Capture incoming and outgoing frames to a pcap file.
+    ///
+    /// The file must now exist. Failure to create a new file is an error.
     pub fn capture(mut self, path: std::path::PathBuf) -> ConnectionBuilder {
         self.capture = Some(path);
         self
@@ -268,6 +272,11 @@ impl Client {
         .await
     }
 
+    /// Disconnect an established connection.
+    ///
+    /// This currently does not wait for the UA response.
+    ///
+    /// TODO: make this a consuming function.
     pub async fn disconnect(&mut self) -> Result<()> {
         // TODO: wait for the UA
         self.actions(Event::Disconnect).await
@@ -278,9 +287,15 @@ impl Client {
             eprintln!("TODO: sync_disconnect")
         }
     }
+
+    /// Write data on an established connection.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(Event::Data(data.to_vec())).await
     }
+
+    /// Get a pair of sleepers from the T1/T3 timers.
+    ///
+    /// TODO: 24h is used as "forever". Use something better?
     fn timer_13(&self) -> (tokio::time::Sleep, tokio::time::Sleep) {
         let timer1 = tokio::time::sleep(
             self.data
@@ -297,6 +312,14 @@ impl Client {
         (timer1, timer3)
     }
 
+    /// Read from the established connection.
+    ///
+    /// This function must be called to keep the state machine running.
+    /// Otherwise timers and incoming packets are not processed.
+    ///
+    /// If the caller intends to not call read() for a long time, then it should
+    /// spawn a task that does it anyway, and handle any read data on its own
+    /// side.
     pub async fn read(&mut self) -> Result<Vec<u8>> {
         loop {
             self.wait_event().await?;
