@@ -437,6 +437,16 @@ impl Data {
         }
     }
 
+    /// Set default T1 timer / smoothed roundtrip.
+    pub fn srt_default(&mut self, v: std::time::Duration) {
+        self.srt_default = v;
+    }
+
+    /// Set T3 / idle timer.
+    pub fn t3v(&mut self, v: std::time::Duration) {
+        self.t3v = v;
+    }
+
     /// Return true if using 128 modulus.
     #[must_use]
     pub fn ext(&self) -> bool {

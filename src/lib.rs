@@ -33,6 +33,12 @@ pub mod sync;
 
 pub mod pcap;
 
+/// Helper function for use with clap to parse command line durations.
+pub fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
 /// AX.25 address.
 ///
 /// The encoding for an AX.25 address includes some extra bits, so they're

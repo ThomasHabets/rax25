@@ -71,6 +71,8 @@ pub struct ConnectionBuilder {
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
     port: tokio_serial::SerialStream,
+    t3v: Option<std::time::Duration>,
+    srt: Option<std::time::Duration>,
 }
 
 impl ConnectionBuilder {
@@ -80,9 +82,12 @@ impl ConnectionBuilder {
             me,
             extended: None,
             capture: None,
+            t3v: None,
+            srt: None,
             port,
         })
     }
+
     /// Set or prevent extended mode.
     ///
     /// Extended mode allows for more outstanding packets, and thus fewer pauses
@@ -106,9 +111,27 @@ impl ConnectionBuilder {
         self
     }
 
+    /// Set default SRT value, used for T1 (retransmit) timer.
+    pub fn srt_default(mut self, v: std::time::Duration) -> ConnectionBuilder {
+        self.srt = Some(v);
+        self
+    }
+
+    /// Set T3 / idle timer.
+    pub fn t3v(mut self, v: std::time::Duration) -> ConnectionBuilder {
+        self.t3v = Some(v);
+        self
+    }
+
     /// Initiate a connection.
     pub async fn connect(self, peer: Addr) -> Result<Client> {
-        let data = state::Data::new(self.me);
+        let mut data = state::Data::new(self.me);
+        if let Some(v) = self.srt {
+            data.srt_default(v);
+        }
+        if let Some(v) = self.t3v {
+            data.t3v(v);
+        }
         let mut cli = Client::internal_new(data, self.port);
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
@@ -128,6 +151,12 @@ impl ConnectionBuilder {
     /// shouldn't, though, but instead rely on a TCP-based multiplexer?
     pub async fn accept(self) -> Result<Client> {
         let mut data = state::Data::new(self.me);
+        if let Some(v) = self.srt {
+            data.srt_default(v);
+        }
+        if let Some(v) = self.t3v {
+            data.t3v(v);
+        }
         data.able_to_establish = true;
         let mut cli = Client::internal_new(data, self.port);
         // Extended attribute ignored. Should it be?

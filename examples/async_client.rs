@@ -6,7 +6,7 @@ use tokio::io::AsyncReadExt;
 use tokio_serial::SerialPortBuilderExt;
 
 use rax25::r#async::ConnectionBuilder;
-use rax25::Addr;
+use rax25::{parse_duration, Addr};
 
 #[derive(Parser, Debug)]
 struct Opt {
@@ -25,6 +25,12 @@ struct Opt {
     #[clap(short = 'v', default_value = "0")]
     v: usize,
 
+    #[clap(long, value_parser = parse_duration)]
+    srt: Option<std::time::Duration>,
+
+    #[clap(long, value_parser = parse_duration)]
+    t3v: Option<std::time::Duration>,
+
     #[clap(long)]
     capture: Option<std::path::PathBuf>,
 
@@ -42,13 +48,22 @@ async fn main() -> Result<()> {
         .unwrap();
     let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
     let mut stdin = tokio::io::stdin();
-    let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
-    if opt.ext {
-        builder = builder.extended(Some(opt.ext));
-    }
-    if let Some(capture) = opt.capture {
-        builder = builder.capture(capture);
-    }
+    let builder = {
+        let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
+        if opt.ext {
+            builder = builder.extended(Some(opt.ext));
+        }
+        if let Some(capture) = opt.capture {
+            builder = builder.capture(capture);
+        }
+        if let Some(v) = opt.srt {
+            builder = builder.srt_default(v);
+        }
+        if let Some(v) = opt.t3v {
+            builder = builder.t3v(v);
+        }
+        builder
+    };
 
     let st = std::time::Instant::now();
     let mut client = builder.connect(Addr::new(&opt.dst)?).await?;

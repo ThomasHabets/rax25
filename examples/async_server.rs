@@ -3,7 +3,7 @@ use clap::Parser;
 use tokio_serial::SerialPortBuilderExt;
 
 use rax25::r#async::ConnectionBuilder;
-use rax25::Addr;
+use rax25::{parse_duration, Addr};
 
 #[derive(Parser, Debug)]
 struct Opt {
@@ -21,6 +21,12 @@ struct Opt {
 
     #[clap(long)]
     capture: Option<std::path::PathBuf>,
+
+    #[clap(long, value_parser = parse_duration)]
+    srt: Option<std::time::Duration>,
+
+    #[clap(long, value_parser = parse_duration)]
+    t3v: Option<std::time::Duration>,
 }
 
 #[tokio::main]
@@ -37,6 +43,12 @@ async fn main() -> Result<()> {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
         if let Some(capture) = opt.capture {
             builder = builder.capture(capture);
+        }
+        if let Some(v) = opt.srt {
+            builder = builder.srt_default(v);
+        }
+        if let Some(v) = opt.t3v {
+            builder = builder.t3v(v);
         }
         builder.accept().await?
     };
