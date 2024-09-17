@@ -168,10 +168,31 @@ pub enum Action {
     EOF,
 }
 
-// Spec says 3s.
-const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
+/// I made a note that spec says 3s, but can no longer find that.
+///
+/// Linux uses 10s, but I feel that's too long.
+pub const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
 
-const DEFAULT_MTU: usize = 200;
+/// Default maximum outgoing frame size.
+///
+/// This is the transmitting part of what the spec calls `N1`.
+/// Spec bug: 4.3.3.7 page 26 says `N1` is retry count, but that's `N2`.
+///
+/// Higher makes for more efficient bulk transfers in a less noisy environment,
+/// but makes retransmissions more expensive.
+///
+/// This is used for outgoing packets only. We're more liberal in what we
+/// receive.
+///
+/// * Linux uses 256 by default.
+/// * Spec says 2048, but in 4.3.3.7 it clarifies that this is bits, so 256
+///   bytes there too.
+/// * I've seen Kenwood TH-D74 crash when "too big", but have not found the
+///   precise number.
+pub const DEFAULT_MTU_OUT: usize = 256;
+
+/// Default maximum incoming frame size.
+pub const DEFAULT_MTU_IN: usize = 65535;
 
 // Output buffer size is kept in RAM, so should not grow unbounded.
 //
@@ -179,11 +200,20 @@ const DEFAULT_MTU: usize = 200;
 // send in any connection.
 const MAX_OBUF_SIZE: usize = 100_000_000;
 
-// TODO: what is the default?
-const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(3);
+/// "T3 should be greater than T1". 6.7.1.3.
+/// Linux uses 5min.
+///
+/// TODO: need to tune this?
+pub const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(10);
 
-// Max retry count.
-const DEFAULT_N2: u8 = 3;
+/// Max retry count.
+///
+/// Linux uses 10. It's also set to 10 in the 1998 spec, page 109, figure C4.7,
+/// for both extended and not. Page 102 in 2017 spec.
+///
+/// Also 4.3.3.7 says 10 is the default. Not sure why the diagrams need to set
+/// it, then.
+pub const DEFAULT_N2: u8 = 10;
 
 /// Timer object.
 ///
@@ -257,9 +287,13 @@ impl Timer {
 /// object.
 #[derive(Debug)]
 pub struct Data {
+    /// My local address.
     pub(crate) me: Addr,
 
+    /// Address of the other side of the connection. Not set during
+    /// Disconnected, waiting for remote end to connect.
     pub(crate) peer: Option<Addr>,
+
     // TODO: double check all types.
     /// True if this client initiated the connection via SABM(E).
     ///
@@ -280,10 +314,14 @@ pub struct Data {
 
     /// T3 timer - Connection idle timer. (4.4.5.2, page 30)
     ///
-    /// When no data is pending ACK, T3 is running. If it expires, it'll trigger
-    /// RR/RNR, to probe.
+    /// When no data is pending ACK (and therefore T1 running), T3 is running.
+    /// If it expires, it'll trigger RR/RNR, to probe.
     pub(crate) t3: Timer,
-    t3v: std::time::Duration, // TODO: is this where the init value should be?
+
+    /// T3 timer duration.
+    ///
+    /// The name here is made up.
+    t3v: std::time::Duration,
 
     /// Send state variable.
     ///
@@ -319,10 +357,12 @@ pub struct Data {
     /// Next value for T1; default initial value is initial value of SRT.
     t1v: std::time::Duration,
 
-    /// Max packet size.
+    /// Max incoming packet payload size.
     ///
-    /// Normally like 200 bytes. And setting it too large tends to cause
-    /// some implementations to crash.
+    /// Max outgoing packet payload size is in mtu_out.
+    ///
+    /// Spec says 256 bytes, but why not allow bigger if it does come in? See
+    /// `DEFAULT_MTU_IN`.
     n1: usize,
 
     /// Max retries.
@@ -380,6 +420,12 @@ pub struct Data {
     /// for the connection. Higher value means fewer bigger bursts of packets,
     /// but makes retransmissions worse. It also hogs the transmitter for other
     /// users.
+    ///
+    /// * I believe this is what Linux calls "window", where it uses 2 and 32,
+    ///   for mod-8 and mod-128.
+    /// * 1998 spec says 4 and 32.
+    /// * 2017 spec says 8 and 32. 8 can't be right? Bug: this change is not
+    ///   hilighted.
     k: u8,
 
     // TODO: not the right type. Should be VecDeque<u8> or VecDeque<Iframe>
@@ -395,7 +441,7 @@ pub struct Data {
     obuf: VecDeque<u8>,
 
     /// MTU for this connection.
-    mtu: usize,
+    mtu_out: usize,
 
     /// When an IFRAME is sent out, it's stared in this queue, until it's been
     /// acked. When a resend is required, it's sent from here.
@@ -408,7 +454,7 @@ impl Data {
         Self {
             me,
             peer: None,
-            n1: 65000, // Max number of octets in the information field of a frame.
+            n1: DEFAULT_MTU_IN,
             layer3_initiated: false,
             t1: Timer::default(),
             t3: Timer::default(),
@@ -430,7 +476,7 @@ impl Data {
             acknowledge_pending: false,
             own_receiver_busy: false,
             iframe_queue: Vec::new(),
-            mtu: DEFAULT_MTU,
+            mtu_out: DEFAULT_MTU_OUT,
             obuf: VecDeque::new(),
             iframe_resend_queue: VecDeque::new(),
             able_to_establish: false,
@@ -811,7 +857,7 @@ impl Data {
             }
             let payload = self
                 .obuf
-                .drain(..std::cmp::min(self.mtu, self.obuf.len()))
+                .drain(..std::cmp::min(self.mtu_out, self.obuf.len()))
                 .collect::<Vec<_>>();
             let ns = self.vs;
             self.vs = (self.vs + 1) % self.modulus;
@@ -1873,7 +1919,7 @@ mod tests {
         for retry in 1.. {
             dbg!("Retry", retry);
             let (c2, events) = handle(&*con, &mut data, &Event::T1);
-            if retry == 3 {
+            if retry == 10 {
                 assert_eq!(c2.unwrap().name(), "Disconnected");
                 break;
             } else {
@@ -2063,3 +2109,5 @@ mod tests {
         Ok(())
     }
 }
+/* vim: textwidth=80
+ */
