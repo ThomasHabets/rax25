@@ -334,9 +334,13 @@ impl Client {
             PacketType::Rej(p) => self.actions(state::Event::Rej(p.clone())),
             PacketType::Srej(p) => self.actions(state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(state::Event::Frmr(p.clone())),
-            PacketType::Xid(p) => self.actions(state::Event::Xid(p.clone())),
+            PacketType::Xid(p) => {
+                self.actions(state::Event::Xid(p.clone(), packet.command_response))
+            }
             PacketType::Ui(p) => self.actions(state::Event::Ui(p.clone(), packet.command_response)),
-            PacketType::Test(p) => self.actions(state::Event::Test(p.clone())),
+            PacketType::Test(p) => {
+                self.actions(state::Event::Test(p.clone(), packet.command_response))
+            }
             PacketType::Dm(p) => self.actions(state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
                 self.actions(state::Event::Rr(rr.clone(), packet.command_response))

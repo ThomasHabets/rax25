@@ -33,20 +33,29 @@ pub enum Event {
     Data(Vec<u8>),
     T1,
     T3,
+
+    // U frames.
+    // Commands.
     Sabm(Sabm, /* peer */ Addr),
     Sabme(Sabme, /* peer */ Addr),
-    Dm(Dm),
-    Rr(Rr, /* command */ bool),
-    Rnr(Rnr),
-    Ui(Ui, /* command */ bool),
     Disc(Disc),
-    Iframe(Iframe, /* command */ bool),
+    // Responses.
+    Dm(Dm),
     Ua(Ua),
     Frmr(Frmr),
+    // Commands or responses.
+    Ui(Ui, /* command */ bool),
+    Test(Test, /* command */ bool),
+    Xid(Xid, /* command */ bool),
+
+    // S frames.
+    Rr(Rr, /* command */ bool),
+    Rnr(Rnr),
     Rej(Rej),
     Srej(Srej),
-    Test(Test),
-    Xid(Xid),
+
+    // I frames.
+    Iframe(Iframe, /* command */ bool),
 }
 
 /// Return events, that the state machine wants to tell the world.
@@ -948,14 +957,14 @@ pub trait State {
 
     /// XID received from peer.
     #[must_use]
-    fn xid(&self, _data: &mut Data, _packet: &Xid) -> Vec<Action> {
+    fn xid(&self, _data: &mut Data, _packet: &Xid, _cr: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected XID");
         vec![]
     }
 
     /// TEST received from peer.
     #[must_use]
-    fn test(&self, _data: &mut Data, _packet: &Test) -> Vec<Action> {
+    fn test(&self, _data: &mut Data, _packet: &Test, _cr: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected TEST");
         vec![]
     }
@@ -1756,8 +1765,8 @@ pub fn handle(
         Event::Frmr(_) => state.frmr(data),
         Event::Rej(p) => state.rej(data, p),
         Event::Srej(p) => state.srej(data, p),
-        Event::Xid(p) => state.xid(data, p),
-        Event::Test(p) => state.test(data, p),
+        Event::Xid(p, command) => state.xid(data, p, *command),
+        Event::Test(p, command) => state.test(data, p, *command),
     };
     let mut ret = Vec::new();
 
