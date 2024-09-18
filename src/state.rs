@@ -1776,21 +1776,24 @@ pub fn handle(
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
-            SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
+            // U frames.
+            SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
+                // Always command per 4.3.3.
+                command_response: true,
+                command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Iframe(iframe.clone()),
+                packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
+                // Always command per 4.3.3.
+                command_response: true,
+                command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
@@ -1799,6 +1802,7 @@ pub fn handle(
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
+                // Always response per 4.3.3.
                 command_response: false,
                 command_response_la: true,
                 digipeater: vec![],
@@ -1806,9 +1810,22 @@ pub fn handle(
                 rr_extseq: false,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
+            SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
+                src: data.me.clone(),
+                dst: data.peer.clone().unwrap().clone(),
+                // Always response per 4.3.3.
+                command_response: false,
+                command_response_la: true,
+                digipeater: vec![],
+                rr_dist1: false,
+                rr_extseq: false,
+                packet_type: PacketType::Dm(Dm { poll: *pf }),
+            })),
+            // S frames.
             SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
+                // TODO: REJ can be commands, in status probes.
                 command_response: false,
                 command_response_la: true,
                 digipeater: vec![],
@@ -1836,25 +1853,19 @@ pub fn handle(
                 rr_extseq: false,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
-            SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
+            // I frame.
+            SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
                 src: data.me.clone(),
                 dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
+                // 4.3.1 seems to say that all I frames are commands.
+                //
+                // TODO: confirm this.
+                command_response: true,
+                command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
                 rr_extseq: false,
-                packet_type: PacketType::Dm(Dm { poll: *pf }),
-            })),
-            SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
-                command_response: true,     // TODO: what value?
-                command_response_la: false, // TODO: same
-                digipeater: vec![],
-                rr_dist1: false,
-                rr_extseq: false,
-                packet_type: PacketType::Sabm(Sabm { poll: *pf }),
+                packet_type: PacketType::Iframe(iframe.clone()),
             })),
             // TODO: can we avoid the copy?
             Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.to_vec()))),
