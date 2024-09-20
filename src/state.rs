@@ -502,6 +502,11 @@ impl Data {
         self.t3v = v;
     }
 
+    /// Set MTU.
+    pub fn mtu(&mut self, v: usize) {
+        self.mtu_out = v;
+    }
+
     /// Return true if using 128 modulus.
     #[must_use]
     pub fn ext(&self) -> bool {

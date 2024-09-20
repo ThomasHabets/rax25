@@ -73,6 +73,7 @@ pub struct ConnectionBuilder {
     port: tokio_serial::SerialStream,
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
+    mtu: Option<usize>,
 }
 
 impl ConnectionBuilder {
@@ -84,6 +85,7 @@ impl ConnectionBuilder {
             capture: None,
             t3v: None,
             srt: None,
+            mtu: None,
             port,
         })
     }
@@ -123,16 +125,29 @@ impl ConnectionBuilder {
         self
     }
 
-    /// Initiate a connection.
-    pub async fn connect(self, peer: Addr) -> Result<Client> {
-        let mut data = state::Data::new(self.me);
+    /// Set MTU. Only used for outgoing packets.
+    pub fn mtu(mut self, v: usize) -> ConnectionBuilder {
+        self.mtu = Some(v);
+        self
+    }
+
+    fn create_data(&self) -> state::Data {
+        let mut data = state::Data::new(self.me.clone());
         if let Some(v) = self.srt {
             data.srt_default(v);
         }
         if let Some(v) = self.t3v {
             data.t3v(v);
         }
-        let mut cli = Client::internal_new(data, self.port);
+        if let Some(v) = self.mtu {
+            data.mtu(v);
+        }
+        data
+    }
+
+    /// Initiate a connection.
+    pub async fn connect(self, peer: Addr) -> Result<Client> {
+        let mut cli = Client::internal_new(self.create_data(), self.port);
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
@@ -150,13 +165,7 @@ impl ConnectionBuilder {
     /// But this crate doesn't yet have a multi-connection API. Maybe it
     /// shouldn't, though, but instead rely on a TCP-based multiplexer?
     pub async fn accept(self) -> Result<Client> {
-        let mut data = state::Data::new(self.me);
-        if let Some(v) = self.srt {
-            data.srt_default(v);
-        }
-        if let Some(v) = self.t3v {
-            data.t3v(v);
-        }
+        let mut data = self.create_data();
         data.able_to_establish = true;
         let mut cli = Client::internal_new(data, self.port);
         // Extended attribute ignored. Should it be?

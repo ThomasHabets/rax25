@@ -32,6 +32,9 @@ struct Opt {
     t3v: Option<std::time::Duration>,
 
     #[clap(long)]
+    mtu: Option<usize>,
+
+    #[clap(long)]
     capture: Option<std::path::PathBuf>,
 
     #[clap()]
@@ -61,6 +64,9 @@ async fn main() -> Result<()> {
         }
         if let Some(v) = opt.t3v {
             builder = builder.t3v(v);
+        }
+        if let Some(v) = opt.mtu {
+            builder = builder.mtu(v);
         }
         builder
     };
