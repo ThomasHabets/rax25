@@ -100,6 +100,7 @@ impl ConnectionBuilder {
     ///
     /// TODO: Heuristics is not actually implemented, so passing None currently
     /// forces extended mode to be off, since that's more supported.
+    #[must_use]
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
         self
@@ -108,29 +109,34 @@ impl ConnectionBuilder {
     /// Capture incoming and outgoing frames to a pcap file.
     ///
     /// The file must now exist. Failure to create a new file is an error.
+    #[must_use]
     pub fn capture(mut self, path: std::path::PathBuf) -> ConnectionBuilder {
         self.capture = Some(path);
         self
     }
 
     /// Set default SRT value, used for T1 (retransmit) timer.
+    #[must_use]
     pub fn srt_default(mut self, v: std::time::Duration) -> ConnectionBuilder {
         self.srt = Some(v);
         self
     }
 
     /// Set T3 / idle timer.
+    #[must_use]
     pub fn t3v(mut self, v: std::time::Duration) -> ConnectionBuilder {
         self.t3v = Some(v);
         self
     }
 
     /// Set MTU. Only used for outgoing packets.
+    #[must_use]
     pub fn mtu(mut self, v: usize) -> ConnectionBuilder {
         self.mtu = Some(v);
         self
     }
 
+    #[must_use]
     fn create_data(&self) -> state::Data {
         let mut data = state::Data::new(self.me.clone());
         if let Some(v) = self.srt {
@@ -200,6 +206,7 @@ pub struct Client {
 /// Turn bytes into frames.
 ///
 /// Given an input buffer `ibuf` of KISS data, drain all packets we can find.
+#[must_use]
 fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
@@ -225,6 +232,7 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 
 impl Client {
     // TODO: now that we have a builder, these functions should be cleaned up.
+    #[must_use]
     fn internal_new(data: state::Data, port: tokio_serial::SerialStream) -> Self {
         Self {
             eof: false,
