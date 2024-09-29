@@ -5,7 +5,7 @@ use clap::Parser;
 use tokio::io::AsyncReadExt;
 use tokio_serial::SerialPortBuilderExt;
 
-use rax25::r#async::ConnectionBuilder;
+use rax25::r#async::{ConnectionBuilder, PortType};
 use rax25::{parse_duration, Addr};
 
 #[derive(Parser, Debug)]
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
         .verbosity(opt.v)
         .init()
         .unwrap();
-    let port = tokio_serial::new(&opt.port, 9600).open_native_async()?;
+    let port = PortType::Serial(tokio_serial::new(&opt.port, 9600).open_native_async()?);
     let mut stdin = tokio::io::stdin();
     let builder = {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;

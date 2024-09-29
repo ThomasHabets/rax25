@@ -16,12 +16,12 @@
 //! ```no_run
 //! use tokio_serial::SerialPortBuilderExt;
 //!
-//! use rax25::r#async::ConnectionBuilder;
+//! use rax25::r#async::{ConnectionBuilder, PortType};
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
+//!     let port = PortType::Serial(tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?);
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
 //!         .extended(Some(true))
 //!         .capture("foo.cap".into())
@@ -38,12 +38,12 @@
 //! ```no_run
 //! use tokio_serial::SerialPortBuilderExt;
 //!
-//! use rax25::r#async::ConnectionBuilder;
+//! use rax25::r#async::{ConnectionBuilder, PortType};
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let port = tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?;
+//!     let port = PortType::Serial(tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?);
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-2")?, port)?
 //!         .accept()
 //!         .await?;
@@ -53,6 +53,7 @@
 //! }
 //! ```
 use std::collections::VecDeque;
+use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
 use crate::state::{self, Event, ReturnEvent};
@@ -63,6 +64,52 @@ use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
+pub enum PortType {
+    Serial(tokio_serial::SerialStream),
+}
+
+impl tokio::io::AsyncRead for PortType {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match *self {
+            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for PortType {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match *self {
+            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match *self {
+            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match *self {
+            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_shutdown(cx),
+        }
+    }
+}
+
 /// Connection Builder.
 ///
 /// A builder for setting up a connection.
@@ -70,7 +117,7 @@ pub struct ConnectionBuilder {
     me: Addr,
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
-    port: tokio_serial::SerialStream,
+    port: PortType,
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
@@ -78,7 +125,7 @@ pub struct ConnectionBuilder {
 
 impl ConnectionBuilder {
     /// Create a new builder.
-    pub fn new(me: Addr, port: tokio_serial::SerialStream) -> Result<Self> {
+    pub fn new(me: Addr, port: PortType) -> Result<Self> {
         Ok(Self {
             me,
             extended: None,
@@ -194,7 +241,7 @@ impl ConnectionBuilder {
 pub struct Client {
     state: Box<dyn state::State>,
     data: state::Data,
-    port: tokio_serial::SerialStream,
+    port: PortType,
     eof: bool,
     incoming: VecDeque<u8>,
     incoming_kiss: VecDeque<u8>,
@@ -233,7 +280,7 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 impl Client {
     // TODO: now that we have a builder, these functions should be cleaned up.
     #[must_use]
-    fn internal_new(data: state::Data, port: tokio_serial::SerialStream) -> Self {
+    fn internal_new(data: state::Data, port: PortType) -> Self {
         Self {
             eof: false,
             incoming: VecDeque::new(),
