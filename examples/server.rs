@@ -12,18 +12,19 @@ use rax25::{Addr, BusHub, BusKiss};
 
 #[derive(Parser, Debug)]
 struct Opt {
+    /// KISS serial port.
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
 
+    /// Source callsign and SSID.
     #[clap(short = 's')]
     src: String,
 
+    /// Use CR instead of NL.
     #[clap(short = 'r')]
     cr: bool,
 
-    #[clap(short = 'e')]
-    ext: bool,
-
+    /// Verbosity level.
     #[clap(short = 'v', default_value = "0")]
     v: usize,
 }
