@@ -10,33 +10,43 @@ use rax25::{parse_duration, Addr};
 
 #[derive(Parser, Debug)]
 struct Opt {
+    /// KISS serial port.
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
 
+    /// Source callsign and SSID.
     #[clap(short = 's')]
     src: String,
 
+    /// Use CR instead of NL.
     #[clap(short = 'r')]
     cr: bool,
 
+    /// Use mod-128 extended AX.25.
     #[clap(short = 'e')]
     ext: bool,
 
+    /// Verbosity level.
     #[clap(short = 'v', default_value = "0")]
     v: usize,
 
-    #[clap(long, value_parser = parse_duration)]
-    srt: Option<std::time::Duration>,
-
-    #[clap(long, value_parser = parse_duration)]
-    t3v: Option<std::time::Duration>,
-
-    #[clap(long)]
-    mtu: Option<usize>,
-
+    /// Capture packets in/out to pcap.
     #[clap(long)]
     capture: Option<std::path::PathBuf>,
 
+    /// Initial SRT value.
+    #[clap(long, value_parser = parse_duration)]
+    srt: Option<std::time::Duration>,
+
+    /// T3 (idle timer) value.
+    #[clap(long, value_parser = parse_duration)]
+    t3v: Option<std::time::Duration>,
+
+    /// MTU for outgoing frames.
+    #[clap(long)]
+    mtu: Option<usize>,
+
+    /// Destination callsign and SSID.
     #[clap()]
     dst: String,
 }
