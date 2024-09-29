@@ -66,6 +66,7 @@ use tokio::io::AsyncWriteExt;
 
 pub enum PortType {
     Serial(tokio_serial::SerialStream),
+    Tcp(tokio::net::TcpStream),
 }
 
 impl tokio::io::AsyncRead for PortType {
@@ -75,7 +76,8 @@ impl tokio::io::AsyncRead for PortType {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match *self {
-            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_read(cx, buf),
+            PortType::Serial(ref mut x) => Pin::new(x).poll_read(cx, buf),
+            PortType::Tcp(ref mut x) => Pin::new(x).poll_read(cx, buf),
         }
     }
 }
@@ -87,7 +89,8 @@ impl tokio::io::AsyncWrite for PortType {
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         match *self {
-            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_write(cx, buf),
+            PortType::Serial(ref mut x) => Pin::new(x).poll_write(cx, buf),
+            PortType::Tcp(ref mut x) => Pin::new(x).poll_write(cx, buf),
         }
     }
 
@@ -96,7 +99,8 @@ impl tokio::io::AsyncWrite for PortType {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match *self {
-            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_flush(cx),
+            PortType::Serial(ref mut x) => Pin::new(x).poll_flush(cx),
+            PortType::Tcp(ref mut x) => Pin::new(x).poll_flush(cx),
         }
     }
 
@@ -105,7 +109,8 @@ impl tokio::io::AsyncWrite for PortType {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match *self {
-            PortType::Serial(ref mut serial_stream) => Pin::new(serial_stream).poll_shutdown(cx),
+            PortType::Serial(ref mut x) => Pin::new(x).poll_shutdown(cx),
+            PortType::Tcp(ref mut x) => Pin::new(x).poll_shutdown(cx),
         }
     }
 }

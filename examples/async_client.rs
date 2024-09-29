@@ -59,7 +59,11 @@ async fn main() -> Result<()> {
         .verbosity(opt.v)
         .init()
         .unwrap();
-    let port = PortType::Serial(tokio_serial::new(&opt.port, 9600).open_native_async()?);
+    let port = if opt.port.contains('/') {
+        PortType::Serial(tokio_serial::new(&opt.port, 9600).open_native_async()?)
+    } else {
+        PortType::Tcp(tokio::net::TcpStream::connect(&opt.port).await?)
+    };
     let mut stdin = tokio::io::stdin();
     let builder = {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
