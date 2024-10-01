@@ -11,6 +11,7 @@ https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 * Both 8 and 128 modulus supported.
 * REJ untested / probably broken.
 * SREJ untested / probably broken.
+* Segmentation: not implemented.
 * The sync API is not great. Async API may also need some work
 
 Interoperability with linux kernel stack is lightly tested on every

@@ -682,6 +682,10 @@ impl Data {
     ///
     /// Page 109.
     fn select_t1_value(&mut self) {
+        // Direwolf has an interesting comment here that perhaps what we
+        // actually want is a check with state Connected, not rc=0.
+        //
+        // Or maybe we set rc=0 everywhere we enter Connected?
         if self.rc == 0 {
             // TODO: the real formula is stranger.
             self.srt = self.srt_default;
@@ -1146,6 +1150,7 @@ impl State for Disconnected {
 
     // Page 84.
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
+        // 1998 & 2017 bug: C and D make no sense here.
         vec![Action::DlError(DlError::C), Action::DlError(DlError::D)]
     }
 
@@ -1267,6 +1272,7 @@ impl State for AwaitingRelease {
         if !p.poll {
             return vec![];
         }
+        debug!("DL-DISCONNECT Confirm");
         data.t1.stop();
         vec![Action::State(Box::new(Disconnected::new()))]
     }
@@ -1358,6 +1364,8 @@ impl Connected {
                 // The following added in 2017 spec, page 95.
                 data.t3.stop();
                 data.t1.start(data.t1v);
+
+                // Direwolf seems to set ack pending to 0, meaning false?
                 data.acknowledge_pending = true;
             }
             return act;
@@ -1369,6 +1377,19 @@ impl Connected {
         }
         if in_range(data.va, packet.nr, data.vs, data.modulus) {
             act.extend(data.update_ack(packet.nr));
+            // TODO: Direwolf found that state machine can get stuck in
+            // TimerRecovery, and we should check for caught up. Disabled for now.
+            /*
+            if data.va == data.vs {
+                data.t1.stop();
+                data.select_t1_value();
+                data.t3.start(data.t3v);
+                data.rc = 0;
+                act.push(Action::State(Box::new(Connected::new(
+                    ConnectedState::Connected,
+                ))));
+            }
+            */
         } else {
             act.extend(data.nr_error_recovery());
             act.push(Action::State(Box::new(AwaitingConnection::new())));
@@ -1433,7 +1454,8 @@ impl State for Connected {
     // frame boundaries.
     //
     // This seems like the right thing to do. But in the future maybe we'll
-    // implement the equivalent of SEQPACKET.
+    // implement what Linux would call SEQPACKET, that AX.25 would call
+    // segmentation.
     fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
         data.obuf.extend(payload);
         if data.obuf.len() > MAX_OBUF_SIZE {
@@ -1493,6 +1515,8 @@ impl State for Connected {
     }
 
     // Page 96 & 102.
+    //
+    // TODO; implement segment reassembly.
     fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
             // 2017 spec page 93 says to DlError::O if the iframe *is* a
@@ -1503,8 +1527,9 @@ impl State for Connected {
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > data.n1 {
-            data.layer3_initiated = false;
             debug!("Discarding frame for being too big");
+            data.layer3_initiated = false;
+            // TODO: should we discard it? Seems like it's fine to keep, no?
             return vec![
                 data.establish_data_link(),
                 Action::DlError(DlError::O),
