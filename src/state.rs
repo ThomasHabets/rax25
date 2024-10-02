@@ -1235,6 +1235,7 @@ impl State for AwaitingConnection {
         data.vs = 0;
         data.va = 0;
         data.vr = 0;
+        data.rc = 0; // Missing from 1998 & 2017 spec, but done by direwolf.
         data.select_t1_value();
         vec![Action::State(Box::new(Connected::new(
             ConnectedState::Connected,
@@ -1682,7 +1683,8 @@ impl State for Connected {
         if let ConnectedState::TimerRecovery = self.connected_state {
             error!("T3 should not be running in TimerRecovery");
         }
-        data.rc = 0;
+        // 1998 bug: Says to set rc=0. Fixed in 2017.
+        data.rc = 1;
         vec![
             Action::State(Box::new(Connected::new(ConnectedState::TimerRecovery))),
             data.transmit_enquiry(),
