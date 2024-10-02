@@ -28,12 +28,16 @@ push to github.
 
 * [1998 spec](https://www.tapr.org/pdf/AX25.2.2.pdf). Page annotations
   in code are in reference to this doc.
-* [2017 update of
-  spec](https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf)
+* [2006 spec update](http://www.ax25.net/AX25.2.2-Jul%2098-2.pdf), which
+  despite its name and title page, is actually from 2006.
+* [2017 spec update](https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf)
 * [isomer's spec
   findings](https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c)
 * [Examining Ambiguities in the Automatic Packet Reporting
   System](https://digitalcommons.calpoly.edu/cgi/viewcontent.cgi?article=2449&context=theses)
+* Check [Direwolf
+  implementation](https://github.com/wb2osz/direwolf/blob/master/src/ax25_link.c)
+  "Erratum" comments.
 
 ## Misc
 
