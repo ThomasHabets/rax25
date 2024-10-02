@@ -1569,9 +1569,31 @@ impl State for Connected {
             return acts;
         }
         let mut actions = vec![];
-        match self.connected_state {
-            ConnectedState::Connected => actions.extend(data.check_iframe_acked(p.nr)),
-            ConnectedState::TimerRecovery => actions.extend(data.update_ack(p.nr)),
+        if false {
+            // 1998 spec.
+            match self.connected_state {
+                ConnectedState::Connected => actions.extend(data.check_iframe_acked(p.nr)),
+                ConnectedState::TimerRecovery => actions.extend(data.update_ack(p.nr)),
+            }
+        } else {
+            // 2017 spec. It's not a hilighted change.
+            actions.extend(data.check_iframe_acked(p.nr));
+        }
+
+        // TODO: Direwolf found that state machine can get stuck in
+        // TimerRecovery, and we should check for caught up. Disabled for now.
+        if false {
+            if let ConnectedState::TimerRecovery = self.connected_state {
+                if data.va == data.vs {
+                    data.t1.stop();
+                    data.select_t1_value();
+                    data.t3.start(data.t3v);
+                    data.rc = 0;
+                    actions.push(Action::State(Box::new(Connected::new(
+                        ConnectedState::Connected,
+                    ))));
+                }
+            }
         }
         if data.own_receiver_busy {
             // discord (implicit)
