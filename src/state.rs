@@ -880,7 +880,9 @@ impl Data {
             let ns = self.vs;
             self.vs = (self.vs + 1) % self.modulus;
             self.acknowledge_pending = false;
-            if self.t1.running {
+            // TODO: Direwolf makes a good point about always restarting T1,
+            // here. I'm not sure yet.
+            if !self.t1.running {
                 self.t3.stop();
                 self.t1.start(self.srt);
             }
