@@ -1252,6 +1252,17 @@ impl State for AwaitingConnection {
         // TODO: This is supposed to transition to "awaiting connect 2.2".
         vec![Action::SendDm { pf: packet.poll }]
     }
+
+    // Page 86.
+    fn disconnect(&self, data: &mut Data) -> Vec<Action> {
+        // 1998&2017 bug: It says "requeue". What does that even mean? Run this
+        // same function again?
+        data.t1.stop(); // Because we're heading into Disconnected.
+        vec![
+            Action::SendDisc { pf: true },
+            Action::State(Box::new(Disconnected::new())),
+        ]
+    }
 }
 
 /// TODO: document the meaning of this state.
@@ -1307,6 +1318,18 @@ impl State for AwaitingRelease {
         data.select_t1_value();
         data.t1.start(data.t1v);
         vec![Action::SendDisc { pf: true }]
+    }
+
+    // Page 89.
+    fn disconnect(&self, data: &mut Data) -> Vec<Action> {
+        // 1998&2017 bug: What's an "expedited" DM?
+        data.t1.stop();
+        debug!("DL-DISCONNECT confirm");
+        // 1998&2017 bug: Doesn't specify pf.
+        vec![
+            Action::SendDm { pf: false },
+            Action::State(Box::new(Disconnected::new())),
+        ]
     }
 
     // TODO: More handlers.
