@@ -6,9 +6,9 @@
 //! This implementation writes little endian pcap files on all platforms.
 //!
 //! Useful resources:
-//! * https://wiki.wireshark.org/Development/LibpcapFileFormat
-//! * https://www.ietf.org/archive/id/draft-gharris-opsawg-pcap-01.html
-//! * https://www.tcpdump.org/linktypes.html
+//! * <https://wiki.wireshark.org/Development/LibpcapFileFormat>
+//! * <https://www.ietf.org/archive/id/draft-gharris-opsawg-pcap-01.html>
+//! * <https://www.tcpdump.org/linktypes.html>
 
 use std::io::BufWriter;
 use std::io::Write;
@@ -94,11 +94,11 @@ impl PcapWriter {
     /// If this write fails, no further writes can be made, as the added record
     /// is now only partially added.
     pub fn write(&mut self, packet: &[u8]) -> Result<()> {
-        let len = packet.len() as u32;
+        let len = u32::try_from(packet.len())?;
         let now = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?;
         // TODO: Ugh, the pcap format is not Y2036 safe. What do we do here?
-        write_u32(&mut self.f, now.as_secs() as u32)?;
-        write_u32(&mut self.f, (now.as_micros() % 1000000) as u32)?;
+        write_u32(&mut self.f, u32::try_from(now.as_secs())?)?;
+        write_u32(&mut self.f, (now.as_micros() % 1_000_000) as u32)?;
         write_u32(&mut self.f, len)?;
         write_u32(&mut self.f, len)?;
         self.f.write_all(packet)?;

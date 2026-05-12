@@ -54,7 +54,7 @@ fn main() -> Result<()> {
 
     eprintln!("==== Awaiting connection");
     let mut c = listener
-        .accept(std::time::Instant::now() + std::time::Duration::from_secs(60))?
+        .accept(std::time::Instant::now() + std::time::Duration::from_mins(1))?
         .expect("connection timeout");
     drop(listener);
     eprintln!("==== Connected");
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
                 std::io::stdout().flush()?;
                 let reply = format!("Got <{s}>\n");
                 let reply = if opt.cr {
-                    reply.replace("\r", "\n")
+                    reply.replace('\r', "\n")
                 } else {
                     reply
                 };

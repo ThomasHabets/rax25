@@ -25,7 +25,9 @@ const FCSTAB: [u16; 256] = [
 pub(crate) fn fcs(data: &[u8]) -> [u8; 2] {
     let mut fcs = 0xffffu16;
     for byte in data {
-        fcs = (fcs >> 8) ^ FCSTAB[((fcs as u8) ^ byte) as usize];
+        let b = u8::try_from(fcs & 0xff).unwrap();
+        let b = b ^ byte;
+        fcs = (fcs >> 8) ^ FCSTAB[usize::from(b)];
     }
     fcs ^= 0xffff;
     [(fcs & 0xff) as u8, ((fcs >> 8) & 0xff) as u8]

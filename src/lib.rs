@@ -1,7 +1,7 @@
 //! rax25 - Rust AX.25 connected more library.
 //!
-//! * https://github.com/ThomasHabets/rax25
-//! * https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
+//! * <https://github.com/ThomasHabets/rax25>
+//! * <https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html>
 //!
 //! # Status
 //!
@@ -16,6 +16,13 @@
 //!
 //! * Linux kernel
 //! * Direwolf
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::missing_errors_doc)]
+// TODO: fix the excessive bools?
+#![allow(clippy::fn_params_excessive_bools)]
+#![allow(clippy::struct_excessive_bools)]
+// TODO: fix up the docstrings.
+#![allow(clippy::doc_markdown)]
 use anyhow::{Error, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -154,7 +161,7 @@ impl Addr {
         ret[6] = (ssid << 1)
             | (if rbit_ext { 0 } else { 0b0100_0000 })
             | (if rbit_dama { 0 } else { 0b0010_0000 })
-            | (if lowbit { 1 } else { 0 })
+            | u8::from(lowbit)
             | (if highbit { 0x80 } else { 0 });
         ret
     }
@@ -172,6 +179,7 @@ pub struct Packet {
     command_response: bool,
     command_response_la: bool,
     rr_dist1: bool,
+    #[allow(clippy::struct_field_names)]
     packet_type: PacketType,
 }
 
@@ -372,6 +380,7 @@ const NO_L3: u8 = 0xF0;
 impl Packet {
     /// Serialize a packet, either as standard mod-8, or extended mod-128.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn serialize(&self, ext: bool) -> Vec<u8> {
         let mut ret = Vec::with_capacity(
             14 + 2
@@ -405,7 +414,7 @@ impl Packet {
             PacketType::Sabme(s) => ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Disc(disc) => {
-                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 })
+                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 });
             }
             PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
             // TODO: FRMR data too.
@@ -423,7 +432,7 @@ impl Packet {
             PacketType::Rr(s) => {
                 if ext {
                     ret.push(CONTROL_RR);
-                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
                 } else {
                     ret.push(
                         CONTROL_RR
@@ -435,7 +444,7 @@ impl Packet {
             PacketType::Rnr(s) => {
                 if ext {
                     ret.push(CONTROL_RNR);
-                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
                 } else {
                     ret.push(
                         CONTROL_RNR
@@ -447,7 +456,7 @@ impl Packet {
             PacketType::Rej(s) => {
                 if ext {
                     ret.push(CONTROL_REJ);
-                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
                 } else {
                     ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 });
                 }
@@ -455,7 +464,7 @@ impl Packet {
             PacketType::Srej(s) => {
                 if ext {
                     ret.push(CONTROL_SREJ);
-                    ret.push((s.nr << 1) & 0xFE | if s.poll { 1 } else { 0 });
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
                 } else {
                     ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 });
                 }
@@ -463,7 +472,7 @@ impl Packet {
             PacketType::Iframe(iframe) => {
                 if ext {
                     ret.push(CONTROL_IFRAME | ((iframe.ns << 1) & 0xFE));
-                    ret.push((iframe.nr << 1) & 0xFE | if iframe.poll { 1 } else { 0 });
+                    ret.push((iframe.nr << 1) & 0xFE | u8::from(iframe.poll));
                 } else {
                     ret.push(
                         CONTROL_IFRAME
@@ -475,7 +484,7 @@ impl Packet {
                 ret.push(iframe.pid);
                 ret.extend(&iframe.payload);
             }
-        };
+        }
         if USE_FCS {
             let crc = fcs::fcs(&ret);
             ret.push(crc[0]);
@@ -569,10 +578,10 @@ impl Packet {
                 }),
                 // S frames. Second control byte, with NR.
                 1 => match control1 & !NR_MASK & !CONTROL_POLL {
-                    CONTROL_RR => PacketType::Rr(Rr { nr, poll }),
-                    CONTROL_RNR => PacketType::Rnr(Rnr { nr, poll }),
-                    CONTROL_REJ => PacketType::Rej(Rej { nr, poll }),
-                    CONTROL_SREJ => PacketType::Srej(Srej { nr, poll }),
+                    CONTROL_RR => PacketType::Rr(Rr { poll, nr }),
+                    CONTROL_RNR => PacketType::Rnr(Rnr { poll, nr }),
+                    CONTROL_REJ => PacketType::Rej(Rej { poll, nr }),
+                    CONTROL_SREJ => PacketType::Srej(Srej { poll, nr }),
                     _ => panic!("Impossible logic error: {control1} failed to be supervisor"),
                 },
                 // U frames. No second control byte.
@@ -673,7 +682,7 @@ impl Hub for FakeKiss {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let packet = Packet::parse(frame, None)?;
         match &packet.packet_type {
-            PacketType::Sabm(_) | PacketType::Sabme(_) => {
+            PacketType::Sabm(_) | PacketType::Sabme(_) | PacketType::Disc(_) => {
                 self.queue.push_back(
                     Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
                 );
@@ -682,11 +691,6 @@ impl Hub for FakeKiss {
                 self.queue.push_back(
                     Self::make_iframe(packet.dst.clone(), packet.src.clone(), vec![3, 2, 1])
                         .serialize(self.ext),
-                );
-            }
-            PacketType::Disc(_) => {
-                self.queue.push_back(
-                    Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
                 );
             }
             _ => {
@@ -747,7 +751,7 @@ impl Hub for BusHub {
 
 /// Kiss reads and writes packets on a KISS serial port.
 ///
-/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
+/// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
 pub struct Kiss {
     buf: std::collections::VecDeque<u8>,
     port: Box<dyn serialport::SerialPort>,
@@ -826,7 +830,7 @@ const KISS_TFESC: u8 = 0xDD;
 
 /// Escape KISS data stream.
 ///
-/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
+/// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
 #[must_use]
 pub(crate) fn escape(bytes: &[u8]) -> Vec<u8> {
     // Add 10% capacity to leave room for escaped
@@ -857,10 +861,9 @@ pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize,
             if let Some(start) = start_index {
                 // If start_index is already set and we find another 0xC0
                 return Some((start, i));
-            } else {
-                // Set the start_index when we find the first 0xC0
-                start_index = Some(i);
             }
+            // Set the start_index when we find the first 0xC0
+            start_index = Some(i);
         }
     }
 
@@ -868,7 +871,7 @@ pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize,
 }
 
 /// Unescape KISS data stream.
-/// https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
+/// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
 #[must_use]
 pub(crate) fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
@@ -924,7 +927,7 @@ impl Hub for Kiss {
             while let Some((a, b)) = find_frame(&self.buf) {
                 if b - a < 14 {
                     debug!("short packet {a} {b}");
-                    self.buf.drain(..(a + 1));
+                    self.buf.drain(..=a);
                     continue;
                 }
                 let bytes: Vec<_> = self
@@ -932,7 +935,7 @@ impl Hub for Kiss {
                     .iter()
                     .skip(a + 2)
                     .take(b - a - 2)
-                    .cloned()
+                    .copied()
                     .collect();
                 self.buf.drain(..b);
                 debug!("After drain: {:?}", self.buf);
@@ -940,13 +943,13 @@ impl Hub for Kiss {
                 if bytes.len() > 14 {
                     debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
                     match Packet::parse(&bytes, None) {
-                        Ok(packet) => debug!("... Decoded as: {:?}", packet),
+                        Ok(packet) => debug!("... Decoded as: {packet:?}"),
                         Err(e) => {
-                            debug!("... Failed to decode: {:?}", e);
+                            debug!("... Failed to decode: {e:?}");
                             panic!();
                         }
                     }
-                    return Ok(Some(bytes.to_vec()));
+                    return Ok(Some(bytes));
                 }
             }
         }

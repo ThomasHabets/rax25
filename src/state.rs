@@ -1,17 +1,17 @@
 //! State machine code for AX.25
 //!
-//! The state machine is documented in https://www.tapr.org/pdf/AX25.2.2.pdf,
+//! The state machine is documented in <https://www.tapr.org/pdf/AX25.2.2.pdf>,
 //! but it has a few bugs. They're pointed out in the code as they are
 //! encountered.
 //!
 //! There's also the 2017 version, but it quite possibly added more bugs than it
 //! fixed:
-//! https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf
+//! <https://wiki.oarc.uk/_media/packet:ax25.2.2.10.pdf>
 //!
 //! All page numbers, unless otherwise specified, are for the 1998 PDF.
 //!
 //! There's also isomer's useful notes at the top of
-//! https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c
+//! <https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c>
 use std::collections::VecDeque;
 
 use anyhow::Result;
@@ -74,6 +74,7 @@ impl ReturnEvent {
     ///
     /// TODO: Not very clean. Only packets can serialize. Other return events
     /// return None.
+    #[must_use]
     pub fn serialize(&self, ext: bool) -> Option<Vec<u8>> {
         match self {
             ReturnEvent::Packet(p) => Some(p.serialize(ext)),
@@ -254,6 +255,7 @@ impl Timer {
     /// Return None if timer is not running.
     ///
     /// Returns true if it's expired, alse false.
+    #[must_use]
     pub fn is_expired(&self) -> Option<bool> {
         if !self.running {
             return None;
@@ -262,6 +264,7 @@ impl Timer {
     }
 
     /// Return the remaining time of the timer, if it's running.
+    #[must_use]
     pub fn remaining(&self) -> Option<std::time::Duration> {
         if !self.running {
             return None;
@@ -459,6 +462,7 @@ pub struct Data {
 
 impl Data {
     /// Create new Data with the specified address being the local one.
+    #[must_use]
     pub fn new(me: Addr) -> Self {
         Self {
             me,
@@ -541,6 +545,7 @@ impl Data {
     /// Return time until next timer expires, or None if no timer is currently
     /// running.
     #[must_use]
+    #[allow(clippy::match_same_arms)]
     pub fn next_timer_remaining(&self) -> Option<std::time::Duration> {
         match (self.t1.remaining(), self.t3.remaining()) {
             (Some(t1), Some(t3)) => Some(std::cmp::min(t1, t3)),
@@ -697,7 +702,7 @@ impl Data {
             // It's unclear what unit `rc` is supposed to be. It's retry
             // counter. I'll assume seconds, to millisecond resolution.
             // SRT = RC / 4 + SRT*2
-            let t = std::time::Duration::from_millis(self.rc as u64 * 250);
+            let t = std::time::Duration::from_millis(u64::from(self.rc) * 250);
             self.srt = t + self.srt + self.srt;
         }
     }
@@ -1068,6 +1073,7 @@ impl Disconnected {
 
     // Page 85.
     #[must_use]
+    #[allow(clippy::unused_self)]
     fn sabm_and_sabme(&self, data: &mut Data, src: Addr, pf: bool) -> Vec<Action> {
         debug!("DL-Connect indication");
         if !data.able_to_establish {
@@ -1104,10 +1110,7 @@ impl State for Disconnected {
 
     // Page 85.
     fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
-        data.modulus = match ext {
-            true => 128,
-            false => 8,
-        };
+        data.modulus = if ext { 128 } else { 8 };
         // It says "SAT" in the PDF, but surely means SRT?
         data.peer = Some(addr.clone());
         data.srt = data.srt_default;
@@ -1354,20 +1357,22 @@ impl Connected {
 
     // Page 95
     #[must_use]
+    #[allow(clippy::unused_self)]
     fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         data.peer_receiver_busy = false;
         let mut act = data.check_need_for_response(cr, packet.poll);
-        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+        if in_range(data.va, packet.nr, data.vs, data.modulus) {
+            act.extend(data.check_iframe_acked(packet.nr));
+        } else {
             act.extend(data.nr_error_recovery());
             act.push(Action::State(Box::new(AwaitingConnection::new())));
-        } else {
-            act.extend(data.check_iframe_acked(packet.nr));
         }
         act
     }
 
     // Page 99.
     #[must_use]
+    #[allow(clippy::unused_self)]
     fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         data.peer_receiver_busy = false;
         if !cr && packet.poll {
@@ -1485,13 +1490,12 @@ impl State for Connected {
     // segmentation.
     fn data(&self, data: &mut Data, payload: &[u8]) -> Vec<Action> {
         data.obuf.extend(payload);
-        if data.obuf.len() > MAX_OBUF_SIZE {
-            panic!(
-                "TODO: handle better. Output buffer got too large. {} > {}",
-                data.obuf.len(),
-                MAX_OBUF_SIZE
-            );
-        }
+        assert!(
+            data.obuf.len() <= MAX_OBUF_SIZE,
+            "TODO: handle better. Output buffer got too large. {} > {}",
+            data.obuf.len(),
+            MAX_OBUF_SIZE
+        );
         data.flush()
     }
 
@@ -1544,6 +1548,7 @@ impl State for Connected {
     // Page 96 & 102.
     //
     // TODO; implement segment reassembly.
+    #[allow(clippy::too_many_lines)]
     fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
         if !command_response {
             // 2017 spec page 93 says to DlError::O if the iframe *is* a
@@ -1822,6 +1827,7 @@ pub enum Res {
 ///
 /// A set of return events and possibly a new state is returned.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn handle(
     state: &dyn State,
     data: &mut Data,
@@ -1852,6 +1858,7 @@ pub fn handle(
 
     // Save non-state actions.
     for act in &actions {
+        #[allow(clippy::enum_glob_use)]
         use Action::*;
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
@@ -1948,7 +1955,7 @@ pub fn handle(
                 packet_type: PacketType::Iframe(iframe.clone()),
             })),
             // TODO: can we avoid the copy?
-            Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.to_vec()))),
+            Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.clone()))),
             EOF => ret.push(ReturnEvent::Data(Res::EOF)),
         }
     }
@@ -2022,24 +2029,23 @@ mod tests {
             if retry == 10 {
                 assert_eq!(c2.unwrap().name(), "Disconnected");
                 break;
-            } else {
-                assert!(matches![c2, None]);
-                assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
-                assert_all(
-                    &[ReturnEvent::Packet(Packet {
-                        src: Addr::new("M0THC-1")?,
-                        dst: Addr::new("M0THC-2")?,
-                        command_response: true,
-                        command_response_la: false,
-                        digipeater: vec![],
-                        rr_dist1: false,
-                        rr_extseq: false,
-                        packet_type: PacketType::Sabm(Sabm { poll: true }),
-                    })],
-                    &events,
-                    "connect",
-                );
             }
+            assert!(c2.is_none());
+            assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+            assert_all(
+                &[ReturnEvent::Packet(Packet {
+                    src: Addr::new("M0THC-1")?,
+                    dst: Addr::new("M0THC-2")?,
+                    command_response: true,
+                    command_response_la: false,
+                    digipeater: vec![],
+                    rr_dist1: false,
+                    rr_extseq: false,
+                    packet_type: PacketType::Sabm(Sabm { poll: true }),
+                })],
+                &events,
+                "connect",
+            );
         }
         Ok(())
     }
@@ -2096,7 +2102,7 @@ mod tests {
                 true,
             ),
         );
-        assert!(matches![c2, None]);
+        assert!(c2.is_none());
         assert_all(
             &[
                 ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
@@ -2130,7 +2136,7 @@ mod tests {
                 true,
             ),
         );
-        assert!(matches![c2, None]);
+        assert!(c2.is_none());
         assert_all(
             &[ReturnEvent::Packet(Packet {
                 src: Addr::new("M0THC-1")?,
@@ -2161,7 +2167,7 @@ mod tests {
                 true,
             ),
         );
-        assert!(matches![c2, None]);
+        assert!(c2.is_none());
         assert_all(
             &[
                 ReturnEvent::Data(Res::Some(vec![11, 22, 33])),

@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
 
     let st = std::time::Instant::now();
     let mut client = builder.connect(Addr::new(&opt.dst)?).await?;
-    println!("Connected after {:?}", std::time::Instant::now() - st);
+    println!("Connected after {:?}", st.elapsed());
     let mut sigint = {
         use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::interrupt())?
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                     Ok(s) => s,
                     Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
                 };
-                let s = if opt.cr { s.replace("\r", "\n") } else {s};
+                let s = if opt.cr { s.replace('\r', "\n") } else {s};
                 print!("{s}");
                 std::io::stdout().flush()?;
             },

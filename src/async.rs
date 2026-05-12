@@ -263,10 +263,10 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
         if b - a < 14 {
-            ibuf.drain(..(a + 1));
+            ibuf.drain(..=a);
             continue;
         }
-        let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).cloned().collect();
+        let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).copied().collect();
         ibuf.drain(..b);
         let pb = crate::unescape(&pb);
         match Packet::parse(&pb, ext) {
@@ -371,7 +371,7 @@ impl Client {
             },
             () = &mut t3 => {
                 debug!("async con event: T3");
-                self.actions(Event::T3).await?
+                self.actions(Event::T3).await?;
             },
             res = self.port.read(&mut buf) => match res {
             Ok(n) => {
@@ -432,7 +432,7 @@ impl Client {
 
     fn sync_disconnect(&mut self) {
         if !self.state.is_state_disconnected() {
-            eprintln!("TODO: sync_disconnect")
+            eprintln!("TODO: sync_disconnect");
         }
     }
 
@@ -449,13 +449,13 @@ impl Client {
             self.data
                 .t1
                 .remaining()
-                .unwrap_or(std::time::Duration::from_secs(86400)),
+                .unwrap_or(std::time::Duration::from_hours(24)),
         );
         let timer3 = tokio::time::sleep(
             self.data
                 .t3
                 .remaining()
-                .unwrap_or(std::time::Duration::from_secs(86400)),
+                .unwrap_or(std::time::Duration::from_hours(24)),
         );
         (timer1, timer3)
     }
@@ -475,7 +475,7 @@ impl Client {
                 return Ok(vec![]);
             }
             if !self.incoming.is_empty() {
-                let ret: Vec<_> = self.incoming.iter().cloned().collect();
+                let ret: Vec<_> = self.incoming.iter().copied().collect();
                 self.incoming.clear();
                 return Ok(ret);
             }
@@ -495,7 +495,7 @@ impl Client {
                     state::Res::EOF => self.eof = true,
                     state::Res::Some(d) => self.incoming.extend(d),
                 },
-                _ => {
+                ReturnEvent::Packet(_) => {
                     // println!("Do action: {act:?}");
                 }
             }
@@ -514,7 +514,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.sync_disconnect()
+        self.sync_disconnect();
     }
 }
 /* vim: textwidth=80

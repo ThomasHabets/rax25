@@ -93,7 +93,7 @@ impl Client {
 
     /// Connect to a remote node, optionally using extended (mod-128) mode.
     pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
-        self.actions(state::Event::Connect {
+        self.actions(&state::Event::Connect {
             addr: addr.clone(),
             ext,
         });
@@ -101,13 +101,13 @@ impl Client {
             let dead = self.data.next_timer_remaining();
             let packet = self
                 .kiss
-                .recv_timeout(dead.unwrap_or(std::time::Duration::from_secs(60)))?;
+                .recv_timeout(dead.unwrap_or(std::time::Duration::from_mins(1)))?;
             if let Some(packet) = packet {
                 let packet = Packet::parse(&packet, Some(self.data.ext()))?;
                 // dbg!(&packet);
                 // TODO: check addresses.
                 if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
-                    self.actions_packet(&packet)?;
+                    self.actions_packet(&packet);
                     if self.state.is_state_connected() {
                         debug!("Connection successful");
                         return Ok(());
@@ -115,10 +115,10 @@ impl Client {
                 }
             }
             if self.data.t1_expired() {
-                self.actions(state::Event::T1);
+                self.actions(&state::Event::T1);
             }
             if self.data.t3_expired() {
-                self.actions(state::Event::T3);
+                self.actions(&state::Event::T3);
             }
             if self.state.is_state_disconnected() {
                 debug!("Connection timeout");
@@ -153,7 +153,7 @@ impl Client {
                                 Client::new(self.data.me.clone(), self.kiss.clone());
                             new_client.data.peer = Some(packet.src.clone());
                             new_client.data.able_to_establish = true;
-                            new_client.actions_packet(&packet)?;
+                            new_client.actions_packet(&packet);
                             return Ok(Some(new_client));
                         }
                         PacketType::Sabme(_) => {
@@ -162,7 +162,7 @@ impl Client {
                             new_client.data.peer = Some(packet.src.clone());
                             new_client.data.set_version_2_2();
                             new_client.data.able_to_establish = true;
-                            new_client.actions_packet(&packet)?;
+                            new_client.actions_packet(&packet);
                             return Ok(Some(new_client));
                         }
                         _ => {}
@@ -178,7 +178,7 @@ impl Client {
     /// change.
     pub fn disconnect(&mut self) -> Result<()> {
         if !self.state.is_state_disconnected() {
-            self.actions(state::Event::Disconnect);
+            self.actions(&state::Event::Disconnect);
         }
         Ok(())
     }
@@ -187,7 +187,7 @@ impl Client {
     ///
     /// This may block.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.actions(state::Event::Data(data.to_vec()));
+        self.actions(&state::Event::Data(data.to_vec()));
         Ok(())
     }
 
@@ -216,6 +216,7 @@ impl Client {
     /// Returns true if remote end has disconnected.
     ///
     /// TODO: really, this maybe should be `.is_connected()`.
+    #[must_use]
     pub fn eof(&self) -> bool {
         self.eof
     }
@@ -226,6 +227,8 @@ impl Client {
     /// if the remote end disconnected.
     ///
     /// I'm not so sure about this return value.
+    // TODO: why is the atomicbool an arc?
+    #[allow(clippy::needless_pass_by_value)]
     pub fn read_until(
         &mut self,
         done: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -238,10 +241,10 @@ impl Client {
                 return Ok(None);
             }
             if let Some(p) = self.try_read()? {
-                self.actions_packet(&p)?;
+                self.actions_packet(&p);
             }
         }
-        let ret: Vec<_> = self.incoming.iter().cloned().collect();
+        let ret: Vec<_> = self.incoming.iter().copied().collect();
         self.incoming.clear();
         Ok(Some(ret))
     }
@@ -250,35 +253,36 @@ impl Client {
     ///
     /// If using `try_read()`, then this function should very likely be called
     /// with the received packet.
-    fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
+    fn actions_packet(&mut self, packet: &Packet) {
         match &packet.packet_type {
-            PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
+            PacketType::Sabm(p) => self.actions(&state::Event::Sabm(p.clone(), packet.src.clone())),
             PacketType::Sabme(p) => {
-                self.actions(state::Event::Sabme(p.clone(), packet.src.clone()))
+                self.actions(&state::Event::Sabme(p.clone(), packet.src.clone()));
             }
-            PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
-            PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
-            PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
-            PacketType::Rej(p) => self.actions(state::Event::Rej(p.clone())),
-            PacketType::Srej(p) => self.actions(state::Event::Srej(p.clone())),
-            PacketType::Frmr(p) => self.actions(state::Event::Frmr(p.clone())),
+            PacketType::Ua(ua) => self.actions(&state::Event::Ua(ua.clone())),
+            PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
+            PacketType::Rnr(p) => self.actions(&state::Event::Rnr(p.clone())),
+            PacketType::Rej(p) => self.actions(&state::Event::Rej(p.clone())),
+            PacketType::Srej(p) => self.actions(&state::Event::Srej(p.clone())),
+            PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => {
-                self.actions(state::Event::Xid(p.clone(), packet.command_response))
+                self.actions(&state::Event::Xid(p.clone(), packet.command_response));
             }
-            PacketType::Ui(p) => self.actions(state::Event::Ui(p.clone(), packet.command_response)),
+            PacketType::Ui(p) => {
+                self.actions(&state::Event::Ui(p.clone(), packet.command_response));
+            }
             PacketType::Test(p) => {
-                self.actions(state::Event::Test(p.clone(), packet.command_response))
+                self.actions(&state::Event::Test(p.clone(), packet.command_response));
             }
-            PacketType::Dm(p) => self.actions(state::Event::Dm(p.clone())),
+            PacketType::Dm(p) => self.actions(&state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
-                self.actions(state::Event::Rr(rr.clone(), packet.command_response))
+                self.actions(&state::Event::Rr(rr.clone(), packet.command_response));
             }
-            PacketType::Iframe(iframe) => self.actions(state::Event::Iframe(
+            PacketType::Iframe(iframe) => self.actions(&state::Event::Iframe(
                 iframe.clone(),
                 packet.command_response,
             )),
         }
-        Ok(())
     }
 
     /// Give the state machine any event.
@@ -289,8 +293,8 @@ impl Client {
     ///
     /// State machine side effects are then actioned, including possible
     /// state transitions.
-    fn actions(&mut self, event: state::Event) {
-        let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
+    fn actions(&mut self, event: &state::Event) {
+        let (state, actions) = state::handle(&*self.state, &mut self.data, event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
         }
@@ -307,7 +311,7 @@ impl Client {
                         self.incoming.extend(d);
                     }
                 },
-                _ => {}
+                state::ReturnEvent::Packet(_) => {}
             }
 
             if let Some(frame) = act.serialize(self.data.ext()) {
@@ -330,7 +334,7 @@ mod tests {
         let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
         c.connect(&Addr::new("M0THC-2")?, false)?;
-        c.write(&vec![1, 2, 3])?;
+        c.write(&[1, 2, 3])?;
         let reply = c.try_read()?.unwrap();
         assert_eq!(
             reply,
@@ -360,10 +364,9 @@ mod tests {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        assert!(matches![
-            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
-            None
-        ]);
+        assert!(c
+            .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
+            .is_none());
         Ok(())
     }
 
@@ -385,10 +388,9 @@ mod tests {
         );
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        assert!(matches![
-            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?,
-            None
-        ]);
+        assert!(c
+            .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
+            .is_none());
         Ok(())
     }
 

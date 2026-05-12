@@ -64,8 +64,8 @@ fn main() -> Result<()> {
             let mut iterator = stdin.lock().lines();
             if let Some(line) = iterator.next() {
                 if cr {
-                    tx.send(line.and_then(|s| Ok(s.trim_end().to_owned() + "\r")))
-                        .unwrap();
+                    let line = line.map(|s| s.trim_end().to_owned() + "\r");
+                    tx.send(line).unwrap();
                 } else {
                     tx.send(line).unwrap();
                 }
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
                 Ok(s) => s,
                 Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
             };
-            let s = if opt.cr { s.replace("\r", "\n") } else { s };
+            let s = if opt.cr { s.replace('\r', "\n") } else { s };
             print!("{s}");
             std::io::stdout().flush()?;
         }
@@ -94,11 +94,11 @@ fn main() -> Result<()> {
                     done.store(true, Ordering::SeqCst);
                     break;
                 }
-                c.write(&line.as_bytes())?;
+                c.write(line.as_bytes())?;
             }
-            Ok(Err(e)) => eprintln!("Error reading line: {}", e),
+            Ok(Err(e)) => eprintln!("Error reading line: {e}"),
             Err(_) => {}
-        };
+        }
     }
     done.store(true, Ordering::SeqCst);
     Ok(())
