@@ -856,7 +856,7 @@ const KISS_TFESC: u8 = 0xDD;
 ///
 /// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
 #[must_use]
-pub(crate) fn escape(bytes: &[u8]) -> Vec<u8> {
+pub fn escape(bytes: &[u8]) -> Vec<u8> {
     // Add 10% capacity to leave room for escaped
     let mut ret = Vec::with_capacity((3 + bytes.len()) * 110 / 100);
     ret.push(KISS_FEND);

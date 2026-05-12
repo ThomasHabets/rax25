@@ -1,4 +1,6 @@
+#![allow(clippy::similar_names)]
 //! AGW server.
+// TODO: move this to be a binary, not an example.
 
 use anyhow::Result;
 use clap::Parser;
@@ -25,9 +27,13 @@ enum LogLevel {
 #[derive(Parser)]
 struct Opt {
     /// Serial KISS device.
-    // TODO: also support TCP.
+    // TODO: merge -d and -k
     #[arg(long, short)]
-    dev: std::path::PathBuf,
+    dev: Option<std::path::PathBuf>,
+
+    /// KISS TCP address.
+    #[arg(long, short)]
+    kiss: Option<String>,
 
     /// Baud rate.
     #[arg(long, short, default_value_t = 9600)]
@@ -92,7 +98,8 @@ impl ModemLink {
 }
 
 struct Modem {
-    port: PortType,
+    portr: tokio::io::ReadHalf<PortType>,
+    portw: tokio::io::WriteHalf<PortType>,
     to_tx: mpsc::Receiver<Vec<u8>>,
     distribute: Vec<mpsc::Sender<agw::Packet>>,
 }
@@ -100,10 +107,12 @@ struct Modem {
 impl Modem {
     #[must_use]
     fn new(port: PortType) -> (Self, ModemLink) {
+        let (portr, portw) = tokio::io::split(port);
         let (tx, to_tx) = mpsc::channel(10); // TODO: magic number.
         (
             Self {
-                port,
+                portr,
+                portw,
                 to_tx,
                 distribute: vec![],
             },
@@ -111,21 +120,28 @@ impl Modem {
         )
     }
     async fn run(&mut self) -> Result<()> {
+        const MAX_BUF: usize = 8192; // TODO: magic value.
         let mut buf = [0u8; 1024];
+        let mut to_modem = Vec::new();
         loop {
+            // TODO: if there are bytes to write, have a deadline.
             tokio::select! {
+                n = self.portw.write(&to_modem), if !to_modem.is_empty() => {
+                    let n = n?;
+                    to_modem.drain(..n);
+                }
                 packet = self.to_tx.recv() => {
                     match packet {
                         Some(packet) => {
-                            self.port.write_all(&packet).await?;
+                            to_modem.extend(&packet);
                         }
                         None => break
                     }
                 }
                 // TODO: read whole packets.
-                n = self.port.read(&mut buf) => {
-                    let _n = n?;
-                    //let _buf = &buf[..n];
+                n = self.portr.read(&mut buf), if to_modem.len()<MAX_BUF => {
+                    let n = n?;
+                    to_modem.extend(&buf[..n]);
                     for _ in &self.distribute {
                     }
                 }
@@ -147,9 +163,28 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
     info!("Starting up");
-    let port = PortType::Serial(
-        tokio_serial::new(opt.dev.to_str().unwrap(), opt.baud).open_native_async()?,
-    );
+
+    // Connect to modem.
+    let mut port = if let Some(dev) = opt.dev {
+        PortType::Serial(tokio_serial::new(dev.to_str().unwrap(), opt.baud).open_native_async()?)
+    } else if let Some(kiss) = opt.kiss {
+        PortType::Tcp(tokio::net::TcpStream::connect(kiss).await?)
+    } else {
+        panic!()
+    };
+
+    // Test code to see that we can write to modem.
+    if false {
+        let packet = rax25::Packet::ui(
+            rax25::Addr::new("M0THC-1")?,
+            rax25::Addr::new("M0THC-2")?,
+            b"hello world in the world",
+        );
+        let serial = rax25::escape(&packet.serialize(false));
+        port.write_all(&serial).await?;
+        port.flush().await?;
+    }
+
     let (mut modem, link) = Modem::new(port);
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
     tokio::spawn(async move { modem.run().await });
