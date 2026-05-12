@@ -226,8 +226,10 @@ impl Client {
     /// Returns an error (possibly timeout error), Some data, or None
     /// if the remote end disconnected.
     ///
+    /// `done` is `Arc` to make it easier for caller to cancel from other
+    /// threads / lifetimes.
+    ///
     /// I'm not so sure about this return value.
-    // TODO: why is the atomicbool an arc?
     #[allow(clippy::needless_pass_by_value)]
     pub fn read_until(
         &mut self,
