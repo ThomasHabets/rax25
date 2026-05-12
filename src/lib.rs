@@ -322,6 +322,7 @@ pub struct Iframe {
 /// it could. A DM should be returned when push is set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ui {
+    pid: u8,
     push: bool,
     payload: Vec<u8>,
 }
@@ -378,6 +379,25 @@ const TYPE_MASK: u8 = 0b0000_0011;
 const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    /// Construct a UI frame.
+    // TODO: allow setting all the other fields.
+    #[must_use]
+    pub fn ui<T: Into<Vec<u8>>>(src: Addr, dst: Addr, payload: T) -> Self {
+        Self {
+            src,
+            dst,
+            digipeater: vec![],
+            rr_extseq: false,
+            command_response: false,
+            command_response_la: true,
+            rr_dist1: false,
+            packet_type: PacketType::Ui(Ui {
+                pid: 0xf0,
+                push: false,
+                payload: payload.into(),
+            }),
+        }
+    }
     /// Serialize a packet, either as standard mod-8, or extended mod-128.
     #[must_use]
     #[allow(clippy::too_many_lines)]
@@ -419,8 +439,11 @@ impl Packet {
             PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
             // TODO: FRMR data too.
             PacketType::Frmr(s) => ret.push(CONTROL_FRMR | if s.poll { CONTROL_POLL } else { 0 }),
-            // TODO: UI data too.
-            PacketType::Ui(s) => ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 }),
+            PacketType::Ui(s) => {
+                ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 });
+                ret.push(s.pid);
+                ret.extend(&s.payload);
+            }
             // TODO: XID data too.
             PacketType::Xid(s) => ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 }),
             PacketType::Test(s) => {
@@ -594,7 +617,8 @@ impl Packet {
                     CONTROL_FRMR => PacketType::Frmr(Frmr { poll }),
                     CONTROL_UI => PacketType::Ui(Ui {
                         push: poll,
-                        payload: bytes.to_vec(),
+                        pid: bytes[0],
+                        payload: bytes[1..].to_vec(),
                     }),
                     CONTROL_XID => PacketType::Xid(Xid { poll }),
                     CONTROL_TEST => PacketType::Test(Test {
