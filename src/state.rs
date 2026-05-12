@@ -847,6 +847,7 @@ impl Data {
         // TODO: n1r = 2048
 
         // 1998 Spec bug: Spec says `kr`. Surely it means `k`?
+        // 2025 spec says 8.
         self.k = 4;
 
         // TODO: self.t2.set(3000);
