@@ -20,6 +20,8 @@ jobs:
       run:  sudo apt-get install -y libudev-dev
     - name: rustup install nightly
       run:  rustup install nightly
+    - name: Rustup install nightly clippy
+      run:  rustup component add --toolchain nightly clippy
     - name: Cargo install deps
       run:  cargo install tickbox cargo-deny
     - name: Build
