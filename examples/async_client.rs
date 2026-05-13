@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
     stderrlog::new()
         .module("rax25")
         .verbosity(opt.v as usize)
+        .show_module_names(true)
         .init()
         .unwrap();
     let port = connect_kiss_endpoint(&opt.port).await?;

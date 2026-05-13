@@ -571,7 +571,7 @@ impl Client {
 
     fn sync_disconnect(&mut self) {
         if !self.state.is_state_disconnected() {
-            eprintln!("TODO: sync_disconnect");
+            trace!("TODO: sync_disconnect");
         }
     }
 

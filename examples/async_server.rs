@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new()
         .module("rax25")
+        .show_module_names(true)
         .verbosity(opt.v as usize)
         .init()
         .unwrap();

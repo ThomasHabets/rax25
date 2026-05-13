@@ -158,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         .module(module_path!())
         .module("agw")
         .quiet(false)
+        .show_module_names(true)
         .verbosity(opt.log_level as usize)
         .timestamp(stderrlog::Timestamp::Second)
         .init()

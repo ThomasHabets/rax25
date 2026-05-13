@@ -595,7 +595,7 @@ impl Data {
         if len > self.n1 {
             return vec![Action::DlError(DlError::K)];
         }
-        debug!("DL-UNIT_DATA indication");
+        debug!("rax25: DL-UNIT_DATA indication");
         vec![]
     }
 
@@ -891,7 +891,7 @@ impl Data {
             }
             if self.vs == (self.va + self.k) % self.modulus.as_u8() {
                 debug!(
-                    "tx window full with more data ({} bytes) to send!",
+                    "rax25: tx window full with more data ({} bytes) to send!",
                     self.obuf.len()
                 );
                 break;
@@ -1092,7 +1092,7 @@ impl Disconnected {
     #[must_use]
     #[allow(clippy::unused_self)]
     fn sabm_and_sabme(&self, data: &mut Data, src: Addr, pf: bool) -> Vec<Action> {
-        debug!("DL-Connect indication");
+        debug!("rax25: DL-Connect indication");
         if !data.able_to_establish {
             return vec![Action::SendDm { pf }];
         }
@@ -1158,7 +1158,7 @@ impl State for Disconnected {
     //
     // Page 88.
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
-        debug!("Disconnect while already disconnected");
+        debug!("rax25: Disconnect while already disconnected");
         // TODO: issue DlDisconnectConfirm.
         vec![]
     }
@@ -1243,7 +1243,7 @@ impl State for AwaitingConnection {
             return vec![Action::DlError(DlError::D)];
         }
         if data.layer3_initiated {
-            debug!("DL-CONNECT CONFIRM");
+            debug!("rax25: DL-CONNECT CONFIRM");
         } else if data.vs != data.va {
             // 1998 spec:
             // We're awaiting a connection confirmation, but vs!=va? What does
@@ -1262,8 +1262,8 @@ impl State for AwaitingConnection {
             // start T1, then immediately stop it again.
             data.srt = data.srt_default;
             data.t1v = data.srt + data.srt;
-            debug!("DL-CONNECT CONFIRM, vs!=va");
-            warn!("Strange state entered: UA received while vs != va");
+            debug!("rax25: DL-CONNECT CONFIRM, vs!=va");
+            warn!("rax25: Strange state entered: UA received while vs != va");
         }
         data.t1.stop();
 
@@ -1325,7 +1325,7 @@ impl State for AwaitingRelease {
         if !p.poll {
             return vec![];
         }
-        debug!("DL-DISCONNECT Confirm");
+        debug!("rax25: DL-DISCONNECT Confirm");
         data.t1.stop();
         vec![Action::State(Box::new(Disconnected::new()))]
     }
@@ -1341,7 +1341,7 @@ impl State for AwaitingRelease {
         if !p.poll {
             return vec![Action::DlError(DlError::D)];
         }
-        debug!("DL-DISCONNECT confirm");
+        debug!("rax25: DL-DISCONNECT confirm");
         data.t1.stop();
         vec![Action::State(Box::new(Disconnected::new()))]
     }
@@ -1350,7 +1350,7 @@ impl State for AwaitingRelease {
     fn t1(&self, data: &mut Data) -> Vec<Action> {
         data.t1.stop();
         if data.rc == data.n2 {
-            debug!("DL-DISCONNECT confirm");
+            debug!("rax25: DL-DISCONNECT confirm");
             // The 1998 spec doesn't say, but if we're going disconnected, then
             // there's no need for timers.
             data.t3.stop();
@@ -1369,7 +1369,7 @@ impl State for AwaitingRelease {
     fn disconnect(&self, data: &mut Data) -> Vec<Action> {
         // 1998&2017 bug: What's an "expedited" DM?
         data.t1.stop();
-        debug!("DL-DISCONNECT confirm");
+        debug!("rax25: DL-DISCONNECT confirm");
         // 1998&2017 bug: Doesn't specify pf.
         vec![
             Action::SendDm { pf: false },
@@ -1475,7 +1475,7 @@ impl Connected {
         data.clear_exception_conditions();
         if data.vs != data.va {
             data.iframe_queue.clear();
-            debug!("DL-Connect indication");
+            debug!("rax25: DL-Connect indication");
         }
         data.t1.stop();
 
@@ -1568,7 +1568,7 @@ impl State for Connected {
     //
     // Done.
     fn dm(&self, data: &mut Data, _packet: &Dm) -> Vec<Action> {
-        debug!("DL-DISCONNECT");
+        debug!("rax25: DL-DISCONNECT");
         data.clear_iframe_queue();
         data.t1.stop();
         data.t3.stop();
@@ -1606,7 +1606,7 @@ impl State for Connected {
             return vec![Action::DlError(DlError::S)];
         }
         if p.payload.len() > data.n1 {
-            debug!("Discarding frame for being too big");
+            debug!("rax25: Discarding frame for being too big");
             data.layer3_initiated = false;
             // TODO: should we discard it? Seems like it's fine to keep, no?
             return vec![
@@ -1616,7 +1616,7 @@ impl State for Connected {
             ];
         }
         if !in_range(data.va, p.nr, data.vs, data.modulus) {
-            debug!("Discarding frame for being out of range");
+            debug!("rax25: Discarding frame for being out of range");
             let mut acts = data.nr_error_recovery();
             acts.push(Action::State(Box::new(AwaitingConnection::new())));
             return acts;
@@ -1650,7 +1650,7 @@ impl State for Connected {
         }
         if data.own_receiver_busy {
             // discord (implicit)
-            debug!("Discarding iframe because busy and being polled");
+            debug!("rax25: Discarding iframe because busy and being polled");
             if p.poll {
                 actions.push(Action::SendRnr {
                     pf: true,
@@ -1663,7 +1663,7 @@ impl State for Connected {
         }
 
         if p.ns == data.vr {
-            debug!("iframe in order {}", p.ns);
+            debug!("rax25: iframe in order {}", p.ns);
             // Frame is in order.
             data.vr = (data.vr + 1) % data.modulus.as_u8();
             data.reject_exception = false;
