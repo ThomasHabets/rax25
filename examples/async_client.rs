@@ -2,6 +2,7 @@ use std::io::Write;
 
 use anyhow::Result;
 use clap::Parser;
+use log::info;
 use tokio::io::AsyncReadExt;
 
 use rax25::{
@@ -86,7 +87,7 @@ async fn main() -> Result<()> {
 
     let st = std::time::Instant::now();
     let mut client = builder.connect(Addr::new(&opt.dst)?).await?;
-    println!("Connected after {:?}", st.elapsed());
+    info!("Connected after {:?}", st.elapsed());
     let mut sigint = {
         use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::interrupt())?
