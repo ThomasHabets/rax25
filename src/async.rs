@@ -312,6 +312,7 @@ impl KissPort {
                         return Ok(());
                     }
                 }
+                // TODO: if KISS is TCP, we should try reconnecting.
                 Err(e) => return Err(e.into()),
             }
         }
@@ -504,6 +505,7 @@ impl Client {
             res = self.kissport.process(self.pcap.as_mut()) => {
             if let Err(e) = res {
                 warn!("Error reading from serial port: {e:?}");
+                return Err(e);
             }
             },
         }
