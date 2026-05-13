@@ -14,14 +14,12 @@
 //! ## Client
 //!
 //! ```no_run
-//! use tokio_serial::SerialPortBuilderExt;
-//!
-//! use rax25::r#async::{ConnectionBuilder, PortType};
+//! use rax25::r#async::{connect_kiss_endpoint, ConnectionBuilder};
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let port = PortType::Serial(tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?);
+//!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
 //!         .extended(Some(true))
 //!         .capture("foo.cap".into())
@@ -36,14 +34,12 @@
 //! ## Server
 //!
 //! ```no_run
-//! use tokio_serial::SerialPortBuilderExt;
-//!
-//! use rax25::r#async::{ConnectionBuilder, PortType};
+//! use rax25::r#async::{connect_kiss_endpoint, ConnectionBuilder};
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
-//!     let port = PortType::Serial(tokio_serial::new("/dev/rfcomm0", 9600).open_native_async()?);
+//!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-2")?, port)?
 //!         .accept()
 //!         .await?;
@@ -59,14 +55,46 @@ use crate::pcap::PcapWriter;
 use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
-use anyhow::{Error, Result};
+use anyhow::{bail, Context, Error, Result};
 use log::{debug, trace};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio_serial::SerialPortBuilderExt;
 
 pub enum PortType {
     Serial(tokio_serial::SerialStream),
     Tcp(tokio::net::TcpStream),
+}
+
+#[allow(clippy::doc_markdown)]
+/// Connect to a KISS endpoint.
+///
+/// Supported endpoint formats are `serial:///dev/rfcomm0` and
+/// `tcp://localhost:8000`.
+pub async fn connect_kiss_endpoint(endpoint: &str) -> Result<PortType> {
+    if let Some(addr) = endpoint.strip_prefix("tcp://") {
+        if addr.is_empty() {
+            bail!("empty TCP KISS endpoint");
+        }
+        return Ok(PortType::Tcp(
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .with_context(|| format!("connecting to TCP KISS endpoint {endpoint:?}"))?,
+        ));
+    }
+
+    if let Some(path) = endpoint.strip_prefix("serial://") {
+        if path.is_empty() {
+            bail!("empty serial KISS endpoint");
+        }
+        return Ok(PortType::Serial(
+            tokio_serial::new(path, 9600)
+                .open_native_async()
+                .with_context(|| format!("opening serial KISS endpoint {endpoint:?}"))?,
+        ));
+    }
+
+    bail!("KISS endpoint must start with tcp:// or serial://");
 }
 
 impl tokio::io::AsyncRead for PortType {

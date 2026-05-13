@@ -1,15 +1,18 @@
 use anyhow::Result;
 use clap::Parser;
 use log::info;
-use tokio_serial::SerialPortBuilderExt;
 
-use rax25::r#async::{ConnectionBuilder, PortType};
-use rax25::{parse_duration, Addr};
+use rax25::{
+    parse_duration,
+    r#async::{connect_kiss_endpoint, ConnectionBuilder},
+    Addr,
+};
 
 #[derive(Parser, Debug)]
 struct Opt {
-    /// KISS serial port.
-    #[clap(short = 'p', default_value = "/dev/null")]
+    #[allow(clippy::doc_markdown)]
+    /// KISS endpoint, such as serial:///dev/rfcomm0 or tcp://localhost:8000.
+    #[clap(short = 'p', default_value = "serial:///dev/null")]
     port: String,
 
     /// Source callsign and SSID.
@@ -49,11 +52,7 @@ async fn main() -> Result<()> {
         .verbosity(opt.v)
         .init()
         .unwrap();
-    let port = if opt.port.contains('/') {
-        PortType::Serial(tokio_serial::new(&opt.port, 9600).open_native_async()?)
-    } else {
-        PortType::Tcp(tokio::net::TcpStream::connect(&opt.port).await?)
-    };
+    let port = connect_kiss_endpoint(&opt.port).await?;
     info!("Awaiting connection");
     let mut client = {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
