@@ -56,7 +56,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, trace};
+use log::{debug, info, trace};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_serial::SerialPortBuilderExt;
@@ -324,9 +324,9 @@ impl KissReader {
         self.incoming_frames
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext)));
     }
-    // TODO: take Packet, not bytes.
-    async fn write(&mut self, frame: &[u8]) -> Result<()> {
-        let frame = crate::escape(frame);
+    async fn write(&mut self, packet: &Packet) -> Result<()> {
+        let bytes = packet.serialize(self.ext);
+        let frame = crate::escape(&bytes);
         self.port.write_all(&frame).await?;
         self.port.flush().await?;
         Ok(())
@@ -594,11 +594,13 @@ impl Client {
                     // println!("Do action: {act:?}");
                 }
             }
-            if let Some(frame) = act.serialize(self.data.ext()) {
+            if let ReturnEvent::Packet(p) = act {
+                self.kissreader.write(&p).await?;
                 if let Some(f) = &mut self.pcap {
-                    f.write(&frame)?;
+                    f.write(&p.serialize(self.data.ext()))?;
                 }
-                self.kissreader.write(&frame).await?;
+            } else {
+                info!("Non-packet ReturnEvent {act:?}");
             }
         }
         Ok(())
