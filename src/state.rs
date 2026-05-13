@@ -293,6 +293,22 @@ impl Timer {
     }
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Modulus {
+    Standard = 8,
+    Extended = 128,
+}
+
+impl Modulus {
+    pub fn extended(self) -> bool {
+        self == Modulus::Extended
+    }
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Connection (or socket, if you will) extra data.
 ///
 /// The state object only carries the state itself. Further data is in this
@@ -389,7 +405,7 @@ pub struct Data {
     rc: u8,
 
     /// Either 8 or 128, depending on EXTSEQ.
-    pub(crate) modulus: u8,
+    pub(crate) modulus: Modulus,
 
     /// Remote end is busy, and canet receive frames.
     /// Page 82.
@@ -481,7 +497,7 @@ impl Data {
             n2: DEFAULT_N2,
             rc: 0,
             k: 7,
-            modulus: 8,
+            modulus: Modulus::Standard,
             peer_receiver_busy: false,
             reject_exception: false,
             sreject_exception: 0,
@@ -514,7 +530,7 @@ impl Data {
     /// Return true if using 128 modulus.
     #[must_use]
     pub fn ext(&self) -> bool {
-        self.modulus == 128
+        self.modulus == Modulus::Extended
     }
 
     /// Return true if T1 (retry) has expired.
@@ -775,7 +791,7 @@ impl Data {
         while self.va != nr {
             assert!(!self.iframe_resend_queue.is_empty());
             self.iframe_resend_queue.pop_front();
-            self.va = (self.va + 1) % self.modulus;
+            self.va = (self.va + 1) % self.modulus.as_u8();
         }
         self.flush()
     }
@@ -834,7 +850,7 @@ impl Data {
     /// Page 109.
     pub(crate) fn set_version_2_2(&mut self) {
         // TODO: set half duplex SREJ
-        self.modulus = 128;
+        self.modulus = Modulus::Extended;
         // TODO: n1r = 2048
 
         // 1998 Spec bug: Spec says `kr`. Surely it means `k`?
@@ -848,7 +864,7 @@ impl Data {
     ///
     /// Page 109.
     fn set_version_2(&mut self) {
-        self.modulus = 8;
+        self.modulus = Modulus::Standard;
         // TODO: n1r = 2048
 
         // 1998 Spec bug: Spec says `kr`. Surely it means `k`?
@@ -872,7 +888,7 @@ impl Data {
             if self.obuf.is_empty() {
                 break;
             }
-            if self.vs == (self.va + self.k) % self.modulus {
+            if self.vs == (self.va + self.k) % self.modulus.as_u8() {
                 debug!(
                     "tx window full with more data ({} bytes) to send!",
                     self.obuf.len()
@@ -884,7 +900,7 @@ impl Data {
                 .drain(..std::cmp::min(self.mtu_out, self.obuf.len()))
                 .collect::<Vec<_>>();
             let ns = self.vs;
-            self.vs = (self.vs + 1) % self.modulus;
+            self.vs = (self.vs + 1) % self.modulus.as_u8();
             self.acknowledge_pending = false;
             // TODO: Direwolf makes a good point about always restarting T1,
             // here. I'm not sure yet.
@@ -1110,7 +1126,11 @@ impl State for Disconnected {
 
     // Page 85.
     fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
-        data.modulus = if ext { 128 } else { 8 };
+        data.modulus = if ext {
+            Modulus::Extended
+        } else {
+            Modulus::Standard
+        };
         // It says "SAT" in the PDF, but surely means SRT?
         data.peer = Some(addr.clone());
         data.srt = data.srt_default;
@@ -1618,7 +1638,7 @@ impl State for Connected {
         if p.ns == data.vr {
             debug!("iframe in order {}", p.ns);
             // Frame is in order.
-            data.vr = (data.vr + 1) % data.modulus;
+            data.vr = (data.vr + 1) % data.modulus.as_u8();
             data.reject_exception = false;
             if data.sreject_exception > 0 {
                 data.sreject_exception -= 1;
@@ -1630,7 +1650,7 @@ impl State for Connected {
             false {
                 // retrieve stored vr in frame
                 // Deliver
-                data.vr = (data.vr + 1) % data.modulus;
+                data.vr = (data.vr + 1) % data.modulus.as_u8();
             }
             if p.poll {
                 actions.push(Action::SendRr {
@@ -1685,7 +1705,7 @@ impl State for Connected {
         }
         // if ns > vr + 1
         // TODO: Maybe a version of if in_range(p.ns) {
-        if p.ns != (data.vr + 1) % data.modulus {
+        if p.ns != (data.vr + 1) % data.modulus.as_u8() {
             // discard iframe (implicit)
             actions.push(Action::SendRej {
                 pf: p.poll,
@@ -1787,7 +1807,7 @@ impl State for Connected {
 ///
 /// if va steps forward, will it hit nr before it hits vs?
 #[must_use]
-fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
+fn in_range(va: u8, nr: u8, vs: u8, modulus: Modulus) -> bool {
     let mut t = va;
     loop {
         if t == nr {
@@ -1796,7 +1816,7 @@ fn in_range(va: u8, nr: u8, vs: u8, modulus: u8) -> bool {
         if t == vs {
             return false;
         }
-        t = (t + 1) % modulus;
+        t = (t + 1) % modulus.as_u8();
     }
 }
 

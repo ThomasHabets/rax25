@@ -462,7 +462,7 @@ impl Client {
         // know.
         if self.state.name() != state_name {
             if self.state.is_state_connected() {
-                self.kissport.ext = self.data.modulus == 128;
+                self.kissport.ext = self.data.modulus.extended();
             }
             return Ok(());
         }
