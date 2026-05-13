@@ -3,6 +3,7 @@
 //!
 //! This whole thing was AI-coded. It looks right, and I fixed a thing or two,
 //! but being a test I have not super validated it.
+use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -24,10 +25,14 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
 
     let server_exe = example_exe(&manifest_dir, "async_server");
     let client_exe = example_exe(&manifest_dir, "async_client");
+    let captures = TestDir::new("rax25-async-captures")?;
+    let client_capture = captures.path.join("client.pcap");
+    let server_capture = captures.path.join("server.pcap");
 
     let mut server = ChildGuard::new(
         Command::new(&server_exe)
-            .args(["-p", &server_endpoint, "-s", "M0TST-2"])
+            .args(["-p", &server_endpoint, "-s", "M0TST-2", "--capture"])
+            .arg(&server_capture)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -37,7 +42,9 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
 
     let mut client = ChildGuard::new(
         Command::new(&client_exe)
-            .args(["-p", &client_endpoint, "-s", "M0TST-1", "M0TST-2"])
+            .args(["-p", &client_endpoint, "-s", "M0TST-1", "--capture"])
+            .arg(&client_capture)
+            .arg("M0TST-2")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -89,8 +96,48 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
         .map_err(|_| io::Error::other("KISS bridge did not stop"))?
         .map_err(io::Error::other)?;
 
+    let client_capture_text = tshark_text(&client_capture)?;
+    let server_capture_text = tshark_text(&server_capture)?;
+    assert_tshark_lines(
+        "client capture",
+        &client_capture_text,
+        EXPECTED_CLIENT_CAPTURE,
+    )?;
+    assert_tshark_lines(
+        "server capture",
+        &server_capture_text,
+        EXPECTED_SERVER_CAPTURE,
+    )?;
+
     Ok(())
 }
+
+const EXPECTED_CLIENT_CAPTURE: &[&str] = &[
+    "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x3f|||U P, func=SABM",
+    "2|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0xf0|57656c636f6d6520746f2074686520736572766572210a|Text",
+    "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x20|0xf0|616c706861|Text",
+    "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x22|0xf0|476f74203c616c7068613e0a|Text",
+    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x42|0xf0|627261766f|Text",
+    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x44|0xf0|476f74203c627261766f3e0a|Text",
+    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x64|0xf0|636861726c6965|Text",
+    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c69653e0a|Text",
+    "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
+];
+
+const EXPECTED_SERVER_CAPTURE: &[&str] = &[
+    "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x3f|||U P, func=SABM",
+    "2|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0xf0|57656c636f6d6520746f2074686520736572766572210a|Text",
+    "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x20|0xf0|616c706861|Text",
+    "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x22|0xf0|476f74203c616c7068613e0a|Text",
+    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x42|0xf0|627261766f|Text",
+    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x44|0xf0|476f74203c627261766f3e0a|Text",
+    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x64|0xf0|636861726c6965|Text",
+    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c69653e0a|Text",
+    "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
+    "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+];
 
 fn build_examples(manifest_dir: &Path) -> TestResult {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -126,6 +173,85 @@ fn example_exe(manifest_dir: &Path, name: &str) -> PathBuf {
         .join("debug")
         .join("examples")
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
+struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    fn new(name: &str) -> TestResult<Self> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn tshark_text(path: &Path) -> TestResult<String> {
+    let output = Command::new("tshark")
+        .args([
+            "-r",
+            path.to_str().ok_or_else(|| {
+                io::Error::other(format!("non-UTF-8 pcap path: {}", path.display()))
+            })?,
+            "-T",
+            "fields",
+            "-E",
+            "separator=|",
+            "-e",
+            "frame.number",
+            "-e",
+            "ax25.src",
+            "-e",
+            "ax25.dst",
+            "-e",
+            "ax25.ctl",
+            "-e",
+            "ax25.pid",
+            "-e",
+            "data.data",
+            "-e",
+            "_ws.col.Info",
+        ])
+        .output()
+        .map_err(|e| io::Error::other(format!("running tshark for {}: {e}", path.display())))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "tshark failed for {} with {}; stderr:\n{}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn assert_tshark_lines(name: &str, actual: &str, expected: &[&str]) -> TestResult {
+    let actual: Vec<_> = actual.lines().collect();
+    if actual == expected {
+        return Ok(());
+    }
+
+    Err(io::Error::other(format!(
+        "{name} did not match expected tshark output\nexpected:\n{}\nactual:\n{}",
+        expected.join("\n"),
+        actual.join("\n")
+    ))
+    .into())
 }
 
 struct KissBridge {
