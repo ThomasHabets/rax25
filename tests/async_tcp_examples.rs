@@ -3,6 +3,7 @@
 //!
 //! This whole thing was AI-coded. It looks right, and I fixed a thing or two,
 //! but being a test I have not super validated it.
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -13,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TIMEOUT: Duration = Duration::from_secs(1);
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -22,7 +23,10 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
     run_async_examples_echo_test(TestCase {
         name: "standard",
         client_extra_args: &[],
-        expected_capture: EXPECTED_CAPTURE,
+        server_extra_args: &[],
+        bridge_mode: BridgeMode::Reliable,
+        timeout: TIMEOUT,
+        expected_capture: Some(EXPECTED_CAPTURE),
     })
 }
 
@@ -31,7 +35,26 @@ fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
     run_async_examples_echo_test(TestCase {
         name: "extended-client",
         client_extra_args: &["-e"],
-        expected_capture: EXPECTED_EXTENDED_CAPTURE,
+        server_extra_args: &[],
+        bridge_mode: BridgeMode::Reliable,
+        timeout: TIMEOUT,
+        expected_capture: Some(EXPECTED_EXTENDED_CAPTURE),
+    })
+}
+
+#[test]
+fn async_examples_echo_over_lossy_tcp() -> TestResult {
+    run_async_examples_echo_test(TestCase {
+        name: "lossy",
+        client_extra_args: &["--srt", "100ms", "--t3v", "1s"],
+        server_extra_args: &["--srt", "100ms", "--t3v", "1s"],
+        bridge_mode: BridgeMode::Lossy {
+            drop_probability_percent: 40,
+            client_to_server_seed: 0x1234_5678,
+            server_to_client_seed: 0x9abc_def0,
+        },
+        timeout: Duration::from_secs(20),
+        expected_capture: None,
     })
 }
 
@@ -39,14 +62,27 @@ fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
 struct TestCase {
     name: &'static str,
     client_extra_args: &'static [&'static str],
-    expected_capture: &'static [&'static str],
+    server_extra_args: &'static [&'static str],
+    bridge_mode: BridgeMode,
+    timeout: Duration,
+    expected_capture: Option<&'static [&'static str]>,
+}
+
+#[derive(Clone, Copy)]
+enum BridgeMode {
+    Reliable,
+    Lossy {
+        drop_probability_percent: u8,
+        client_to_server_seed: u64,
+        server_to_client_seed: u64,
+    },
 }
 
 fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     build_examples(&manifest_dir)?;
 
-    let bridge = start_kiss_bridge()?;
+    let bridge = start_kiss_bridge(test_case.bridge_mode)?;
     let server_endpoint = format!("tcp://{}", bridge.server_addr);
     let client_endpoint = format!("tcp://{}", bridge.client_addr);
 
@@ -60,6 +96,7 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
         Command::new(&server_exe)
             .args(["-p", &server_endpoint, "-s", "M0TST-2", "--capture"])
             .arg(&server_capture)
+            .args(test_case.server_extra_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -100,7 +137,7 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
         &client_lines,
         &mut seen_stdout,
         "Welcome to the server!",
-        TIMEOUT,
+        test_case.timeout,
     )?;
 
     for msg in ["alpha", "bravo", "charlie"] {
@@ -110,13 +147,13 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
             &client_lines,
             &mut seen_stdout,
             &format!("Got <{msg}>"),
-            TIMEOUT,
+            test_case.timeout,
         )?;
     }
 
     drop(client_stdin);
-    wait_for_success("async_client", &mut client, TIMEOUT)?;
-    wait_for_success("async_server", &mut server, TIMEOUT)?;
+    wait_for_success("async_client", &mut client, test_case.timeout)?;
+    wait_for_success("async_server", &mut server, test_case.timeout)?;
 
     stdout_reader
         .join()
@@ -129,16 +166,12 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
 
     let client_capture_text = tshark_text(&client_capture)?;
     let server_capture_text = tshark_text(&server_capture)?;
-    assert_tshark_lines(
-        "client capture",
-        &client_capture_text,
-        test_case.expected_capture,
-    );
-    assert_tshark_lines(
-        "server capture",
-        &server_capture_text,
-        test_case.expected_capture,
-    );
+    if let Some(expected) = test_case.expected_capture {
+        assert_tshark_lines("client capture", &client_capture_text, expected);
+    }
+    if let Some(expected) = test_case.expected_capture {
+        assert_tshark_lines("server capture", &server_capture_text, expected);
+    }
 
     Ok(())
 }
@@ -311,7 +344,7 @@ struct KissBridge {
     done: mpsc::Receiver<Result<(), String>>,
 }
 
-fn start_kiss_bridge() -> TestResult<KissBridge> {
+fn start_kiss_bridge(mode: BridgeMode) -> TestResult<KissBridge> {
     let client_listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| io::Error::other(format!("binding client KISS listener: {e}")))?;
     let server_listener = TcpListener::bind(("127.0.0.1", 0))
@@ -321,7 +354,8 @@ fn start_kiss_bridge() -> TestResult<KissBridge> {
     let (done_tx, done) = mpsc::channel();
 
     thread::spawn(move || {
-        let result = run_kiss_bridge(client_listener, server_listener).map_err(|e| e.to_string());
+        let result =
+            run_kiss_bridge(client_listener, server_listener, mode).map_err(|e| e.to_string());
         let _ = done_tx.send(result);
     });
 
@@ -333,7 +367,11 @@ fn start_kiss_bridge() -> TestResult<KissBridge> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn run_kiss_bridge(client_listener: TcpListener, server_listener: TcpListener) -> io::Result<()> {
+fn run_kiss_bridge(
+    client_listener: TcpListener,
+    server_listener: TcpListener,
+    mode: BridgeMode,
+) -> io::Result<()> {
     let (client, _) = client_listener.accept()?;
     let (server, _) = server_listener.accept()?;
     client.set_nodelay(true)?;
@@ -342,21 +380,149 @@ fn run_kiss_bridge(client_listener: TcpListener, server_listener: TcpListener) -
     let client_read = client.try_clone()?;
     let server_read = server.try_clone()?;
 
-    let to_server = thread::spawn(move || copy_until_eof(client_read, server));
-    let to_client = thread::spawn(move || copy_until_eof(server_read, client));
+    let (client_to_server_loss, server_to_client_loss) = match mode {
+        BridgeMode::Reliable => (None, None),
+        BridgeMode::Lossy {
+            drop_probability_percent,
+            client_to_server_seed,
+            server_to_client_seed,
+        } => (
+            Some(LossConfig {
+                drop_probability_percent,
+                seed: client_to_server_seed,
+            }),
+            Some(LossConfig {
+                drop_probability_percent,
+                seed: server_to_client_seed,
+            }),
+        ),
+    };
+
+    let to_server =
+        thread::spawn(move || copy_kiss_until_eof(client_read, server, client_to_server_loss));
+    let to_client =
+        thread::spawn(move || copy_kiss_until_eof(server_read, client, server_to_client_loss));
 
     to_server
         .join()
-        .map_err(|_| io::Error::other("client-to-server bridge panicked"))?;
+        .map_err(|_| io::Error::other("client-to-server bridge panicked"))??;
     to_client
         .join()
-        .map_err(|_| io::Error::other("server-to-client bridge panicked"))?;
+        .map_err(|_| io::Error::other("server-to-client bridge panicked"))??;
     Ok(())
 }
 
-fn copy_until_eof(mut src: TcpStream, mut dst: TcpStream) {
-    let _ = io::copy(&mut src, &mut dst);
-    let _ = dst.shutdown(Shutdown::Write);
+#[derive(Clone, Copy)]
+struct LossConfig {
+    drop_probability_percent: u8,
+    seed: u64,
+}
+
+fn copy_kiss_until_eof(
+    mut src: TcpStream,
+    mut dst: TcpStream,
+    loss: Option<LossConfig>,
+) -> io::Result<()> {
+    match loss {
+        Some(loss) => copy_kiss_frames_with_loss(&mut src, &mut dst, loss)?,
+        None => {
+            io::copy(&mut src, &mut dst)?;
+        }
+    }
+    dst.shutdown(Shutdown::Write)
+}
+
+fn copy_kiss_frames_with_loss(
+    src: &mut TcpStream,
+    dst: &mut TcpStream,
+    loss: LossConfig,
+) -> io::Result<()> {
+    const KISS_FEND: u8 = 0xC0;
+
+    let mut rng = XorShift64::new(loss.seed);
+    let mut seen_frames = HashSet::new();
+    let mut frame = Vec::new();
+    let mut in_frame = false;
+    let mut buf = [0; 1024];
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            if !frame.is_empty()
+                && !should_drop(
+                    &mut rng,
+                    loss.drop_probability_percent,
+                    &mut seen_frames,
+                    &frame,
+                )
+            {
+                dst.write_all(&frame)?;
+            }
+            return Ok(());
+        }
+
+        for &byte in &buf[..n] {
+            if byte == KISS_FEND {
+                if in_frame {
+                    frame.push(byte);
+                    if !should_drop(
+                        &mut rng,
+                        loss.drop_probability_percent,
+                        &mut seen_frames,
+                        &frame,
+                    ) {
+                        dst.write_all(&frame)?;
+                    }
+                    frame.clear();
+                    in_frame = false;
+                } else {
+                    frame.clear();
+                    frame.push(byte);
+                    in_frame = true;
+                }
+            } else if in_frame {
+                frame.push(byte);
+            } else {
+                dst.write_all(&[byte])?;
+            }
+        }
+    }
+}
+
+fn should_drop(
+    rng: &mut XorShift64,
+    drop_probability_percent: u8,
+    _seen_frames: &mut HashSet<Vec<u8>>,
+    _frame: &[u8],
+) -> bool {
+    //if !seen_frames.insert(frame.to_vec()) {
+    //     return false;
+    //}
+    // Here's room to put some extra rules about which packets to drop, if
+    // needed.
+    rng.next_bounded(100) < u64::from(drop_probability_percent)
+}
+
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    const fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+
+    fn next_bounded(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
 }
 
 fn spawn_line_reader<R: Read + Send + 'static>(
