@@ -529,8 +529,21 @@ impl Client {
     ///
     /// This currently does not wait for the UA response.
     pub async fn disconnect(mut self) -> Result<()> {
-        // TODO: wait for the UA
-        self.actions(Event::Disconnect).await
+        trace!("rax25: Disconnecting while in state {}", self.state.name());
+        self.actions(Event::Disconnect).await?;
+        match self.state.name().as_str() {
+            "AwaitingRelease" => loop {
+                self.wait_event().await?;
+                if self.state.is_state_disconnected() {
+                    break Ok(());
+                }
+            },
+            "Disconnected" => Ok(()),
+            other => {
+                trace!("Disconnect request in unexpected state {other}");
+                Ok(())
+            }
+        }
     }
 
     fn sync_disconnect(&mut self) {
@@ -585,6 +598,8 @@ impl Client {
         }
     }
 
+    /// Update state machine from a new event happening, that is not "a packet
+    /// arrived".
     async fn actions(&mut self, event: Event) -> Result<()> {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {

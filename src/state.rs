@@ -62,6 +62,7 @@ pub enum Event {
 ///
 /// IOW this excludes state changes, since only the state code needs to know
 /// about that.
+// TODO: also implement the other notifications like `DlDisconnectConfirm`.
 #[derive(Debug, PartialEq)]
 pub enum ReturnEvent {
     Packet(Packet),
@@ -1142,9 +1143,23 @@ impl State for Disconnected {
         ]
     }
 
+    // Figure C4.1
+    //
+    // ## 1998
+    //
     // Page 84.
+    //
+    // ## 2006
+    //
+    // Page 88. Typo in top left, should be "DL-DISCONNECT Request" triggers
+    // confirm and no state change, not "DL-CONNECT Request".
+    //
+    // ## 2017
+    //
+    // Page 88.
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
-        eprintln!("Disconnect while already disconnected");
+        debug!("Disconnect while already disconnected");
+        // TODO: issue DlDisconnectConfirm.
         vec![]
     }
 
@@ -1315,6 +1330,12 @@ impl State for AwaitingRelease {
         vec![Action::State(Box::new(Disconnected::new()))]
     }
 
+    // ## 2006
+    //
+    // C4.3 page 94.
+    //
+    // ## 1998
+    //
     // Page 90.
     fn ua(&self, data: &mut Data, p: &Ua) -> Vec<Action> {
         if !p.poll {
@@ -1488,7 +1509,13 @@ impl State for Connected {
         true
     }
 
+    // ## 1998 spec
+    //
     // Page 92 & 98.
+    //
+    // ## 2006 spec
+    //
+    // C4.4 on page 95 (Connected) and C4.5 101 (TimerRecovery).
     fn disconnect(&self, data: &mut Data) -> Vec<Action> {
         data.clear_iframe_queue();
         data.rc = 0;
