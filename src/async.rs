@@ -60,7 +60,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{Error, Result};
-use log::debug;
+use log::{debug, trace};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
@@ -126,6 +126,7 @@ pub struct ConnectionBuilder {
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
+    ext: bool,
 }
 
 impl ConnectionBuilder {
@@ -139,6 +140,7 @@ impl ConnectionBuilder {
             srt: None,
             mtu: None,
             port,
+            ext: false,
         })
     }
 
@@ -205,13 +207,13 @@ impl ConnectionBuilder {
 
     /// Initiate a connection.
     pub async fn connect(self, peer: Addr) -> Result<Client> {
-        let mut cli = Client::internal_new(self.create_data(), self.port);
+        let mut cli = Client::internal_new(self.create_data(), self.port, self.ext);
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
         // TODO: rather than default to false, we should support trying extended
         // first, then standard.
-        cli.connect(peer, self.extended.unwrap_or(false)).await
+        cli.connect(peer).await
     }
 
     /// Accept a single connection.
@@ -225,17 +227,81 @@ impl ConnectionBuilder {
     pub async fn accept(self) -> Result<Client> {
         let mut data = self.create_data();
         data.able_to_establish = true;
-        let mut cli = Client::internal_new(data, self.port);
+        let mut cli = Client::internal_new(data, self.port, self.ext);
         // Extended attribute ignored. Should it be?
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
+        debug!("rax25: Awaiting incoming SABM");
         loop {
             cli.wait_event().await?;
             if cli.state.is_state_connected() {
                 return Ok(cli);
             }
         }
+    }
+}
+
+/// A parser of kiss packets.
+///
+/// Every connection will have one, since extended and standard mode packets
+/// parse differently.
+struct KissReader {
+    /// Incoming raw bytes.
+    incoming_kiss: VecDeque<u8>,
+
+    /// Pending packets in need of processing.
+    incoming_frames: VecDeque<Packet>,
+
+    /// Parse as extended mode.
+    ext: bool,
+
+    /// Modem port.
+    /// This is a temporary state since the current implementation hogs the
+    /// whole serial port.
+    port: PortType,
+}
+
+impl KissReader {
+    async fn process(&mut self) -> Result<()> {
+        let mut buf = [0; 1024];
+        loop {
+            match self.port.read(&mut buf).await {
+                Ok(0) => {
+                    return Err(Error::msg("EOF from KISS port"));
+                }
+                Ok(n) => {
+                    debug!("Read {n} bytes from serial port");
+                    let buf = &buf[..n];
+                    self.incoming_kiss.extend(buf);
+                    self.extract_packets();
+                    if !self.incoming_frames.is_empty() {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    #[must_use]
+    fn len(&self) -> usize {
+        self.incoming_frames.len()
+    }
+    #[must_use]
+    fn pop_frame(&mut self) -> Option<Packet> {
+        self.incoming_frames.pop_front()
+    }
+
+    fn extract_packets(&mut self) {
+        self.incoming_frames
+            .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext)));
+    }
+    // TODO: take Packet, not bytes.
+    async fn write(&mut self, frame: &[u8]) -> Result<()> {
+        let frame = crate::escape(frame);
+        self.port.write_all(&frame).await?;
+        self.port.flush().await?;
+        Ok(())
     }
 }
 
@@ -246,11 +312,11 @@ impl ConnectionBuilder {
 pub struct Client {
     state: Box<dyn state::State>,
     data: state::Data,
-    port: PortType,
     eof: bool,
+
+    /// Incoming payload bytes ready to be delivered to the application.
     incoming: VecDeque<u8>,
-    incoming_kiss: VecDeque<u8>,
-    incoming_frames: VecDeque<Packet>,
+    kissreader: KissReader,
 
     pcap: Option<PcapWriter>,
 }
@@ -285,13 +351,16 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
 impl Client {
     // TODO: now that we have a builder, these functions should be cleaned up.
     #[must_use]
-    fn internal_new(data: state::Data, port: PortType) -> Self {
+    fn internal_new(data: state::Data, port: PortType, ext: bool) -> Self {
         Self {
             eof: false,
             incoming: VecDeque::new(),
-            incoming_frames: VecDeque::new(),
-            incoming_kiss: VecDeque::new(),
-            port,
+            kissreader: KissReader {
+                port,
+                incoming_kiss: VecDeque::new(),
+                incoming_frames: VecDeque::new(),
+                ext,
+            },
             state: state::new(),
             data,
             pcap: None,
@@ -299,8 +368,12 @@ impl Client {
     }
 
     /// Initiate a connection.
-    async fn connect(mut self, peer: Addr, ext: bool) -> Result<Self> {
-        self.actions(Event::Connect { addr: peer, ext }).await?;
+    async fn connect(mut self, peer: Addr) -> Result<Self> {
+        self.actions(Event::Connect {
+            addr: peer,
+            ext: self.kissreader.ext,
+        })
+        .await?;
         loop {
             self.wait_event().await?;
             debug!("State after waiting: {}", self.state.name());
@@ -317,28 +390,26 @@ impl Client {
         self.pcap = Some(pcap);
         Ok(())
     }
-    fn extract_packets(&mut self) {
-        self.incoming_frames
-            .extend(kisser_read(&mut self.incoming_kiss, Some(self.data.ext())));
-    }
 
     /// Wait for an event, and handle it.
     ///
     /// If there's a chance that the caller is interested, then return. If the
     /// caller wants to wait more, they can call again.
     async fn wait_event(&mut self) -> Result<()> {
-        let mut buf = [0; 1024];
-
+        trace!(
+            "rax25: Waiting for event. {} packets ready",
+            self.kissreader.len()
+        );
         let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
-        while let Some(p) = self.incoming_frames.pop_front() {
-            debug!("processing packet {:?}", p.packet_type);
+        while let Some(p) = self.kissreader.pop_frame() {
+            debug!("rax25: processing packet {:?}", p.packet_type);
             if let Some(f) = &mut self.pcap {
                 f.write(&p.serialize(self.data.ext()))?;
             }
             self.actions_packet(&p).await?;
             debug!(
-                "post packet: {} {:?} {:?}",
+                "rax25: post packet: {} {:?} {:?}",
                 self.state.name(),
                 self.data.t1.remaining(),
                 self.data.t3.remaining()
@@ -373,18 +444,14 @@ impl Client {
                 debug!("async con event: T3");
                 self.actions(Event::T3).await?;
             },
-            res = self.port.read(&mut buf) => match res {
-            Ok(n) => {
-                debug!("Read {n} bytes from serial port");
-                let buf = &buf[..n];
-                self.incoming_kiss.extend(buf);
-                self.extract_packets();
-            },
-            Err(e) => eprintln!("Error reading from serial port: {e:?}"),
+            res = self.kissreader.process() => {
+            if let Err(e) = res {
+                eprintln!("Error reading from serial port: {e:?}");
+            }
             },
         }
         debug!(
-            "async con post state: {} {:?} {:?}",
+            "rax25: async con post state: {} {:?} {:?}",
             self.state.name(),
             self.data.t1.remaining(),
             self.data.t3.remaining()
@@ -503,9 +570,7 @@ impl Client {
                 if let Some(f) = &mut self.pcap {
                     f.write(&frame)?;
                 }
-                let frame = crate::escape(&frame);
-                self.port.write_all(&frame).await?;
-                self.port.flush().await?;
+                self.kissreader.write(&frame).await?;
             }
         }
         Ok(())

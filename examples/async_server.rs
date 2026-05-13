@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use log::info;
 use tokio_serial::SerialPortBuilderExt;
 
 use rax25::r#async::{ConnectionBuilder, PortType};
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
     } else {
         PortType::Tcp(tokio::net::TcpStream::connect(&opt.port).await?)
     };
-    println!("Awaiting connection");
+    info!("Awaiting connection");
     let mut client = {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
         if let Some(capture) = opt.capture {
@@ -70,14 +71,14 @@ async fn main() -> Result<()> {
         }
         builder.accept().await?
     };
-    println!("Connected");
+    info!("Connected");
     client.write(b"Welcome to the server!\n").await?;
     loop {
         tokio::select! {
             data = client.read() => {
                 let data = data?;
                 if data.is_empty() {
-                    eprintln!("Got EOF");
+                    info!("Got EOF");
                     break;
                 }
                 let s = match String::from_utf8(data.clone()) {
@@ -89,7 +90,7 @@ async fn main() -> Result<()> {
             },
         }
     }
-    eprintln!("End of main loop");
+    info!("End of main loop");
     client.disconnect().await?;
     Ok(())
 }
