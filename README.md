@@ -24,6 +24,25 @@ push to github.
   crate sets it too, but since we know the connection state, it's
   ignored on reception.
 
+## Testing
+
+The easiest test setup is to simply use a "bent pipe" TCP socket that both ends
+connect to. That way it's fast, doesn't lose any packets, and doesn't require
+any hardware.
+
+This will do it:
+
+```shell
+while true; do socat TCP-LISTEN:10000,reuseaddr TCP-LISTEN:10001,reuseaddr;sleep 1;done
+```
+
+After that you can run a server and client like:
+
+```shell
+cargo run --example async_server -- -v 10 -p tcp://127.0.0.1:10000 -s M0QQQ-1 --capture server.pcap
+cargo run --example async_client -- -v 10 -p tcp://127.0.0.1:10001 -s M0QQQ-2 --capture client.pcap -e M0QQQ-1
+```
+
 ## Reference documentation
 
 * [1998 spec](https://www.tapr.org/pdf/AX25.2.2.pdf). Page annotations
