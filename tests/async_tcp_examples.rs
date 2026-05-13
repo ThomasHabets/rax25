@@ -16,6 +16,33 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[test]
 fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
+    run_async_examples_echo_test(TestCase {
+        name: "standard",
+        client_extra_args: &[],
+        expected_client_capture: EXPECTED_CLIENT_CAPTURE,
+        expected_server_capture: EXPECTED_SERVER_CAPTURE,
+    })
+}
+
+#[test]
+fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
+    run_async_examples_echo_test(TestCase {
+        name: "extended-client",
+        client_extra_args: &["-e"],
+        expected_client_capture: EXPECTED_EXTENDED_CLIENT_CAPTURE,
+        expected_server_capture: EXPECTED_EXTENDED_SERVER_CAPTURE,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct TestCase {
+    name: &'static str,
+    client_extra_args: &'static [&'static str],
+    expected_client_capture: &'static [&'static str],
+    expected_server_capture: &'static [&'static str],
+}
+
+fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     build_examples(&manifest_dir)?;
 
@@ -25,7 +52,7 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
 
     let server_exe = example_exe(&manifest_dir, "async_server");
     let client_exe = example_exe(&manifest_dir, "async_client");
-    let captures = TestDir::new("rax25-async-captures")?;
+    let captures = TestDir::new(&format!("rax25-async-captures-{}", test_case.name))?;
     let client_capture = captures.path.join("client.pcap");
     let server_capture = captures.path.join("server.pcap");
 
@@ -37,19 +64,23 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| io::Error::other(format!("spawning {server_exe:?}: {e}")))?,
+            .map_err(|e| io::Error::other(format!("spawning {}: {e}", server_exe.display())))?,
     );
 
+    let mut client_command = Command::new(&client_exe);
+    client_command
+        .args(["-p", &client_endpoint, "-s", "M0TST-1"])
+        .args(test_case.client_extra_args)
+        .arg("--capture")
+        .arg(&client_capture)
+        .arg("M0TST-2")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut client = ChildGuard::new(
-        Command::new(&client_exe)
-            .args(["-p", &client_endpoint, "-s", "M0TST-1", "--capture"])
-            .arg(&client_capture)
-            .arg("M0TST-2")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        client_command
             .spawn()
-            .map_err(|e| io::Error::other(format!("spawning {client_exe:?}: {e}")))?,
+            .map_err(|e| io::Error::other(format!("spawning {}: {e}", client_exe.display())))?,
     );
 
     let mut client_stdin = client
@@ -101,12 +132,12 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
     assert_tshark_lines(
         "client capture",
         &client_capture_text,
-        EXPECTED_CLIENT_CAPTURE,
+        test_case.expected_client_capture,
     )?;
     assert_tshark_lines(
         "server capture",
         &server_capture_text,
-        EXPECTED_SERVER_CAPTURE,
+        test_case.expected_server_capture,
     )?;
 
     Ok(())
@@ -138,6 +169,34 @@ const EXPECTED_SERVER_CAPTURE: &[&str] = &[
     "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c69653e0a|Text",
     "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
     "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+];
+
+const EXPECTED_EXTENDED_CLIENT_CAPTURE: &[&str] = &[
+    "1|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x7f|||U P, func=SABME",
+    "2|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "3|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
+    "4|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
+    "5|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
+    "6|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
+    "7|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
+    "8|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
+    "9|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
+    "10|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
+    "11|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+];
+
+const EXPECTED_EXTENDED_SERVER_CAPTURE: &[&str] = &[
+    "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x7f|||U P, func=SABME",
+    "2|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "3|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
+    "4|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
+    "5|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
+    "6|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
+    "7|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
+    "8|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
+    "9|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
+    "10|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
+    "11|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
 ];
 
 fn build_examples(manifest_dir: &Path) -> TestResult {
