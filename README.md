@@ -39,8 +39,8 @@ while true; do socat TCP-LISTEN:10000,reuseaddr TCP-LISTEN:10001,reuseaddr;sleep
 After that you can run a server and client like:
 
 ```shell
-cargo run --example async_server -- -v 10 -p tcp://127.0.0.1:10000 -s M0QQQ-1 --capture server.pcap
-cargo run --example async_client -- -v 10 -p tcp://127.0.0.1:10001 -s M0QQQ-2 --capture client.pcap -e M0QQQ-1
+cargo run --example async_server -- -v debug -p tcp://127.0.0.1:10000 -s M0QQQ-1 --capture server.pcap
+cargo run --example async_client -- -v info -p tcp://127.0.0.1:10001 -s M0QQQ-2 --capture client.pcap -e M0QQQ-1
 ```
 
 ## Reference documentation
