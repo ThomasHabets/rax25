@@ -3,6 +3,7 @@
 //!
 //! This whole thing was AI-coded. It looks right, and I fixed a thing or two,
 //! but being a test I have not super validated it.
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -133,12 +134,12 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
         "client capture",
         &client_capture_text,
         test_case.expected_client_capture,
-    )?;
+    );
     assert_tshark_lines(
         "server capture",
         &server_capture_text,
         test_case.expected_server_capture,
-    )?;
+    );
 
     Ok(())
 }
@@ -300,18 +301,37 @@ fn tshark_text(path: &Path) -> TestResult<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn assert_tshark_lines(name: &str, actual: &str, expected: &[&str]) -> TestResult {
+fn assert_tshark_lines(name: &str, actual: &str, expected: &[&str]) {
     let actual: Vec<_> = actual.lines().collect();
-    if actual == expected {
-        return Ok(());
-    }
+    assert!(
+        actual == expected,
+        "{name} did not match expected tshark output\n{}",
+        unified_diff(name, expected, &actual)
+    );
+}
 
-    Err(io::Error::other(format!(
-        "{name} did not match expected tshark output\nexpected:\n{}\nactual:\n{}",
-        expected.join("\n"),
-        actual.join("\n")
-    ))
-    .into())
+fn unified_diff(name: &str, expected: &[&str], actual: &[&str]) -> String {
+    let mut diff = format!("--- {name} expected\n+++ {name} actual\n");
+    let max_len = expected.len().max(actual.len());
+    for i in 0..max_len {
+        match (expected.get(i), actual.get(i)) {
+            (Some(&expected), Some(&actual)) if expected == actual => {
+                let _ = writeln!(diff, " {expected}");
+            }
+            (Some(&expected), Some(&actual)) => {
+                let _ = writeln!(diff, "-{expected}");
+                let _ = writeln!(diff, "+{actual}");
+            }
+            (Some(&expected), None) => {
+                let _ = writeln!(diff, "-{expected}");
+            }
+            (None, Some(&actual)) => {
+                let _ = writeln!(diff, "+{actual}");
+            }
+            (None, None) => {}
+        }
+    }
+    diff
 }
 
 struct KissBridge {
