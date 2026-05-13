@@ -86,6 +86,7 @@ impl PcapWriter {
         // Here's also where some FCS bits could be set, but we're currently
         // running without FCS.
         write_u32(&mut f, LINKTYPE_AX25)?;
+        f.flush()?;
         Ok(Self { f })
     }
 
@@ -102,6 +103,7 @@ impl PcapWriter {
         write_u32(&mut self.f, len)?;
         write_u32(&mut self.f, len)?;
         self.f.write_all(packet)?;
+        self.f.flush()?;
         Ok(())
     }
 }

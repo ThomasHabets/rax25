@@ -1416,6 +1416,8 @@ impl Connected {
     #[allow(clippy::unused_self)]
     fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         data.peer_receiver_busy = false;
+        // TODO: if enough time has passed, why not trigger a retransmit (via
+        // update_ack) even if this was not a 'command' being sent?
         if !cr && packet.poll {
             data.t1.stop();
             data.select_t1_value();

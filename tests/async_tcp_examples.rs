@@ -14,6 +14,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
+
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -27,6 +29,7 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
         bridge_mode: BridgeMode::Reliable,
         timeout: TIMEOUT,
         expected_capture: Some(EXPECTED_CAPTURE),
+        preserve_captures_on_failure: false,
     })
 }
 
@@ -39,23 +42,36 @@ fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
         bridge_mode: BridgeMode::Reliable,
         timeout: TIMEOUT,
         expected_capture: Some(EXPECTED_EXTENDED_CAPTURE),
+        preserve_captures_on_failure: false,
     })
 }
 
 #[test]
 fn async_examples_echo_over_lossy_tcp() -> TestResult {
-    run_async_examples_echo_test(TestCase {
-        name: "lossy",
-        client_extra_args: &["--srt", "100ms", "--t3v", "1s"],
-        server_extra_args: &["--srt", "100ms", "--t3v", "1s"],
-        bridge_mode: BridgeMode::Lossy {
-            drop_probability_percent: 40,
-            client_to_server_seed: 0x1234_5678,
-            server_to_client_seed: 0x9abc_def0,
-        },
-        timeout: Duration::from_secs(20),
-        expected_capture: None,
-    })
+    for seeds in [
+        (0, 0),
+        (0x44, 0),
+        // This seed triggers what I consider to be a bug in the spec: No
+        // retransmission of data on lost UA.
+        // (0,0x44),
+        (123, 321),
+    ] {
+        println!("Testing seed {seeds:?}");
+        run_async_examples_echo_test(TestCase {
+            name: "lossy",
+            client_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+            server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+            bridge_mode: BridgeMode::Lossy {
+                drop_probability_percent: 50,
+                client_to_server_seed: seeds.0,
+                server_to_client_seed: seeds.1,
+            },
+            timeout: Duration::from_secs(5),
+            expected_capture: None,
+            preserve_captures_on_failure: true,
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +82,7 @@ struct TestCase {
     bridge_mode: BridgeMode,
     timeout: Duration,
     expected_capture: Option<&'static [&'static str]>,
+    preserve_captures_on_failure: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -92,85 +109,100 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
     let client_capture = captures.path.join("client.pcap");
     let server_capture = captures.path.join("server.pcap");
 
-    let mut server = ChildGuard::new(
-        Command::new(&server_exe)
-            .args(["-p", &server_endpoint, "-s", "M0TST-2", "--capture"])
-            .arg(&server_capture)
-            .args(test_case.server_extra_args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| io::Error::other(format!("spawning {}: {e}", server_exe.display())))?,
-    );
+    let result = (|| -> TestResult {
+        let mut server = ChildGuard::new(
+            Command::new(&server_exe)
+                .args(["-p", &server_endpoint, "-s", "M0TST-2", "--capture"])
+                .arg(&server_capture)
+                .args(test_case.server_extra_args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| io::Error::other(format!("spawning {}: {e}", server_exe.display())))?,
+        );
 
-    let mut client_command = Command::new(&client_exe);
-    client_command
-        .args(["-p", &client_endpoint, "-s", "M0TST-1"])
-        .args(test_case.client_extra_args)
-        .arg("--capture")
-        .arg(&client_capture)
-        .arg("M0TST-2")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut client = ChildGuard::new(
+        let mut client_command = Command::new(&client_exe);
         client_command
-            .spawn()
-            .map_err(|e| io::Error::other(format!("spawning {}: {e}", client_exe.display())))?,
-    );
+            .args(["-p", &client_endpoint, "-s", "M0TST-1"])
+            .args(test_case.client_extra_args)
+            .arg("--capture")
+            .arg(&client_capture)
+            .arg("M0TST-2")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut client =
+            ChildGuard::new(client_command.spawn().map_err(|e| {
+                io::Error::other(format!("spawning {}: {e}", client_exe.display()))
+            })?);
 
-    let mut client_stdin = client
-        .child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("client stdin was not piped"))?;
-    let client_stdout = client
-        .child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("client stdout was not piped"))?;
-    let (client_lines, stdout_reader) = spawn_line_reader(client_stdout);
-    let mut seen_stdout = Vec::new();
+        let mut client_stdin = client
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("client stdin was not piped"))?;
+        let client_stdout = client
+            .child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("client stdout was not piped"))?;
+        let (client_lines, stdout_reader) = spawn_line_reader(client_stdout);
+        let mut seen_stdout = Vec::new();
 
-    recv_line_equal(
-        &client_lines,
-        &mut seen_stdout,
-        "Welcome to the server!",
-        test_case.timeout,
-    )?;
-
-    for msg in ["alpha", "bravo", "charlie"] {
-        client_stdin.write_all(msg.as_bytes())?;
-        client_stdin.flush()?;
         recv_line_equal(
             &client_lines,
             &mut seen_stdout,
-            &format!("Got <{msg}>"),
+            "Welcome to the server!",
             test_case.timeout,
         )?;
-    }
 
-    drop(client_stdin);
-    wait_for_success("async_client", &mut client, test_case.timeout)?;
-    wait_for_success("async_server", &mut server, test_case.timeout)?;
+        for msg in ["alpha", "bravo", "charlie"] {
+            client_stdin.write_all(msg.as_bytes())?;
+            client_stdin.flush()?;
+            recv_line_equal(
+                &client_lines,
+                &mut seen_stdout,
+                &format!("Got <{msg}>"),
+                test_case.timeout,
+            )?;
+        }
 
-    stdout_reader
-        .join()
-        .map_err(|_| io::Error::other("client stdout reader panicked"))?;
-    bridge
-        .done
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| io::Error::other("KISS bridge did not stop"))?
-        .map_err(io::Error::other)?;
+        drop(client_stdin);
+        wait_for_success("async_client", &mut client, test_case.timeout)?;
+        wait_for_success("async_server", &mut server, test_case.timeout)?;
 
-    let client_capture_text = tshark_text(&client_capture)?;
-    let server_capture_text = tshark_text(&server_capture)?;
-    if let Some(expected) = test_case.expected_capture {
-        assert_tshark_lines("client capture", &client_capture_text, expected);
-    }
-    if let Some(expected) = test_case.expected_capture {
-        assert_tshark_lines("server capture", &server_capture_text, expected);
+        stdout_reader
+            .join()
+            .map_err(|_| io::Error::other("client stdout reader panicked"))?;
+        bridge
+            .done
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| io::Error::other("KISS bridge did not stop"))?
+            .map_err(io::Error::other)?;
+
+        let client_capture_text = tshark_text(&client_capture)?;
+        let server_capture_text = tshark_text(&server_capture)?;
+        if let Some(expected) = test_case.expected_capture {
+            assert_tshark_lines("client capture", &client_capture_text, expected);
+        }
+        if let Some(expected) = test_case.expected_capture {
+            assert_tshark_lines("server capture", &server_capture_text, expected);
+        }
+
+        Ok(())
+    })();
+
+    if let Err(e) = result {
+        if test_case.preserve_captures_on_failure {
+            let saved = captures.copy_to_failure_dir(&manifest_dir, test_case.name)?;
+            return Err(io::Error::other(format!(
+                "{e}\nSaved capture files for manual inspection in {}",
+                saved.display()
+            ))
+            .into());
+        }
+        return Err(e);
     }
 
     Ok(())
@@ -257,12 +289,43 @@ impl TestDir {
         fs::create_dir(&path)?;
         Ok(Self { path })
     }
+
+    fn copy_to_failure_dir(&self, manifest_dir: &Path, test_name: &str) -> TestResult<PathBuf> {
+        let dir_name = self.path.file_name().ok_or_else(|| {
+            io::Error::other(format!(
+                "capture directory has no final path component: {}",
+                self.path.display()
+            ))
+        })?;
+        let dest = manifest_dir
+            .join("target")
+            .join("async_tcp_example_captures")
+            .join(test_name)
+            .join(dir_name);
+        copy_dir_all(&self.path, &dest)?;
+        Ok(dest)
+    }
 }
 
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 fn tshark_text(path: &Path) -> TestResult<String> {
@@ -439,7 +502,7 @@ fn copy_kiss_frames_with_loss(
 ) -> io::Result<()> {
     const KISS_FEND: u8 = 0xC0;
 
-    let mut rng = XorShift64::new(loss.seed);
+    let mut rng = StdRng::seed_from_u64(loss.seed);
     let mut seen_frames = HashSet::new();
     let mut frame = Vec::new();
     let mut in_frame = false;
@@ -489,40 +552,18 @@ fn copy_kiss_frames_with_loss(
 }
 
 fn should_drop(
-    rng: &mut XorShift64,
+    rng: &mut impl Rng,
     drop_probability_percent: u8,
-    _seen_frames: &mut HashSet<Vec<u8>>,
-    _frame: &[u8],
+    seen_frames: &mut HashSet<Vec<u8>>,
+    frame: &[u8],
 ) -> bool {
-    //if !seen_frames.insert(frame.to_vec()) {
-    //     return false;
-    //}
+    if !seen_frames.insert(frame.to_vec()) {
+        return false;
+    }
+
     // Here's room to put some extra rules about which packets to drop, if
     // needed.
-    rng.next_bounded(100) < u64::from(drop_probability_percent)
-}
-
-struct XorShift64 {
-    state: u64,
-}
-
-impl XorShift64 {
-    const fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    fn next_bounded(&mut self, bound: u64) -> u64 {
-        self.next() % bound
-    }
+    rng.random_range(0_u8..100) < drop_probability_percent
 }
 
 fn spawn_line_reader<R: Read + Send + 'static>(
