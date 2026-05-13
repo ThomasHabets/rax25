@@ -41,9 +41,23 @@ pub mod sync;
 pub mod pcap;
 
 /// Helper function for use with clap to parse command line durations.
-pub fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
-    let seconds = arg.parse()?;
-    Ok(std::time::Duration::from_secs(seconds))
+///
+/// Bare numbers are seconds. The suffixes `ms`, `s`, `m`, and `h` are also
+/// accepted.
+pub fn parse_duration(arg: &str) -> Result<std::time::Duration> {
+    if let Some(milliseconds) = arg.strip_suffix("ms") {
+        return Ok(std::time::Duration::from_millis(milliseconds.parse()?));
+    }
+    if let Some(seconds) = arg.strip_suffix('s') {
+        return Ok(std::time::Duration::from_secs(seconds.parse()?));
+    }
+    if let Some(minutes) = arg.strip_suffix('m') {
+        return Ok(std::time::Duration::from_mins(minutes.parse()?));
+    }
+    if let Some(hours) = arg.strip_suffix('h') {
+        return Ok(std::time::Duration::from_hours(hours.parse()?));
+    }
+    Ok(std::time::Duration::from_secs(arg.parse()?))
 }
 
 /// AX.25 address.
