@@ -56,7 +56,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_serial::SerialPortBuilderExt;
@@ -304,7 +304,7 @@ impl KissPort {
                     return Err(Error::msg("EOF from KISS port"));
                 }
                 Ok(n) => {
-                    debug!("Read {n} bytes from serial port");
+                    trace!("Read {n} bytes from serial port");
                     let buf = &buf[..n];
                     self.incoming_kiss.extend(buf);
                     self.extract_packets(pcap.as_deref_mut());
@@ -374,7 +374,7 @@ fn kisser_read(
         let pb = crate::unescape(&pb);
         match Packet::parse(&pb, ext) {
             Ok(packet) => {
-                debug!("rax25: parsed {packet:?}");
+                trace!("rax25: parsed {packet:?}");
                 //let mut ext = ext.unwrap_or(false);
                 if let PacketType::Sabme(_) = packet.packet_type {
                     //ext = true;
@@ -384,7 +384,7 @@ fn kisser_read(
                     // perfect is, since we may want to both preserve the extra
                     // bits in the address fields *and* use them to signify
                     // extended mode.
-                    debug!(
+                    trace!(
                         "BYTES: {:?}",
                         Packet::parse(&packet.serialize(ext.unwrap_or(false)), ext)
                     );
@@ -433,7 +433,7 @@ impl Client {
         .await?;
         loop {
             self.wait_event().await?;
-            debug!("rax25: State after waiting: {}", self.state.name());
+            trace!("rax25: State after waiting: {}", self.state.name());
             if self.state.is_state_connected() {
                 return Ok(self);
             }
@@ -460,9 +460,9 @@ impl Client {
         let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.kissport.pop_frame() {
-            debug!("rax25: processing packet {:?}", p.packet_type);
+            trace!("rax25: processing packet {:?}", p.packet_type);
             self.actions_packet(&p).await?;
-            debug!(
+            trace!(
                 "rax25: post packet: {} {:?} {:?}",
                 self.state.name(),
                 self.data.t1.remaining(),
@@ -503,7 +503,7 @@ impl Client {
             },
             res = self.kissport.process(self.pcap.as_mut()) => {
             if let Err(e) = res {
-                eprintln!("Error reading from serial port: {e:?}");
+                warn!("Error reading from serial port: {e:?}");
             }
             },
         }
