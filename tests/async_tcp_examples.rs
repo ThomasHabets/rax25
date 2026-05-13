@@ -13,6 +13,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const TIMEOUT: Duration = Duration::from_secs(1);
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[test]
@@ -20,8 +22,7 @@ fn async_examples_echo_over_tcp_and_exit_on_client_eof() -> TestResult {
     run_async_examples_echo_test(TestCase {
         name: "standard",
         client_extra_args: &[],
-        expected_client_capture: EXPECTED_CLIENT_CAPTURE,
-        expected_server_capture: EXPECTED_SERVER_CAPTURE,
+        expected_capture: EXPECTED_CAPTURE,
     })
 }
 
@@ -30,8 +31,7 @@ fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
     run_async_examples_echo_test(TestCase {
         name: "extended-client",
         client_extra_args: &["-e"],
-        expected_client_capture: EXPECTED_EXTENDED_CLIENT_CAPTURE,
-        expected_server_capture: EXPECTED_EXTENDED_SERVER_CAPTURE,
+        expected_capture: EXPECTED_EXTENDED_CAPTURE,
     })
 }
 
@@ -39,8 +39,7 @@ fn async_examples_echo_over_tcp_with_extended_client() -> TestResult {
 struct TestCase {
     name: &'static str,
     client_extra_args: &'static [&'static str],
-    expected_client_capture: &'static [&'static str],
-    expected_server_capture: &'static [&'static str],
+    expected_capture: &'static [&'static str],
 }
 
 fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
@@ -101,7 +100,7 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
         &client_lines,
         &mut seen_stdout,
         "Welcome to the server!",
-        Duration::from_secs(10),
+        TIMEOUT,
     )?;
 
     for msg in ["alpha", "bravo", "charlie"] {
@@ -111,13 +110,13 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
             &client_lines,
             &mut seen_stdout,
             &format!("Got <{msg}>"),
-            Duration::from_secs(10),
+            TIMEOUT,
         )?;
     }
 
     drop(client_stdin);
-    wait_for_success("async_client", &mut client, Duration::from_secs(10))?;
-    wait_for_success("async_server", &mut server, Duration::from_secs(10))?;
+    wait_for_success("async_client", &mut client, TIMEOUT)?;
+    wait_for_success("async_server", &mut server, TIMEOUT)?;
 
     stdout_reader
         .join()
@@ -133,18 +132,18 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
     assert_tshark_lines(
         "client capture",
         &client_capture_text,
-        test_case.expected_client_capture,
+        test_case.expected_capture,
     );
     assert_tshark_lines(
         "server capture",
         &server_capture_text,
-        test_case.expected_server_capture,
+        test_case.expected_capture,
     );
 
     Ok(())
 }
 
-const EXPECTED_CLIENT_CAPTURE: &[&str] = &[
+const EXPECTED_CAPTURE: &[&str] = &[
     "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x3f|||U P, func=SABM",
     "2|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
     "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0xf0|57656c636f6d6520746f2074686520736572766572210a|Text",
@@ -158,46 +157,18 @@ const EXPECTED_CLIENT_CAPTURE: &[&str] = &[
     "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
 ];
 
-const EXPECTED_SERVER_CAPTURE: &[&str] = &[
-    "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x3f|||U P, func=SABM",
-    "2|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
-    "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0xf0|57656c636f6d6520746f2074686520736572766572210a|Text",
-    "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x20|0xf0|616c706861|Text",
-    "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x22|0xf0|476f74203c616c7068613e0a|Text",
-    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x42|0xf0|627261766f|Text",
-    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x44|0xf0|476f74203c627261766f3e0a|Text",
-    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x64|0xf0|636861726c6965|Text",
-    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c69653e0a|Text",
-    "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
-    "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
-];
-
-const EXPECTED_EXTENDED_CLIENT_CAPTURE: &[&str] = &[
-    "1|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x7f|||U P, func=SABME",
-    "2|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
-    "3|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
-    "4|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
-    "5|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
-    "6|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
-    "7|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
-    "8|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
-    "9|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
-    "10|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
-    "11|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
-];
-
-const EXPECTED_EXTENDED_SERVER_CAPTURE: &[&str] = &[
+const EXPECTED_EXTENDED_CAPTURE: &[&str] = &[
     "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x7f|||U P, func=SABME",
-    "2|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
-    "3|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
-    "4|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
-    "5|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
-    "6|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
-    "7|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
-    "8|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
-    "9|9a:60:a8:a6:a8:40:25|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
-    "10|9a:60:a8:a6:a8:40:23|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
-    "11|9a:60:a8:a6:a8:40:a5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "2|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
+    "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
+    "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
+    "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
+    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
+    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
+    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
+    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
+    "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
+    "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
 ];
 
 fn build_examples(manifest_dir: &Path) -> TestResult {

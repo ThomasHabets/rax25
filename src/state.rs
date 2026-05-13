@@ -302,7 +302,7 @@ pub(crate) enum Modulus {
 }
 
 impl Modulus {
-    pub fn extended(self) -> bool {
+    pub fn is_extended(self) -> bool {
         self == Modulus::Extended
     }
     pub fn as_u8(self) -> u8 {

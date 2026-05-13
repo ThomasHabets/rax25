@@ -56,7 +56,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, trace};
+use log::{debug, error, trace};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_serial::SerialPortBuilderExt;
@@ -296,7 +296,7 @@ struct KissPort {
 }
 
 impl KissPort {
-    async fn process(&mut self) -> Result<()> {
+    async fn process(&mut self, mut pcap: Option<&mut PcapWriter>) -> Result<()> {
         let mut buf = [0; 1024];
         loop {
             match self.port.read(&mut buf).await {
@@ -307,7 +307,7 @@ impl KissPort {
                     debug!("Read {n} bytes from serial port");
                     let buf = &buf[..n];
                     self.incoming_kiss.extend(buf);
-                    self.extract_packets();
+                    self.extract_packets(pcap.as_deref_mut());
                     if !self.incoming_frames.is_empty() {
                         return Ok(());
                     }
@@ -325,9 +325,9 @@ impl KissPort {
         self.incoming_frames.pop_front()
     }
 
-    fn extract_packets(&mut self) {
+    fn extract_packets(&mut self, pcap: Option<&mut PcapWriter>) {
         self.incoming_frames
-            .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext)));
+            .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext), pcap));
     }
     async fn write(&mut self, packet: &Packet) -> Result<()> {
         let bytes = packet.serialize(self.ext);
@@ -358,7 +358,11 @@ pub struct Client {
 ///
 /// Given an input buffer `ibuf` of KISS data, drain all packets we can find.
 #[must_use]
-fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
+fn kisser_read(
+    ibuf: &mut VecDeque<u8>,
+    ext: Option<bool>,
+    mut pcap: Option<&mut PcapWriter>,
+) -> Vec<Packet> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
         if b - a < 14 {
@@ -371,6 +375,26 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
         match Packet::parse(&pb, ext) {
             Ok(packet) => {
                 debug!("rax25: parsed {packet:?}");
+                //let mut ext = ext.unwrap_or(false);
+                if let PacketType::Sabme(_) = packet.packet_type {
+                    //ext = true;
+                }
+                if false {
+                    // TODO: make serialization perfect. It's not obvious what
+                    // perfect is, since we may want to both preserve the extra
+                    // bits in the address fields *and* use them to signify
+                    // extended mode.
+                    debug!(
+                        "BYTES: {:?}",
+                        Packet::parse(&packet.serialize(ext.unwrap_or(false)), ext)
+                    );
+                    assert_eq!(&packet.serialize(ext.unwrap_or(false)), &pb);
+                }
+                if let Some(f) = &mut pcap {
+                    if let Err(e) = f.write(&pb) {
+                        error!("Failed to write to pcap: {e}");
+                    }
+                }
                 ret.push(packet);
             }
             Err(e) => {
@@ -437,9 +461,6 @@ impl Client {
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.kissport.pop_frame() {
             debug!("rax25: processing packet {:?}", p.packet_type);
-            if let Some(f) = &mut self.pcap {
-                f.write(&p.serialize(self.data.ext()))?;
-            }
             self.actions_packet(&p).await?;
             debug!(
                 "rax25: post packet: {} {:?} {:?}",
@@ -462,7 +483,7 @@ impl Client {
         // know.
         if self.state.name() != state_name {
             if self.state.is_state_connected() {
-                self.kissport.ext = self.data.modulus.extended();
+                self.kissport.ext = self.data.modulus.is_extended();
             }
             return Ok(());
         }
@@ -480,7 +501,7 @@ impl Client {
                 debug!("rax25: async con event: T3");
                 self.actions(Event::T3).await?;
             },
-            res = self.kissport.process() => {
+            res = self.kissport.process(self.pcap.as_mut()) => {
             if let Err(e) = res {
                 eprintln!("Error reading from serial port: {e:?}");
             }
@@ -618,6 +639,8 @@ impl Client {
                 }
             }
             if let ReturnEvent::Packet(p) = act {
+                // TODO: we should probably only flip this on SABME, right?
+                self.kissport.ext = self.data.ext();
                 self.kissport.write(&p).await?;
                 if let Some(f) = &mut self.pcap {
                     f.write(&p.serialize(self.data.ext()))?;

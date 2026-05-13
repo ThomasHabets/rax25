@@ -418,7 +418,7 @@ impl Packet {
         ret.extend(self.src.serialize(
             self.digipeater.is_empty(),
             self.command_response_la,
-            ext, // Setting this bit for extseq seems to be a de facto standard.
+            self.rr_extseq, // Setting this bit for extseq seems to be a de facto standard.
             false,
         ));
 
