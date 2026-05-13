@@ -56,7 +56,7 @@ use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, info, trace};
+use log::{debug, trace};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_serial::SerialPortBuilderExt;
@@ -270,11 +270,11 @@ impl ConnectionBuilder {
     }
 }
 
-/// A parser of kiss packets.
+/// A parser & writer of kiss packets directly to a port.
 ///
 /// Every connection will have one, since extended and standard mode packets
 /// parse differently.
-struct KissReader {
+struct KissPort {
     /// Incoming raw bytes.
     incoming_kiss: VecDeque<u8>,
 
@@ -290,7 +290,7 @@ struct KissReader {
     port: PortType,
 }
 
-impl KissReader {
+impl KissPort {
     async fn process(&mut self) -> Result<()> {
         let mut buf = [0; 1024];
         loop {
@@ -344,7 +344,7 @@ pub struct Client {
 
     /// Incoming payload bytes ready to be delivered to the application.
     incoming: VecDeque<u8>,
-    kissreader: KissReader,
+    kissport: KissPort,
 
     pcap: Option<PcapWriter>,
 }
@@ -365,11 +365,11 @@ fn kisser_read(ibuf: &mut VecDeque<u8>, ext: Option<bool>) -> Vec<Packet> {
         let pb = crate::unescape(&pb);
         match Packet::parse(&pb, ext) {
             Ok(packet) => {
-                debug!("parsed {packet:?}");
+                debug!("rax25: parsed {packet:?}");
                 ret.push(packet);
             }
             Err(e) => {
-                debug!("Failed to parse packet: {e:?}");
+                debug!("rax25: Failed to parse packet: {e:?}");
             }
         }
     }
@@ -383,7 +383,7 @@ impl Client {
         Self {
             eof: false,
             incoming: VecDeque::new(),
-            kissreader: KissReader {
+            kissport: KissPort {
                 port,
                 incoming_kiss: VecDeque::new(),
                 incoming_frames: VecDeque::new(),
@@ -399,12 +399,12 @@ impl Client {
     async fn connect(mut self, peer: Addr) -> Result<Self> {
         self.actions(Event::Connect {
             addr: peer,
-            ext: self.kissreader.ext,
+            ext: self.kissport.ext,
         })
         .await?;
         loop {
             self.wait_event().await?;
-            debug!("State after waiting: {}", self.state.name());
+            debug!("rax25: State after waiting: {}", self.state.name());
             if self.state.is_state_connected() {
                 return Ok(self);
             }
@@ -426,11 +426,11 @@ impl Client {
     async fn wait_event(&mut self) -> Result<()> {
         trace!(
             "rax25: Waiting for event. {} packets ready",
-            self.kissreader.len()
+            self.kissport.len()
         );
         let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
-        while let Some(p) = self.kissreader.pop_frame() {
+        while let Some(p) = self.kissport.pop_frame() {
             debug!("rax25: processing packet {:?}", p.packet_type);
             if let Some(f) = &mut self.pcap {
                 f.write(&p.serialize(self.data.ext()))?;
@@ -465,14 +465,14 @@ impl Client {
 
         tokio::select! {
             () = &mut t1 => {
-                debug!("async con event: T1");
+                debug!("rax25: async con event: T1");
                 self.actions(Event::T1).await?;
             },
             () = &mut t3 => {
-                debug!("async con event: T3");
+                debug!("rax25: async con event: T3");
                 self.actions(Event::T3).await?;
             },
-            res = self.kissreader.process() => {
+            res = self.kissport.process() => {
             if let Err(e) = res {
                 eprintln!("Error reading from serial port: {e:?}");
             }
@@ -595,12 +595,12 @@ impl Client {
                 }
             }
             if let ReturnEvent::Packet(p) = act {
-                self.kissreader.write(&p).await?;
+                self.kissport.write(&p).await?;
                 if let Some(f) = &mut self.pcap {
                     f.write(&p.serialize(self.data.ext()))?;
                 }
             } else {
-                info!("Non-packet ReturnEvent {act:?}");
+                debug!("rax25: Non-packet ReturnEvent {act:?}");
             }
         }
         Ok(())
