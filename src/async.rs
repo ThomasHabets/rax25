@@ -628,25 +628,23 @@ impl Client {
         }
         for act in actions {
             match &act {
-                ReturnEvent::DlError(e) => eprintln!("DLError: {e:?}"),
-                ReturnEvent::Data(res) => match res {
-                    state::Res::None => {}
-                    state::Res::EOF => self.eof = true,
-                    state::Res::Some(d) => self.incoming.extend(d),
-                },
-                ReturnEvent::Packet(_) => {
-                    // println!("Do action: {act:?}");
+                ReturnEvent::DlError(e) => warn!("DLError: {e:?}"),
+                ReturnEvent::Data(res) => {
+                    trace!("rax25: ReturnEvent::Data {act:?}");
+                    match res {
+                        state::Res::None => {}
+                        state::Res::EOF => self.eof = true,
+                        state::Res::Some(d) => self.incoming.extend(d),
+                    }
                 }
-            }
-            if let ReturnEvent::Packet(p) = act {
-                // TODO: we should probably only flip this on SABME, right?
-                self.kissport.ext = self.data.ext();
-                self.kissport.write(&p).await?;
-                if let Some(f) = &mut self.pcap {
-                    f.write(&p.serialize(self.data.ext()))?;
+                ReturnEvent::Packet(p) => {
+                    // TODO: we should probably only flip this on SABME, right?
+                    self.kissport.ext = self.data.ext();
+                    self.kissport.write(p).await?;
+                    if let Some(f) = &mut self.pcap {
+                        f.write(&p.serialize(self.data.ext()))?;
+                    }
                 }
-            } else {
-                debug!("rax25: Non-packet ReturnEvent {act:?}");
             }
         }
         Ok(())
