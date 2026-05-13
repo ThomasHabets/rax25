@@ -154,7 +154,6 @@ pub struct ConnectionBuilder {
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
-    ext: bool,
 }
 
 impl ConnectionBuilder {
@@ -168,7 +167,6 @@ impl ConnectionBuilder {
             srt: None,
             mtu: None,
             port,
-            ext: false,
         })
     }
 
@@ -235,7 +233,11 @@ impl ConnectionBuilder {
 
     /// Initiate a connection.
     pub async fn connect(self, peer: Addr) -> Result<Client> {
-        let mut cli = Client::internal_new(self.create_data(), self.port, self.ext);
+        let mut cli = Client::internal_new(
+            self.create_data(),
+            self.port,
+            self.extended.unwrap_or(false),
+        );
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
@@ -255,7 +257,10 @@ impl ConnectionBuilder {
     pub async fn accept(self) -> Result<Client> {
         let mut data = self.create_data();
         data.able_to_establish = true;
-        let mut cli = Client::internal_new(data, self.port, self.ext);
+
+        // Default to assuming not extended. It doesn't affect parsing of
+        // SABM(E), and we set it later it it does end up being extended.
+        let mut cli = Client::internal_new(data, self.port, false);
         // Extended attribute ignored. Should it be?
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
@@ -456,6 +461,9 @@ impl Client {
         // If the state changed, there's a good chance that the client wants to
         // know.
         if self.state.name() != state_name {
+            if self.state.is_state_connected() {
+                self.kissport.ext = self.data.modulus == 128;
+            }
             return Ok(());
         }
 

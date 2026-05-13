@@ -389,7 +389,7 @@ pub struct Data {
     rc: u8,
 
     /// Either 8 or 128, depending on EXTSEQ.
-    modulus: u8,
+    pub(crate) modulus: u8,
 
     /// Remote end is busy, and canet receive frames.
     /// Page 82.
