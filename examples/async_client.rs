@@ -11,6 +11,15 @@ use rax25::{
     Addr,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
 #[derive(Parser, Debug)]
 struct Opt {
     #[allow(clippy::doc_markdown)]
@@ -31,8 +40,8 @@ struct Opt {
     ext: bool,
 
     /// Verbosity level.
-    #[clap(short = 'v', default_value = "0")]
-    v: usize,
+    #[clap(short = 'v', default_value = "info")]
+    v: LogLevel,
 
     /// Capture packets in/out to pcap.
     #[clap(long)]
@@ -60,7 +69,7 @@ async fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new()
         .module("rax25")
-        .verbosity(opt.v)
+        .verbosity(opt.v as usize)
         .init()
         .unwrap();
     let port = connect_kiss_endpoint(&opt.port).await?;
