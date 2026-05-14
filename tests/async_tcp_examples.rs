@@ -557,8 +557,11 @@ fn should_drop(
     seen_frames: &mut HashSet<Vec<u8>>,
     frame: &[u8],
 ) -> bool {
-    if !seen_frames.insert(frame.to_vec()) {
-        return false;
+    #[allow(clippy::collapsible_if)]
+    if false {
+        if !seen_frames.insert(frame.to_vec()) {
+            return false;
+        }
     }
 
     // Here's room to put some extra rules about which packets to drop, if
