@@ -55,7 +55,7 @@ use crate::pcap::PcapWriter;
 use crate::state::{self, Event, ReturnEvent};
 use crate::{Addr, Packet, PacketType};
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, bail};
 use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -407,10 +407,10 @@ fn kisser_read(
                     );
                     assert_eq!(&packet.serialize(ext.unwrap_or(false)), &pb);
                 }
-                if let Some(f) = &mut pcap {
-                    if let Err(e) = f.write(&pb) {
-                        error!("Failed to write to pcap: {e}");
-                    }
+                if let Some(f) = &mut pcap
+                    && let Err(e) = f.write(&pb)
+                {
+                    error!("Failed to write to pcap: {e}");
                 }
                 ret.push(packet);
             }
@@ -481,14 +481,14 @@ impl Client {
                 trace!("rax25: Skipping packet not for {:?}", self.data.me.call());
                 continue;
             }
-            if let Some(peer) = &self.data.peer {
-                if peer.call() != p.src.call() {
-                    trace!(
-                        "rax25: Skipping packet not from {peer:?} but {:?}",
-                        p.src.call()
-                    );
-                    continue;
-                }
+            if let Some(peer) = &self.data.peer
+                && peer.call() != p.src.call()
+            {
+                trace!(
+                    "rax25: Skipping packet not from {peer:?} but {:?}",
+                    p.src.call()
+                );
+                continue;
             }
             trace!("rax25: processing packet {:?}", p.packet_type);
             self.actions_packet(&p).await?;

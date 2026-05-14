@@ -129,11 +129,14 @@ impl std::fmt::Display for DlError {
             match self {
                 DlError::A => "A: F=1 received but P=1 not outstanding",
                 DlError::B => "B: Unexpected DM with F=1 in states 3,4,5",
-                DlError::C => "C: Unexpected UA in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
+                DlError::C =>
+                    "C: Unexpected UA in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
                 DlError::D => "D: UA received without F=1 when SABM or DISC was sent P=1",
-                DlError::E => "E: DM received in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
+                DlError::E =>
+                    "E: DM received in states 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
 
-                DlError::F => "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
+                DlError::F =>
+                    "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
                 // 1998 Spec bug: Undocumented.
                 DlError::G => "G: Connection timed out",
                 // 1998 Spec bug: Undocumented.
@@ -1706,18 +1709,17 @@ impl State for Connected {
 
         // TODO: Direwolf found that state machine can get stuck in
         // TimerRecovery, and we should check for caught up. Disabled for now.
-        if false {
-            if let ConnectedState::TimerRecovery = self.connected_state {
-                if data.va == data.vs {
-                    data.t1.stop();
-                    data.select_t1_value();
-                    data.t3.start(data.t3v);
-                    data.rc = 0;
-                    actions.push(Action::State(Box::new(Connected::new(
-                        ConnectedState::Connected,
-                    ))));
-                }
-            }
+        if false
+            && let ConnectedState::TimerRecovery = self.connected_state
+            && data.va == data.vs
+        {
+            data.t1.stop();
+            data.select_t1_value();
+            data.t3.start(data.t3v);
+            data.rc = 0;
+            actions.push(Action::State(Box::new(Connected::new(
+                ConnectedState::Connected,
+            ))));
         }
         if data.own_receiver_busy {
             // discord (implicit)

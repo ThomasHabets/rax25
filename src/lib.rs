@@ -847,10 +847,10 @@ impl BusKiss {
     pub fn run(&mut self) {
         loop {
             let d = std::time::Duration::from_millis(10);
-            if let Ok(rx) = self.rx.recv_timeout(d) {
-                if rx.sender != self.id {
-                    self.kiss.send(&rx.data).unwrap();
-                }
+            if let Ok(rx) = self.rx.recv_timeout(d)
+                && rx.sender != self.id
+            {
+                self.kiss.send(&rx.data).unwrap();
             }
             if let Ok(Some(rx)) = self.kiss.recv_timeout(d) {
                 self.bus
@@ -1050,7 +1050,9 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
             .serialize(false),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63], //, 111, 212]
+            vec![
+                154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63
+            ], //, 111, 212]
         );
         assert_eq!(
             Packet {
@@ -1064,7 +1066,9 @@ mod tests {
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(false),
-            vec![154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47], // , 238, 196]
+            vec![
+                154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47
+            ], // , 238, 196]
         );
         Ok(())
     }

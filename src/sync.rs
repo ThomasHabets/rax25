@@ -142,31 +142,29 @@ impl Client {
             let packet = self
                 .kiss
                 .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))?;
-            if let Some(packet) = packet {
-                if let Ok(packet) = Packet::parse(&packet, None) {
-                    if packet.dst.call() != self.data.me.call() {
-                        continue;
+            if let Some(packet) = packet
+                && let Ok(packet) = Packet::parse(&packet, None)
+            {
+                if packet.dst.call() != self.data.me.call() {
+                    continue;
+                }
+                match packet.packet_type {
+                    PacketType::Sabm(_) => {
+                        let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
+                        new_client.data.peer = Some(packet.src.clone());
+                        new_client.data.able_to_establish = true;
+                        new_client.actions_packet(&packet);
+                        return Ok(Some(new_client));
                     }
-                    match packet.packet_type {
-                        PacketType::Sabm(_) => {
-                            let mut new_client =
-                                Client::new(self.data.me.clone(), self.kiss.clone());
-                            new_client.data.peer = Some(packet.src.clone());
-                            new_client.data.able_to_establish = true;
-                            new_client.actions_packet(&packet);
-                            return Ok(Some(new_client));
-                        }
-                        PacketType::Sabme(_) => {
-                            let mut new_client =
-                                Client::new(self.data.me.clone(), self.kiss.clone());
-                            new_client.data.peer = Some(packet.src.clone());
-                            new_client.data.set_version_2_2();
-                            new_client.data.able_to_establish = true;
-                            new_client.actions_packet(&packet);
-                            return Ok(Some(new_client));
-                        }
-                        _ => {}
+                    PacketType::Sabme(_) => {
+                        let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
+                        new_client.data.peer = Some(packet.src.clone());
+                        new_client.data.set_version_2_2();
+                        new_client.data.able_to_establish = true;
+                        new_client.actions_packet(&packet);
+                        return Ok(Some(new_client));
                     }
+                    _ => {}
                 }
             }
         }
@@ -366,9 +364,10 @@ mod tests {
         let k = FakeKiss::default();
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        assert!(c
-            .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
-            .is_none());
+        assert!(
+            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
+                .is_none()
+        );
         Ok(())
     }
 
@@ -390,9 +389,10 @@ mod tests {
         );
         let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        assert!(c
-            .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
-            .is_none());
+        assert!(
+            c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
+                .is_none()
+        );
         Ok(())
     }
 

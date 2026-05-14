@@ -3,9 +3,9 @@ use clap::Parser;
 use log::info;
 
 use rax25::{
-    parse_duration,
-    r#async::{connect_kiss_endpoint, ConnectionBuilder},
     Addr,
+    r#async::{ConnectionBuilder, connect_kiss_endpoint},
+    parse_duration,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]

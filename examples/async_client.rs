@@ -6,9 +6,9 @@ use log::info;
 use tokio::io::AsyncReadExt;
 
 use rax25::{
-    parse_duration,
-    r#async::{connect_kiss_endpoint, ConnectionBuilder},
     Addr,
+    r#async::{ConnectionBuilder, connect_kiss_endpoint},
+    parse_duration,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     let mut client = builder.connect(Addr::new(&opt.dst)?).await?;
     info!("Connected after {:?}", st.elapsed());
     let mut sigint = {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         signal(SignalKind::interrupt())?
     };
     loop {
