@@ -48,6 +48,10 @@ struct Opt {
     #[clap(long, value_parser = parse_duration)]
     t3v: Option<std::time::Duration>,
 
+    /// Experiments to enable.
+    #[clap(long, value_enum)]
+    experiments: Vec<rax25::Experiment>,
+
     /// MTU for outgoing frames.
     #[clap(long)]
     mtu: Option<usize>,
@@ -77,6 +81,9 @@ async fn main() -> Result<()> {
         }
         if let Some(v) = opt.mtu {
             builder = builder.mtu(v);
+        }
+        for ex in &opt.experiments {
+            builder = builder.enable_experiment(*ex);
         }
         builder.accept().await?
     };

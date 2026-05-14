@@ -59,6 +59,10 @@ struct Opt {
     #[clap(long)]
     mtu: Option<usize>,
 
+    /// Experiments to enable.
+    #[clap(long, value_enum)]
+    experiments: Vec<rax25::Experiment>,
+
     /// Destination callsign and SSID.
     #[clap()]
     dst: String,
@@ -91,6 +95,9 @@ async fn main() -> Result<()> {
         }
         if let Some(v) = opt.mtu {
             builder = builder.mtu(v);
+        }
+        for ex in &opt.experiments {
+            builder = builder.enable_experiment(*ex);
         }
         builder
     };

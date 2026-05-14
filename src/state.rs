@@ -12,7 +12,7 @@
 //!
 //! There's also isomer's useful notes at the top of
 //! <https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c>
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use anyhow::Result;
 use log::{debug, error, warn};
@@ -475,6 +475,21 @@ pub struct Data {
     /// When an IFRAME is sent out, it's stared in this queue, until it's been
     /// acked. When a resend is required, it's sent from here.
     iframe_resend_queue: VecDeque<Iframe>,
+
+    experiments: HashSet<Experiment>,
+}
+
+/// A set of experiments to enable on the implementation outside of the official
+/// spec.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, clap::ValueEnum)]
+pub enum Experiment {
+    /// Normally, when an iframe arrives with a new ACK value, that will
+    /// register the ACK just fine and deliver the data. But it doesn't cause
+    /// the retry timer to reset.
+    ///
+    /// So even though both peers may be getting data through and make progress,
+    /// they may both "give up" and end the connection with a DM.
+    ResetRetryOnIframeAck,
 }
 
 impl Data {
@@ -510,6 +525,7 @@ impl Data {
             obuf: VecDeque::new(),
             iframe_resend_queue: VecDeque::new(),
             able_to_establish: false,
+            experiments: HashSet::new(),
         }
     }
 
@@ -521,6 +537,11 @@ impl Data {
     /// Set T3 / idle timer.
     pub fn t3v(&mut self, v: std::time::Duration) {
         self.t3v = v;
+    }
+
+    /// Enable an experiment.
+    pub fn enable_experiment(&mut self, ex: Experiment) {
+        self.experiments.insert(ex);
     }
 
     /// Set MTU.
@@ -1602,7 +1623,16 @@ impl State for Connected {
         ]
     }
 
-    // Page 96 & 102.
+    // iframe for Connected and TimerRecovery.
+    //
+    // ## 1998
+    //
+    // C4.5 (page 96) & C4.6 (page 102).
+    //
+    // ## 2017
+    //
+    // C4.4c (page 93)  & C4.5c (page 96).
+    //
     //
     // TODO; implement segment reassembly.
     #[allow(clippy::too_many_lines)]
@@ -1681,6 +1711,12 @@ impl State for Connected {
                 data.sreject_exception -= 1;
             }
             actions.push(Action::Deliver(p.payload.clone()));
+            if data
+                .experiments
+                .contains(&Experiment::ResetRetryOnIframeAck)
+            {
+                data.rc = 0;
+            }
             // TODO: check for stored out of order frames
             while
             /* i frame stored */

@@ -19,10 +19,10 @@ serialport = "4.5.0"
 tokio-serial = "5.4.4"
 #serialport = { path="../../src/serialport-rs"}
 tokio = { version = "1.40.0", features = ["full"] }
+clap = { version = "4.5.16", features = ["derive"] }
 
 [dev-dependencies]
 stderrlog = "0.6.0"
-clap = { version = "4.5.16", features = ["derive"] }
 agw = "0.6.0"
 rand = "0.10.1"
 

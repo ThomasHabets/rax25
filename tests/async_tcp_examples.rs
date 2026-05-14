@@ -80,22 +80,28 @@ fn async_examples_echo_over_lossy_tcp() -> TestResult {
 ///
 /// Disabled for now since these all fail.
 #[test]
-#[allow(unreachable_code)]
 fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
-    return Ok(());
+    let args = &[
+        "--srt",
+        "100ms",
+        "--t3v",
+        "200ms",
+        "--experiments",
+        "reset-retry-on-iframe-ack",
+    ];
+    #[allow(clippy::single_element_loop)]
     for seeds in [
         (0, 0),
-        (0x44, 0),
-        // This seed triggers what I consider to be a bug in the spec: No
-        // retransmission of data on lost UA.
-        // (0,0x44),
-        (123, 321),
+        // These still fail.
+        //(0x44, 0),
+        //(0,0x44),
+        //(123, 321),
     ] {
         println!("Testing seed {seeds:?}");
         run_async_examples_echo_test(TestCase {
             name: "lossy-data",
-            client_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
-            server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+            client_extra_args: args,
+            server_extra_args: args,
             bridge_mode: BridgeMode::Lossy {
                 data_only: true,
                 drop_probability_percent: 75,

@@ -32,6 +32,7 @@ use std::io::{Read, Write};
 
 mod fcs;
 pub mod state;
+pub use state::Experiment;
 
 const USE_FCS: bool = false;
 

@@ -48,7 +48,7 @@
 //!     Ok(())
 //! }
 //! ```
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
@@ -154,6 +154,7 @@ pub struct ConnectionBuilder {
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
+    experiments: HashSet<crate::Experiment>,
 }
 
 impl ConnectionBuilder {
@@ -167,6 +168,7 @@ impl ConnectionBuilder {
             srt: None,
             mtu: None,
             port,
+            experiments: HashSet::new(),
         })
     }
 
@@ -209,6 +211,13 @@ impl ConnectionBuilder {
         self
     }
 
+    /// Enable an experiment.
+    #[must_use]
+    pub fn enable_experiment(mut self, ex: crate::Experiment) -> ConnectionBuilder {
+        self.experiments.insert(ex);
+        self
+    }
+
     /// Set MTU. Only used for outgoing packets.
     #[must_use]
     pub fn mtu(mut self, v: usize) -> ConnectionBuilder {
@@ -227,6 +236,9 @@ impl ConnectionBuilder {
         }
         if let Some(v) = self.mtu {
             data.mtu(v);
+        }
+        for ex in &self.experiments {
+            data.enable_experiment(*ex);
         }
         data
     }
