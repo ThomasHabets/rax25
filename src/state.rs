@@ -492,10 +492,14 @@ pub enum Experiment {
     ///
     /// That kind of makes sense, in that an RR response means "I heard you".
     /// But so does an iframe with a new sequence number.
+    ///
+    /// <https://github.com/packethacking/ax25spec/issues/9>
     ResetRetryOnAckUpdate,
     /// Normally, we only retransmit if we get an RR response. But if we are
     /// waiting for an RR response, and we get an RR command, why not issue the
     /// retransmit right now.
+    ///
+    /// <https://github.com/packethacking/ax25spec/issues/8>
     ResendOnRrCommand,
 }
 
