@@ -60,7 +60,7 @@ struct Opt {
     mtu: Option<usize>,
 
     /// Experiments to enable.
-    #[clap(long, value_enum)]
+    #[clap(long, value_enum, value_delimiter = ',')]
     experiments: Vec<rax25::Experiment>,
 
     /// Destination callsign and SSID.

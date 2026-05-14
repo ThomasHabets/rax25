@@ -490,6 +490,10 @@ pub enum Experiment {
     /// So even though both peers may be getting data through and make progress,
     /// they may both "give up" and end the connection with a DM.
     ResetRetryOnIframeAck,
+    /// Normally, we only retransmit if we get an RR response. But if we are
+    /// waiting for an RR response, and we get an RR command, why not issue the
+    /// retransmit right now.
+    ResendOnRrCommand,
 }
 
 impl Data {
@@ -1445,9 +1449,15 @@ impl Connected {
     #[allow(clippy::unused_self)]
     fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
         data.peer_receiver_busy = false;
-        // TODO: if enough time has passed, why not trigger a retransmit (via
-        // update_ack) even if this was not a 'command' being sent?
-        if !cr && packet.poll {
+        let mut act = Vec::new();
+        let retransmit_path = if data.experiments.contains(&Experiment::ResendOnRrCommand) {
+            // If enough time has passed, why not trigger a retransmit (via
+            // update_ack) even if this was not a 'command' being sent?
+            data.t1.running
+        } else {
+            !cr && packet.poll
+        };
+        if retransmit_path {
             data.t1.stop();
             data.select_t1_value();
             if !in_range(data.va, packet.nr, data.vs, data.modulus) {
@@ -1455,7 +1465,7 @@ impl Connected {
                 act.push(Action::State(Box::new(AwaitingConnection::new())));
                 return act;
             }
-            let mut act = data.update_ack(packet.nr);
+            act.extend(data.update_ack(packet.nr));
             if data.vs == data.va {
                 data.t3.start(data.t3v);
                 data.rc = 0; // Added in 2017 spec, page 95.
@@ -1472,9 +1482,10 @@ impl Connected {
                 // Direwolf seems to set ack pending to 0, meaning false?
                 data.acknowledge_pending = true;
             }
-            return act;
+            if !data.experiments.contains(&Experiment::ResendOnRrCommand) {
+                return act;
+            }
         }
-        let mut act = Vec::new();
         // 2017 spec bug on page 95: no 'no' path from this if.
         if cr && packet.poll {
             act.push(data.enquiry_response(true));

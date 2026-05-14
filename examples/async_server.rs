@@ -49,7 +49,7 @@ struct Opt {
     t3v: Option<std::time::Duration>,
 
     /// Experiments to enable.
-    #[clap(long, value_enum)]
+    #[clap(long, value_enum, value_delimiter = ',')]
     experiments: Vec<rax25::Experiment>,
 
     /// MTU for outgoing frames.

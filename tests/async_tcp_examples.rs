@@ -87,7 +87,7 @@ fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
         "--t3v",
         "200ms",
         "--experiments",
-        "reset-retry-on-iframe-ack",
+        "reset-retry-on-iframe-ack,resend-on-rr-command",
     ];
     #[allow(clippy::single_element_loop)]
     for seeds in [
