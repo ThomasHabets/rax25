@@ -301,7 +301,11 @@ impl KissPort {
         loop {
             match self.port.read(&mut buf).await {
                 Ok(0) => {
-                    return Err(Error::msg("EOF from KISS port"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "EOF from KISS port",
+                    )
+                    .into());
                 }
                 Ok(n) => {
                     trace!("Read {n} bytes from serial port");
@@ -556,8 +560,21 @@ impl Client {
         self.actions(Event::Disconnect).await?;
         match self.state.name().as_str() {
             "AwaitingRelease" => loop {
-                self.wait_event().await?;
+                match self.wait_event().await {
+                    Ok(()) => {}
+                    // If while waiting for UA to our DISC, KISS goes
+                    // away, that's fine.
+                    //
+                    // This will happen during testing if the KISS is
+                    // just a lossy bent pipe to the server, and the
+                    // server exits after sending UA.
+                    //
+                    // OK, kind of an edge case, but it's fine.
+                    Err(e) if is_error_eof(&e) => return Ok(()),
+                    Err(e) => return Err(e),
+                }
                 if self.state.is_state_disconnected() {
+                    // We got out UA.
                     break Ok(());
                 }
             },
@@ -657,6 +674,13 @@ impl Drop for Client {
     fn drop(&mut self) {
         self.sync_disconnect();
     }
+}
+
+fn is_error_eof(e: &Error) -> bool {
+    let Some(io_err) = e.chain().find_map(|e| e.downcast_ref::<std::io::Error>()) else {
+        return false;
+    };
+    io_err.kind() == std::io::ErrorKind::UnexpectedEof
 }
 /* vim: textwidth=80
  */
