@@ -1130,7 +1130,7 @@ impl Disconnected {
     #[must_use]
     #[allow(clippy::unused_self)]
     fn sabm_and_sabme(&self, data: &mut Data, src: Addr, pf: bool) -> Vec<Action> {
-        debug!("rax25: DL-Connect indication");
+        debug!("rax25: DL-Connect indication from {:?}", src.call());
         if !data.able_to_establish {
             return vec![Action::SendDm { pf }];
         }

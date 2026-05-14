@@ -478,8 +478,17 @@ impl Client {
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.kissport.pop_frame() {
             if p.dst.call() != self.data.me.call() {
-                trace!("rax25: Skipping packet not for {:?}", self.data.me);
+                trace!("rax25: Skipping packet not for {:?}", self.data.me.call());
                 continue;
+            }
+            if let Some(peer) = &self.data.peer {
+                if peer.call() != p.src.call() {
+                    trace!(
+                        "rax25: Skipping packet not from {peer:?} but {:?}",
+                        p.src.call()
+                    );
+                    continue;
+                }
             }
             trace!("rax25: processing packet {:?}", p.packet_type);
             self.actions_packet(&p).await?;
