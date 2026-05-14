@@ -200,7 +200,9 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
             test_case.timeout,
         )?;
 
-        for msg in ["alpha", "bravo", "charlie"] {
+        // These messages are of ascending length so that it's easier to read
+        // packet traces.
+        for msg in ["alpha", "bravoo", "charliee"] {
             client_stdin.write_all(msg.as_bytes())?;
             client_stdin.flush()?;
             recv_line_equal(
@@ -257,10 +259,10 @@ const EXPECTED_CAPTURE: &[&str] = &[
     "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0xf0|57656c636f6d6520746f2074686520736572766572210a|Text",
     "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x20|0xf0|616c706861|Text",
     "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x22|0xf0|476f74203c616c7068613e0a|Text",
-    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x42|0xf0|627261766f|Text",
-    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x44|0xf0|476f74203c627261766f3e0a|Text",
-    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x64|0xf0|636861726c6965|Text",
-    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c69653e0a|Text",
+    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x42|0xf0|627261766f6f|Text",
+    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x44|0xf0|476f74203c627261766f6f3e0a|Text",
+    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x64|0xf0|636861726c696565|Text",
+    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x66|0xf0|476f74203c636861726c6965653e0a|Text",
     "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
     "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
 ];
@@ -271,10 +273,10 @@ const EXPECTED_EXTENDED_CAPTURE: &[&str] = &[
     "3|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x00|0x00|f057656c636f6d6520746f2074686520736572766572210a|I, N(R)=0, N(S)=0, Unknown (0x00)",
     "4|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x00|0x02|f0616c706861|I, N(R)=0, N(S)=0, Unknown (0x02)",
     "5|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x02|0x02|f0476f74203c616c7068613e0a|I, N(R)=0, N(S)=1, Unknown (0x02)",
-    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f|I, N(R)=0, N(S)=1, Unknown (0x04)",
-    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
-    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c6965|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
-    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c69653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
+    "6|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x02|0x04|f0627261766f6f|I, N(R)=0, N(S)=1, Unknown (0x04)",
+    "7|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x04|0x04|f0476f74203c627261766f6f3e0a|I, N(R)=0, N(S)=2, Unknown (0x04)",
+    "8|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x04|0x06|f0636861726c696565|I, N(R)=0, N(S)=2, RFC1144 (compressed)",
+    "9|9a:60:a8:a6:a8:40:65|9a:60:a8:a6:a8:40:e2|0x06|0x06|f0476f74203c636861726c6965653e0a|I, N(R)=0, N(S)=3, RFC1144 (compressed)",
     "10|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x53|||U P, func=DISC",
     "11|9a:60:a8:a6:a8:40:e5|9a:60:a8:a6:a8:40:62|0x73|||U F, func=UA",
 ];
