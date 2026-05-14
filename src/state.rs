@@ -1453,6 +1453,13 @@ impl Connected {
         let retransmit_path = if data.experiments.contains(&Experiment::ResendOnRrCommand) {
             // If enough time has passed, why not trigger a retransmit (via
             // update_ack) even if this was not a 'command' being sent?
+            //
+            // TODO: We should not trigger the resend path if while t1 is
+            // running (and thus we're waiting for a response), that probe has
+            // not yet been sent. Ideally we should even allow for some RTT
+            // before retransmitting.
+            //
+            // More at https://github.com/packethacking/ax25spec/issues/8.
             data.t1.running
         } else {
             !cr && packet.poll

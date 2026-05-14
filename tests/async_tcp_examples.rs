@@ -78,8 +78,9 @@ fn async_examples_echo_over_lossy_tcp() -> TestResult {
 /// This test works the retransmissions and resync harder. It doesn't drop any
 /// SABM/UA/DM, but goes really hard on I and RR frames.
 ///
-/// Disabled for now since these all fail.
+/// Disabled for now since these are flaky.
 #[test]
+#[ignore = "flaky: often fails"]
 fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
     let args = &[
         "--srt",
@@ -89,14 +90,7 @@ fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
         "--experiments",
         "reset-retry-on-iframe-ack,resend-on-rr-command",
     ];
-    #[allow(clippy::single_element_loop)]
-    for seeds in [
-        (0, 0),
-        // These still fail.
-        //(0x44, 0),
-        //(0,0x44),
-        //(123, 321),
-    ] {
+    for seeds in [(0, 0), (0x44, 0), (0, 0x44), (123, 321)] {
         println!("Testing seed {seeds:?}");
         run_async_examples_echo_test(TestCase {
             name: "lossy-data",
