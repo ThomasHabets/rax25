@@ -477,6 +477,10 @@ impl Client {
         let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.kissport.pop_frame() {
+            if p.dst.call() != self.data.me.call() {
+                trace!("rax25: Skipping packet not for {:?}", self.data.me);
+                continue;
+            }
             trace!("rax25: processing packet {:?}", p.packet_type);
             self.actions_packet(&p).await?;
             trace!(
@@ -533,6 +537,8 @@ impl Client {
         );
         Ok(())
     }
+
+    /// This function sends packets to the state machine.
     async fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
