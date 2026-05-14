@@ -485,11 +485,14 @@ pub struct Data {
 pub enum Experiment {
     /// Normally, when an iframe arrives with a new ACK value, that will
     /// register the ACK just fine and deliver the data. But it doesn't cause
-    /// the retry timer to reset.
+    /// the retry counter to reset.
     ///
     /// So even though both peers may be getting data through and make progress,
     /// they may both "give up" and end the connection with a DM.
-    ResetRetryOnIframeAck,
+    ///
+    /// That kind of makes sense, in that an RR response means "I heard you".
+    /// But so does an iframe with a new sequence number.
+    ResetRetryOnAckUpdate,
     /// Normally, we only retransmit if we get an RR response. But if we are
     /// waiting for an RR response, and we get an RR command, why not issue the
     /// retransmit right now.
@@ -818,6 +821,12 @@ impl Data {
             assert!(!self.iframe_resend_queue.is_empty());
             self.iframe_resend_queue.pop_front();
             self.va = (self.va + 1) % self.modulus.as_u8();
+            if self
+                .experiments
+                .contains(&Experiment::ResetRetryOnAckUpdate)
+            {
+                self.rc = 0;
+            }
         }
         self.flush()
     }
@@ -1729,12 +1738,6 @@ impl State for Connected {
                 data.sreject_exception -= 1;
             }
             actions.push(Action::Deliver(p.payload.clone()));
-            if data
-                .experiments
-                .contains(&Experiment::ResetRetryOnIframeAck)
-            {
-                data.rc = 0;
-            }
             // TODO: check for stored out of order frames
             while
             /* i frame stored */
