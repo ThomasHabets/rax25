@@ -72,6 +72,7 @@ struct Opt {
 async fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new()
+        .module(module_path!())
         .module("rax25")
         .verbosity(opt.v as usize)
         .show_module_names(true)
@@ -119,12 +120,12 @@ async fn main() -> Result<()> {
             res = stdin.read(&mut buf) => {
                 let res = res?;
                 if res == 0 {
-                    eprintln!("Got EOF from stdin");
+                    info!("Got EOF from stdin");
                     break;
                 }
                 let buf = &buf[..res];
                 if buf ==  b"exit\n" {
-                    eprintln!("Got 'exit' from user");
+                    info!("Got 'exit' from user");
                     break;
                 }
                 let buf: Vec<_> = if opt.cr {
@@ -138,7 +139,7 @@ async fn main() -> Result<()> {
             data = client.read() => {
                 let data = data?;
                 if data.is_empty() {
-                    eprintln!("Got EOF");
+                    info!("Got EOF from client");
                     break;
                 }
                 let s = match String::from_utf8(data.clone()) {
@@ -151,8 +152,8 @@ async fn main() -> Result<()> {
             },
         }
     }
-    eprintln!("End of main loop");
+    info!("End of main loop");
     client.disconnect().await?;
-    eprintln!("Disconnected");
+    info!("Disconnected");
     Ok(())
 }

@@ -289,7 +289,7 @@ fn build_examples(manifest_dir: &Path) -> TestResult {
         .current_dir(manifest_dir)
         .args([
             "build",
-            "--quiet",
+            //"--quiet",
             "--example",
             "async_client",
             "--example",

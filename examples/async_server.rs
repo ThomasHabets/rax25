@@ -61,6 +61,7 @@ struct Opt {
 async fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new()
+        .module(module_path!())
         .module("rax25")
         .show_module_names(true)
         .verbosity(opt.v as usize)
