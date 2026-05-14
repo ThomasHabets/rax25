@@ -62,7 +62,43 @@ fn async_examples_echo_over_lossy_tcp() -> TestResult {
             client_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
             server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
             bridge_mode: BridgeMode::Lossy {
+                data_only: false,
                 drop_probability_percent: 50,
+                client_to_server_seed: seeds.0,
+                server_to_client_seed: seeds.1,
+            },
+            timeout: Duration::from_secs(5),
+            expected_capture: None,
+            preserve_captures_on_failure: true,
+        })?;
+    }
+    Ok(())
+}
+
+/// This test works the retransmissions and resync harder. It doesn't drop any
+/// SABM/UA/DM, but goes really hard on I and RR frames.
+///
+/// Disabled for now since these all fail.
+#[test]
+#[allow(unreachable_code)]
+fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
+    return Ok(());
+    for seeds in [
+        (0, 0),
+        (0x44, 0),
+        // This seed triggers what I consider to be a bug in the spec: No
+        // retransmission of data on lost UA.
+        // (0,0x44),
+        (123, 321),
+    ] {
+        println!("Testing seed {seeds:?}");
+        run_async_examples_echo_test(TestCase {
+            name: "lossy-data",
+            client_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+            server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+            bridge_mode: BridgeMode::Lossy {
+                data_only: true,
+                drop_probability_percent: 75,
                 client_to_server_seed: seeds.0,
                 server_to_client_seed: seeds.1,
             },
@@ -89,6 +125,7 @@ struct TestCase {
 enum BridgeMode {
     Reliable,
     Lossy {
+        data_only: bool,
         drop_probability_percent: u8,
         client_to_server_seed: u64,
         server_to_client_seed: u64,
@@ -446,15 +483,18 @@ fn run_kiss_bridge(
     let (client_to_server_loss, server_to_client_loss) = match mode {
         BridgeMode::Reliable => (None, None),
         BridgeMode::Lossy {
+            data_only,
             drop_probability_percent,
             client_to_server_seed,
             server_to_client_seed,
         } => (
             Some(LossConfig {
+                data_only,
                 drop_probability_percent,
                 seed: client_to_server_seed,
             }),
             Some(LossConfig {
+                data_only,
                 drop_probability_percent,
                 seed: server_to_client_seed,
             }),
@@ -477,6 +517,7 @@ fn run_kiss_bridge(
 
 #[derive(Clone, Copy)]
 struct LossConfig {
+    data_only: bool,
     drop_probability_percent: u8,
     seed: u64,
 }
@@ -515,6 +556,7 @@ fn copy_kiss_frames_with_loss(
                     &mut rng,
                     loss.drop_probability_percent,
                     &mut seen_frames,
+                    loss.data_only,
                     &frame,
                 )
             {
@@ -531,6 +573,7 @@ fn copy_kiss_frames_with_loss(
                         &mut rng,
                         loss.drop_probability_percent,
                         &mut seen_frames,
+                        loss.data_only,
                         &frame,
                     ) {
                         dst.write_all(&frame)?;
@@ -555,12 +598,38 @@ fn should_drop(
     rng: &mut impl Rng,
     drop_probability_percent: u8,
     seen_frames: &mut HashSet<Vec<u8>>,
+    data_only: bool,
     frame: &[u8],
 ) -> bool {
     #[allow(clippy::collapsible_if)]
     if false {
         if !seen_frames.insert(frame.to_vec()) {
             return false;
+        }
+    }
+    if data_only {
+        use rax25::PacketType;
+        const KISS_FEND: u8 = 0xC0;
+        let [KISS_FEND, _kiss_command, payload @ .., KISS_FEND] = frame else {
+            panic!()
+        };
+        let frame = rax25::unescape(payload);
+        let packet = rax25::Packet::parse(&frame, None).unwrap();
+        match packet.packet_type() {
+            PacketType::Sabm(_)
+            | PacketType::Sabme(_)
+            | PacketType::Ua(_)
+            | PacketType::Disc(_)
+            | PacketType::Xid(_)
+            | PacketType::Frmr(_)
+            | PacketType::Dm(_) => return false,
+            PacketType::Rr(_)
+            | PacketType::Rnr(_)
+            | PacketType::Ui(_)
+            | PacketType::Test(_)
+            | PacketType::Rej(_)
+            | PacketType::Iframe(_)
+            | PacketType::Srej(_) => {}
         }
     }
 

@@ -412,6 +412,11 @@ impl Packet {
             }),
         }
     }
+    /// Get the packet type.
+    #[must_use]
+    pub fn packet_type(&self) -> &PacketType {
+        &self.packet_type
+    }
     /// Serialize a packet, either as standard mod-8, or extended mod-128.
     #[must_use]
     #[allow(clippy::too_many_lines)]
@@ -911,7 +916,7 @@ pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize,
 /// Unescape KISS data stream.
 /// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
 #[must_use]
-pub(crate) fn unescape(data: &[u8]) -> Vec<u8> {
+pub fn unescape(data: &[u8]) -> Vec<u8> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;
     for &byte in data {
