@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
     - name: apt install deps
-      run:  sudo apt-get install -y libudev-dev
+      run:  sudo apt-get install -y libudev-dev tshark
     - name: Read MSRV from Cargo.toml
       id: msrv
       shell: bash
