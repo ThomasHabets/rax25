@@ -1,0 +1,41 @@
+name: MSRV
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  msrv:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: Read MSRV from Cargo.toml
+      id: msrv
+      shell: bash
+      run: |
+        rust_version="$(cargo metadata --no-deps --format-version=1 \
+          | jq -r '.packages[0].rust_version')"
+
+        if [ "$rust_version" = "null" ] || [ -z "$rust_version" ]; then
+          echo "package.rust-version is not set in Cargo.toml" >&2
+          exit 1
+        fi
+
+        echo "version=$rust_version" >> "$GITHUB_OUTPUT"
+        echo "MSRV: $rust_version"
+
+    - name: Install Rust MSRV
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.msrv.outputs.version }}
+    - name: Build
+      run: cargo build --all-targets
+    - name: Test
+      run: cargo test --locked --all-targets
