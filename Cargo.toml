@@ -7,6 +7,8 @@ authors = ["Thomas Habets <thomas@habets.se>"]
 repository = "https://github.com/ThomasHabets/rax25"
 description = "AX.25 connected mode implementation"
 keywords = ["radio"]
+# Last bumped because `std::time::Duration::from_mins`.
+rust-version = "1.91"
 
 [dependencies]
 anyhow = "1.0.86"
