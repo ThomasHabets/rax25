@@ -13,7 +13,6 @@ rust-version = "1.91"
 [dependencies]
 anyhow = "1.0.86"
 bus = "2.4.1"
-ctrlc = "3.4.5"
 log = "0.4.22"
 regex = "1.10.6"
 rust-fsm = "0.7.0"
@@ -28,6 +27,7 @@ async = ["dep:tokio", "dep:tokio-serial"]
 
 [dev-dependencies]
 stderrlog = "0.6.0"
+ctrlc = "3.4.5"
 agw = "0.6.0"
 rand = "0.10.1"
 
