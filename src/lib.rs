@@ -339,9 +339,9 @@ pub struct Iframe {
 /// it could. A DM should be returned when push is set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ui {
-    pid: u8,
-    push: bool,
-    payload: Vec<u8>,
+    pub pid: u8,
+    pub push: bool,
+    pub payload: Vec<u8>,
 }
 
 /// DM - Disconnected Mode (4.3.3.5, page 23)
