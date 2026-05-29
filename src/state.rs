@@ -305,6 +305,7 @@ pub(crate) enum Modulus {
 }
 
 impl Modulus {
+    #[allow(unused)]
     pub fn is_extended(self) -> bool {
         self == Modulus::Extended
     }

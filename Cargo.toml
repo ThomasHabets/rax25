@@ -18,10 +18,13 @@ log = "0.4.22"
 regex = "1.10.6"
 rust-fsm = "0.7.0"
 serialport = "4.5.0"
-tokio-serial = "5.4.4"
+tokio-serial = {version="5.4.4", optional = true }
 #serialport = { path="../../src/serialport-rs"}
-tokio = { version = "1.40.0", features = ["full"] }
+tokio = { version = "1.40.0", features = ["full"], optional=true }
 clap = { version = "4.5.16", features = ["derive"] }
+
+[features]
+async = ["dep:tokio", "dep:tokio-serial"]
 
 [dev-dependencies]
 stderrlog = "0.6.0"
@@ -30,3 +33,19 @@ rand = "0.10.1"
 
 [profile.release]
 overflow-checks = true
+
+[[example]]
+name = "async_client"
+required-features = ["async"]
+
+[[example]]
+name = "async_server"
+required-features = ["async"]
+
+[[example]]
+name = "agw"
+required-features = ["async"]
+
+[[test]]
+name = "async_tcp_examples"
+required-features = ["async"]
