@@ -39,6 +39,7 @@ const USE_FCS: bool = false;
 #[cfg(feature = "async")]
 pub mod r#async;
 
+#[cfg(feature = "serial")]
 pub mod sync;
 
 pub mod pcap;
@@ -811,11 +812,13 @@ impl Hub for BusHub {
 /// Kiss reads and writes packets on a KISS serial port.
 ///
 /// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
+#[cfg(feature = "serial")]
 pub struct Kiss {
     buf: std::collections::VecDeque<u8>,
     port: Box<dyn serialport::SerialPort>,
 }
 
+#[cfg(feature = "serial")]
 impl Kiss {
     /// Create new Kiss connected to the named port.
     ///
@@ -840,12 +843,14 @@ impl Kiss {
 static BUSKISS_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// Send data between bus and KISS interface.
+#[cfg(feature = "serial")]
 pub struct BusKiss {
     rx: bus::BusReader<BusMessage>,
     bus: Arc<Mutex<bus::Bus<BusMessage>>>,
     kiss: Kiss,
     id: usize,
 }
+#[cfg(feature = "serial")]
 impl BusKiss {
     pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
         let rx = {
@@ -955,6 +960,7 @@ pub fn unescape(data: &[u8]) -> Vec<u8> {
     unescaped
 }
 
+#[cfg(feature = "serial")]
 impl Hub for Kiss {
     fn clone(&self) -> Box<dyn Hub> {
         todo!()
