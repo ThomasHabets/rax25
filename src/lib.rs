@@ -438,7 +438,10 @@ impl Packet {
         );
         assert_ne!(self.command_response, self.command_response_la);
         ret.extend(self.src.serialize(
-            self.digipeater.is_empty(),
+            // TODO: support digipeater on sending side by setting this to
+            // false, appending the addresses, if we want to use digipeaters.
+            // self.digipeater.is_empty(),
+            true,
             self.command_response_la,
             self.rr_extseq, // Setting this bit for extseq seems to be a de facto standard.
             false,
@@ -578,8 +581,18 @@ impl Packet {
             None => src.rbit_ext,
         };
 
-        // TODO: parse digipeater.
-        let control1 = bytes[14];
+        let mut digipeater = Vec::new();
+        let mut pos = 14;
+        let mut more_addresses = !src.lowbit;
+        while more_addresses {
+            let digi = Addr::parse(&bytes[pos..pos + 7])?;
+            more_addresses = !digi.lowbit;
+            pos += 7;
+            digipeater.push(digi);
+        }
+
+        let rest = &bytes[pos..];
+        let control1 = rest[0];
         let (poll, nr, ns, bytes) = {
             if !ext || control1 & TYPE_MASK == 3 {
                 // NOTE: ns/nr will be nonsense for U frames.
@@ -588,18 +601,18 @@ impl Packet {
                     control1 & CONTROL_POLL == CONTROL_POLL,
                     (control1 >> 5) & 7,
                     (control1 >> 1) & 7,
-                    &bytes[15..],
+                    &rest[1..],
                 )
             } else {
-                if bytes.len() < 16 {
+                if rest.len() < 2 {
                     return Err(Error::msg("AX.25 in ext mode, but S/U frame is too short"));
                 }
-                let control2 = bytes[15];
+                let control2 = rest[1];
                 (
                     control2 & 1 == 1,
                     (control2 >> 1) & 127,
                     (control1 >> 1) & 127,
-                    &bytes[16..],
+                    &rest[2..],
                 )
             }
         };
@@ -610,7 +623,7 @@ impl Packet {
             command_response_la: src.highbit,
             rr_dist1: dst.rbit_ext,
             rr_extseq: ext,
-            digipeater: vec![],
+            digipeater,
             packet_type: match control1 & TYPE_MASK {
                 // I frames. Second control byte, with NR and NS.
                 // TODO: confirm pid is NO_L3
@@ -1006,6 +1019,46 @@ impl Hub for Kiss {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_with_digipeat() -> Result<()> {
+        let bytes = &[
+            130, 160, 150, 96, 96, 104, 96, 154, 96, 168, 144, 134, 64, 234, 174, 146, 136, 138,
+            98, 64, 98, 174, 146, 136, 138, 100, 64, 99, 3, 240, 59, 71, 111, 111, 103, 108, 101,
+            32, 32, 32, 42, 53, 49, 50, 49, 55, 53, 122, 53, 49, 51, 49, 46, 57, 57, 78, 47, 48,
+            48, 48, 48, 55, 46, 53, 53, 87, 46, 71, 111, 111, 103, 108, 101, 13,
+        ];
+        let packet = Packet::parse(bytes, None)?;
+        assert_eq!(packet.src.call(), "M0THC-5");
+        assert_eq!(packet.dst.call(), "APK004");
+        assert_eq!(
+            packet.digipeater,
+            [
+                Addr {
+                    t: "WIDE1-1".to_string(),
+                    rbit_ext: false,
+                    highbit: false,
+                    lowbit: false,
+                    rbit_dama: false,
+                },
+                Addr {
+                    t: "WIDE2-1".to_string(),
+                    rbit_ext: false,
+                    highbit: false,
+                    lowbit: true,
+                    rbit_dama: false,
+                },
+            ]
+        );
+        let PacketType::Ui(ui) = packet.packet_type() else {
+            panic!("Wrong type of packet {packet:?}");
+        };
+        assert_eq!(
+            &String::from_utf8(ui.payload.clone())?,
+            ";Google   *512175z5131.99N/00007.55W.Google\r"
+        );
+        Ok(())
+    }
 
     #[test]
     fn addr_serial() -> Result<()> {
