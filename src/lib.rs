@@ -11,6 +11,8 @@
 //! * SREJ untested / mostly broken.
 //! * The sync API is not great.
 //! * The Async API works well as long as you only need one connection active.
+//! * The parser needs some work, as Addr duplicates information part of Packet
+//!   too.
 //!
 //! ## Interoperability tested regularly
 //!
@@ -75,7 +77,15 @@ pub fn parse_duration(arg: &str) -> Result<std::time::Duration> {
 pub struct Addr {
     t: String,
     rbit_ext: bool,
+
+    // Most significant bit of the last byte.
+    //
+    // * On src/dst this is command/response per LA PA 6.1.2.
+    // * On repeater it's "has been repeated".
     highbit: bool,
+
+    // The least significant bit on the last byte. Used to indicate more
+    // repeaters are provided.
     lowbit: bool,
     rbit_dama: bool,
 }
@@ -96,6 +106,20 @@ impl Addr {
             lowbit: false,
             rbit_dama: false,
         })
+    }
+
+    /// Set lowbit.
+    #[must_use]
+    pub fn set_highbit(mut self, v: bool) -> Self {
+        self.highbit = v;
+        self
+    }
+
+    /// Set lowbit.
+    #[must_use]
+    pub fn set_lowbit(mut self, v: bool) -> Self {
+        self.lowbit = v;
+        self
     }
 
     /// Create a new Addr from string and the extra bits.
@@ -439,14 +463,23 @@ impl Packet {
         );
         assert_ne!(self.command_response, self.command_response_la);
         ret.extend(self.src.serialize(
-            // TODO: support digipeater on sending side by setting this to
-            // false, appending the addresses, if we want to use digipeaters.
-            // self.digipeater.is_empty(),
-            true,
+            self.digipeater.is_empty(),
             self.command_response_la,
             self.rr_extseq, // Setting this bit for extseq seems to be a de facto standard.
             false,
         ));
+
+        {
+            let l = self.digipeater.len();
+            for (n, digi) in self.digipeater.iter().enumerate() {
+                ret.extend(digi.serialize(
+                    n == l - 1, // last repeater?
+                    false,      // "has been repeated"
+                    false,
+                    false,
+                ));
+            }
+        }
 
         match &self.packet_type {
             // U frames. Control always one byte.
@@ -1112,7 +1145,9 @@ mod tests {
             }
             .serialize(false),
             vec![
-                154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 63
+                154, 96, 168, 144, 134, 64, 228, // dst
+                154, 96, 168, 144, 134, 64, 99, // src
+                63
             ], //, 111, 212]
         );
         assert_eq!(
@@ -1131,6 +1166,45 @@ mod tests {
                 154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47
             ], // , 238, 196]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_ui_repeat() -> Result<()> {
+        let src = Addr::new("M0THC-1")?;
+        let dst = Addr::new("M0THC-2")?.set_highbit(true);
+        let packet = Packet {
+            src: src.clone(),
+            dst: dst.clone(),
+            command_response: true,
+            command_response_la: false,
+            rr_dist1: false,
+            rr_extseq: false,
+            digipeater: vec![
+                Addr::new("WIDE1-1")?,
+                Addr::new("WIDE2-2")?.set_lowbit(true),
+            ],
+            packet_type: PacketType::Ui(Ui {
+                pid: 0xF0,
+                push: false,
+                payload: "yo".into(),
+            }),
+        };
+        let got = packet.serialize(false);
+        assert_eq!(
+            got,
+            vec![
+                154, 96, 168, 144, 134, 64, 228, // dst
+                154, 96, 168, 144, 134, 64, 98, // src
+                174, 146, 136, 138, 98, 64, 98, // rpt1
+                174, 146, 136, 138, 100, 64, 101, //rpt2
+                3,   // UI
+                240, // Pid
+                121, 111 // Yo
+            ],
+        );
+        let parsed = Packet::parse(&got, None)?;
+        assert_eq!(packet, parsed);
         Ok(())
     }
 }
