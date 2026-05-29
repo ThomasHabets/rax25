@@ -322,11 +322,11 @@ pub struct Ua {
 /// TCP does.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Iframe {
-    nr: u8,
-    ns: u8,
-    poll: bool,
-    pid: u8,
-    payload: Vec<u8>,
+    pub nr: u8,
+    pub ns: u8,
+    pub poll: bool,
+    pub pid: u8,
+    pub payload: Vec<u8>,
 }
 
 /// UI - Unnumbered Information (4.3.3.6, page 24)
