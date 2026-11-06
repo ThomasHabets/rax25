@@ -32,6 +32,14 @@ struct Opt {
     #[clap(short = 'r')]
     cr: bool,
 
+    /// Enable XID link parameter configuration (responses are always enabled).
+    #[clap(long)]
+    xid: bool,
+
+    /// Maximum information bytes this endpoint can receive.
+    #[clap(long = "xid-receive-size")]
+    max_receive_bytes: Option<usize>,
+
     /// Verbosity level.
     #[clap(short = 'v', default_value = "info")]
     v: LogLevel,
@@ -71,6 +79,17 @@ async fn main() -> Result<()> {
     info!("Awaiting connection");
     let mut client = {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
+        if opt.xid || opt.max_receive_bytes.is_some() {
+            let mut config = rax25::XidConfig::default();
+            if let Some(v) = opt.srt {
+                config.management_timeout = v;
+                config.acknowledgement_timer = v;
+            }
+            if let Some(v) = opt.max_receive_bytes {
+                config.receive_length = v;
+            }
+            builder = builder.xid(config);
+        }
         if let Some(capture) = opt.capture {
             builder = builder.capture(capture);
         }

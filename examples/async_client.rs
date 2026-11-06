@@ -21,6 +21,7 @@ pub enum LogLevel {
 }
 
 #[derive(Parser, Debug)]
+#[allow(clippy::struct_excessive_bools)] // Independent command-line switches.
 struct Opt {
     #[allow(clippy::doc_markdown)]
     /// KISS endpoint, such as serial:///dev/rfcomm0 or tcp://localhost:8000.
@@ -38,6 +39,18 @@ struct Opt {
     /// Use mod-128 extended AX.25.
     #[clap(short = 'e')]
     ext: bool,
+
+    /// Negotiate link parameters with XID before connecting.
+    #[clap(long)]
+    xid: bool,
+
+    /// Constrain XID negotiation to standard mod-8 mode.
+    #[clap(long, requires = "xid", conflicts_with = "ext")]
+    no_extended: bool,
+
+    /// Maximum information bytes this endpoint can receive.
+    #[clap(long = "xid-receive-size")]
+    max_receive_bytes: Option<usize>,
 
     /// Verbosity level.
     #[clap(short = 'v', default_value = "info")]
@@ -84,6 +97,20 @@ async fn main() -> Result<()> {
         let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
         if opt.ext {
             builder = builder.extended(Some(opt.ext));
+        }
+        if opt.no_extended {
+            builder = builder.extended(Some(false));
+        }
+        if opt.xid || opt.max_receive_bytes.is_some() {
+            let mut config = rax25::XidConfig::default();
+            if let Some(v) = opt.srt {
+                config.management_timeout = v;
+                config.acknowledgement_timer = v;
+            }
+            if let Some(v) = opt.max_receive_bytes {
+                config.receive_length = v;
+            }
+            builder = builder.xid(config);
         }
         if let Some(capture) = opt.capture {
             builder = builder.capture(capture);

@@ -9,7 +9,7 @@ https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 
 * Seem to be working well.
 * Both 8 and 128 modulus supported.
-* REJ untested / probably broken.
+* Basic REJ retransmission is supported.
 * SREJ untested / probably broken.
 * Segmentation: not implemented.
 * The sync API is not great. Async API may also need some work
@@ -42,6 +42,32 @@ After that you can run a server and client like:
 cargo run --example async_server -- -v debug -p tcp://127.0.0.1:10000 -s M0QQQ-1 --capture server.pcap
 cargo run --example async_client -- -v info -p tcp://127.0.0.1:10001 -s M0QQQ-2 --capture client.pcap -e M0QQQ-1
 ```
+
+## XID Negotiation
+
+Active XID negotiation is opt-in. Add `--xid` to `async_client` to negotiate
+before establishing the connection. Without `-e`, XID prefers modulo-128 and
+can select modulo-8; `-e` requests extended mode. A peer that rejects XID or
+does not answer within the management retry limit is contacted using SABM
+and AX.25 v2.0 defaults instead.
+
+```shell
+cargo run --features async --example async_client -- --xid -p tcp://localhost:10001 -s M0QQQ-2 M0QQQ-1
+```
+
+Both APIs answer pre-connection XID commands. They advertise half duplex and
+REJ, not SREJ or segmentation. Receive sizes and windows constrain the other
+station's transmissions; acknowledgement timeout and retry count use the
+greater offered values. See [SPEC_DIFFERENCES.md](SPEC_DIFFERENCES.md) for
+the specification interpretation and remaining limitations.
+
+In the async API, enable negotiation with
+`ConnectionBuilder::xid(XidConfig::default())`. In the sync API, use
+`Client::connect_with_xid(&peer, None)`; `set_xid_config` customizes local
+limits and management retries. Both clients expose `negotiated_parameters()`.
+The examples provide `--no-extended` to constrain XID to modulo-8 and
+`--xid-receive-size` to set the advertised receive payload limit. `--srt`
+also sets the XID management retry interval.
 
 ## Reference documentation
 
