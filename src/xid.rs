@@ -1,9 +1,20 @@
 //! AX.25 XID parameter information fields (section 4.3.3.7).
 //!
-//! Bitfields use the table's bit numbers (bit 1 is the least significant bit),
-//! and therefore have little-endian octet order. Numeric parameters and group
-//! lengths are big-endian. The example frames in the 1998 and 2017 documents
-//! conflict with their bit tables; they must not be used to infer bit masks.
+//! Capability bitfields use little-endian octet order; numeric parameters and
+//! group lengths are big-endian. Figure 4.5 numbers capability bits from 1 in
+//! 1998 (pages 25-26), but from 0 in 2017 (pages 32-33). This renumbering does
+//! not change their wire positions or masks. For example, ABM is bit 1/0 with
+//! mask 0x0001, half duplex is bit 6/5 with mask 0x0020, and modulo-128 is bit
+//! 12/11 with mask 0x000800 (1998/2017 numbering respectively).
+//!
+//! Spec bug(1998): The 1998 optional-functions prose incorrectly calls REJ/SREJ
+//! bits 1 and 2; its table assigns bits 2 and 3.
+//!
+//! The 2017 table enables multiframe SREJ and adds a segmentation capability;
+//! see the corresponding flags below.
+//!
+//! Spec bug(1997): Retries parameter (PI=10) from Figure 4.5, although its
+//! prose and example still use it.
 
 use anyhow::{Result, bail};
 
@@ -74,9 +85,13 @@ capability_flags! {
         FCS_16 = 0x0000_8000;
         /// Synchronous transmission.
         SYNCHRONOUS_TRANSMIT = 0x0002_0000;
-        /// Multi-frame selective reject (2017 revision).
+        /// Multi-frame selective reject: bit 22 in 1998, bit 21 in 2017.
+        /// The 1998 table requires zero; the 2017 table permits either value.
         MULTI_SREJ = 0x0020_0000;
-        /// Segmenter/reassembler (2017 revision).
+        /// Segmenter/reassembler: bit 22 in 2017, formerly reserved in 1998.
+        /// The 2017 table permits either value, but its following prose still
+        /// says this bit must be zero. Exposing the flag does not enable the
+        /// unimplemented segmentation service.
         SEGMENTER = 0x0040_0000;
     }
 }
@@ -100,6 +115,13 @@ pub struct XidParameters {
 
 impl XidParameters {
     /// AX.25 defaults for an empty group or zero-length parameters.
+    ///
+    /// These are the 1998 defaults: combined SREJ/REJ and modulo-8. The 2017
+    /// prose instead specifies selective reject and modulo-128, and drops the
+    /// explicit combined-mode selection rule. No revision identifier in this
+    /// information field distinguishes the two interpretations; this codec
+    /// retains the 1998 baseline. Connection policy must still check whether
+    /// the resolved capabilities are actually supported.
     ///
     /// The default receive window is modulo-8's 4. A zero-length window field
     /// in a group explicitly selecting modulo-128 instead resolves to 32.

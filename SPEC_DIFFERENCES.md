@@ -79,6 +79,13 @@ a naming error: retry count is `N2`, while `N1` describes information-field size
 
 ## XID Negotiation
 
+The codec retains the 1998 defaults (combined SREJ/REJ and modulo-8), rather
+than the 2017 prose's selective reject and modulo-128. Capability bit numbering
+changes from one-based in 1998 to zero-based in 2017 without shifting the wire
+masks. The 2017 table additionally permits multiframe SREJ and assigns a
+segmentation bit, although its prose still requires the segmentation bit to be
+zero. See the comments in [src/xid.rs](src/xid.rs) for these discrepancies.
+
 Active XID negotiation is opt-in; responding to pre-connection commands does
 not require enabling active negotiation. Negotiation occurs before SABM(E),
 following sections 4.3.3.7 and 6.3.2. Appendix C5 instead describes sending
