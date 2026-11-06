@@ -1,0 +1,131 @@
+# Differences From the AX.25 Specifications
+
+This document describes how rax25's current implementation differs from the
+AX.25 documents in [spec/](spec/), and why. It is an implementation companion,
+not a replacement specification or a claim of full AX.25 conformance.
+
+The main baseline is [AX.25 v2.2 (1998)](spec/1998%20-%20AX25.2.2.pdf).
+The [2006 update](spec/2006%20-%20AX25.2.2-Jul%2098-2.pdf) and
+[2017 update](spec/2017%20-%20AX25.2.2-Sep%2017-1-10Sep17.pdf) revise its
+state diagrams. [AX.25 v2.0 (1984)](spec/1984%20-%20AX25V20.pdf) provides
+historical context; supporting modulo-8 connections does not mean rax25
+implements every aspect of that edition separately.
+
+Page references below use the documents' printed page numbers. Where the code
+identifies a diagram as erroneous, the explanation records the implementation's
+interpretation, rather than an independently adopted official erratum.
+
+## Deliberate Choices
+
+### Linux Extended-Sequence Indicator
+
+Rax25 follows Linux's nonstandard use of a reserved source-address bit to
+indicate extended sequence numbers. This helps tools such as `axlisten` decode
+packets without observing connection establishment. The negotiated connection
+mode remains authoritative when it is available: `Packet::parse` accepts an
+explicit mode, and only infers the mode from this bit when passed `None`.
+
+See [packet parsing and serialization](src/lib.rs) and [connection handling](src/async.rs).
+
+### Receive Size and Transmit Window
+
+Outgoing payloads default to 256 bytes, consistent with the specification's
+2048-bit information-field size. Incoming payloads may instead be up to 65535
+bytes by default. This deliberately permits larger frames from peers without
+requiring rax25 to transmit frames that may overwhelm radio hardware.
+
+The transmit window is 4 for modulo-8 and 32 for modulo-128 connections,
+following the 1998 initialization diagram (page 109). The 2017 initialization
+diagram (page 102) gives 8 for modulo-8. Rax25 retains 4: a window of 8 would
+exhaust the entire sequence space and make acknowledgement wraparound
+ambiguous; the maximum safe modulo-8 window is 7.
+
+See `DEFAULT_MTU_OUT`, `DEFAULT_MTU_IN`, `set_version_2`, and
+`set_version_2_2` in [the state machine](src/state.rs).
+
+### Application Data Is a Byte Stream
+
+Application writes do not preserve message boundaries. Rax25 buffers bytes and
+splits them into I frames according to the transmit size and available window.
+It does not implement the specification's segmentation and reassembly service
+for preserving larger application data units. This is an intentional API choice
+for stream-oriented applications; segmentation remains an unimplemented feature.
+
+See `Connected::data` and `Data::flush` in [the state machine](src/state.rs).
+
+## State-Machine Corrections and Interpretations
+
+The following choices are implemented in [src/state.rs](src/state.rs).
+Changes that follow the 2017 revision differ from the 1998 baseline, but are
+not extensions beyond all the supplied specifications.
+
+| Situation | Rax25 behavior and rationale |
+| --- | --- |
+| Answering an enquiry, 1998 page 106 | Sends RR/RNR as a response, not an RR command. This follows the 2017 correction and allows a polling Linux peer to receive an answer instead of another question. The implementation retains the simpler receiver-busy choice between RNR and RR rather than the full 2017 enquiry-response logic. |
+| Checking acknowledgements while the peer is busy, 1998 page 107 | Stops T3 and runs T1, following 2017. Running the idle timer alongside the outstanding-response timer would create competing enquiries. |
+| Establishing a link, 1998 page 106 | Starts the retry counter at 1, following 2017, so the initial attempt counts toward the retry limit. |
+| Receiving UA while awaiting connection, 1998 page 88 / 2017 page 89 | Stops T1, starts T3, and resets the retry counter to 0. Starting T3 follows 2017; resetting the counter is an additional choice noted in the code as matching Direwolf, so a successful connection does not retain retries from establishment. |
+| Receiving SABM(E) while connected or recovering | Resets V(R), correcting the duplicated V(S) assignment in 1998. Starts T3 even when leaving TimerRecovery; the code rejects the 2017 instruction to stop both timers because the resulting connected link needs idle supervision. |
+| RR processing in TimerRecovery, 2017 page 95 | Continues processing when the poll-command condition is false, supplying the diagram's missing branch. In the final-response retransmission path it also follows the 2017 additions that restart T1 or clear the retry counter when fully acknowledged. |
+| Receiving I frames, 2017 pages 93 and 96 | Rejects an I response with error S. Oversized payloads produce error O. The implementation treats the diagram's command/response and error-O routing as erroneous: error O describes excessive information-field length, not command status. |
+| I-frame acknowledgement handling in TimerRecovery | Uses `check_iframe_acked`, following 2017, rather than only updating V(A) as in 1998. This also maintains acknowledgement-related timers. |
+| T3 expiry while connected | Sets the retry counter to 1 before sending an enquiry, following 2017 instead of the 1998 value of 0. |
+| Unexpected UA while connected | Reports error C and re-establishes the link. The code treats the 2017 diagram's error K as undocumented. |
+| Disconnect completion and retry exhaustion | Stops T3 on release retry exhaustion. Where the earlier diagrams omit a DM poll/final value, uses false; for TimerRecovery exhaustion this follows the explicit 2017 value. These choices prevent supervision after disconnection and avoid inventing a final response without a poll. |
+
+The implementation also interprets the initialization diagrams' `kr` as the
+transmit window `k`. The XID prose's use of `N1` for retry count is treated as
+a naming error: retry count is `N2`, while `N1` describes information-field size.
+
+## Optional Experiments
+
+Both experiments below are disabled by default. They are selected through
+`Experiment` in the library and `--experiments` in the async examples.
+They should not be mistaken for baseline AX.25 behavior.
+
+| Experiment | Difference and motivation |
+| --- | --- |
+| `ResetRetryOnAckUpdate` (`reset-retry-on-ack-update`) | Resets the retry counter when V(A) advances. A fresh acknowledgement proves progress even if an RR final response was lost; without this, a connection carrying useful data can still reach its retry limit. |
+| `ResendOnRrCommand` (`resend-on-rr-command`) | In TimerRecovery, permits the acknowledgement/retransmission path whenever T1 is running, rather than requiring an RR response with F=1. This can recover when enquiries cross or responses are lost. Despite its name, the condition is broader than just receiving an RR command; the code notes that it still needs a guard against retransmission before a probe has had time to receive an answer. |
+
+See `Experiment`, `Data::update_ack`, and `Connected::rr_timer_recovery` in
+[src/state.rs](src/state.rs). These are attempts to address retry/recovery
+problems, not guarantees of correct behavior under every loss pattern.
+
+## Incomplete Behavior and Transport Assumptions
+
+These are limitations or implementation details, not intentional amendments
+to the wire protocol.
+
+- **Timer selection:** `select_t1_value` is incomplete. It resets SRT to the
+  configured default when the retry counter is zero, and on expiry uses an
+  interpretation of the 2017 expression as `SRT = 2 * SRT + RC * 250ms`.
+  It does not implement full RTT measurement or consistently update T1V.
+  The 3-second initial SRT and 10-second T3 are implementation defaults;
+  they are not claimed to be mandated by the specifications. The async
+  examples expose `--srt` and `--t3v` for other environments.
+- **Delayed acknowledgements:** There is no complete T2 response-delay timer.
+  Section 6.7.1.2 describes T2 as optional, so its absence alone is not a
+  protocol extension, but acknowledgement timing is not a complete rendering
+  of all the diagrams.
+- **Recovery and negotiation:** SREJ is disabled, out-of-order frame storage
+  is incomplete, and REJ/SREJ support is not validated. XID negotiation and
+  some state/event handlers are placeholders. The full enquiry-response
+  procedure and simultaneous extended connection establishment are also
+  incomplete. These gaps should not be treated as deliberate interoperability
+  policies.
+- **KISS framing and FCS:** The library exchanges AX.25 packets through a
+  KISS TNC over serial or TCP. It does not generate or verify an AX.25 FCS
+  in those packet buffers (`USE_FCS` is false); over-the-air framing and FCS
+  handling are delegated to the TNC. This does not remove the FCS requirement
+  from over-the-air AX.25 frames.
+- **Protocol identifiers:** The connected stream emits PID `0xf0` (no layer 3),
+  and I-frame parsing currently assumes that PID. This is not a general
+  implementation of every layer-3 protocol or segmentation PID in AX.25.
+
+Lossy integration tests exercise some recovery paths, but do not establish
+full conformance. In particular, the data-only loss test is currently ignored
+as flaky, and a seed associated with a lost UA is excluded from the test cases.
+The source also contains disabled proposals for automatically leaving
+TimerRecovery when all data is acknowledged; those proposals are not current
+behavior.
