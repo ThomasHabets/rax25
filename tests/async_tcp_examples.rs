@@ -418,12 +418,48 @@ fn tshark_text(path: &Path) -> TestResult<String> {
 }
 
 fn assert_tshark_lines(name: &str, actual: &str, expected: &[&str]) {
-    let actual: Vec<_> = actual.lines().collect();
+    let actual_lines: Vec<_> = actual.lines().map(normalize_tshark_addresses).collect();
+    let expected_lines: Vec<_> = expected
+        .iter()
+        .map(|line| normalize_tshark_addresses(line))
+        .collect();
+    let actual: Vec<_> = actual_lines.iter().map(String::as_str).collect();
+    let expected: Vec<_> = expected_lines.iter().map(String::as_str).collect();
     assert!(
         actual == expected,
         "{name} did not match expected tshark output\n{}",
-        unified_diff(name, expected, &actual)
+        unified_diff(name, &expected, &actual)
     );
+}
+
+fn normalize_tshark_addresses(line: &str) -> String {
+    // Tshark versions render AX.25 addresses as either hex bytes or callsigns.
+    line.split('|')
+        .enumerate()
+        .map(|(index, field)| {
+            if matches!(index, 1 | 2) {
+                let bytes: Result<Vec<_>, _> = field
+                    .split(':')
+                    .map(|byte| u8::from_str_radix(byte, 16))
+                    .collect();
+                if let Ok(bytes) = bytes
+                    && let Ok(address) = rax25::Addr::parse(&bytes)
+                {
+                    return address.call().to_owned();
+                }
+            }
+            field.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+#[test]
+fn tshark_address_formats_compare_equally() {
+    let raw = "1|9a:60:a8:a6:a8:40:63|9a:60:a8:a6:a8:40:e4|0x3f|||U P, func=SABM";
+    let callsigns = "1|M0TST-1|M0TST-2|0x3f|||U P, func=SABM";
+    assert_eq!(normalize_tshark_addresses(raw), callsigns);
+    assert_eq!(normalize_tshark_addresses(callsigns), callsigns);
 }
 
 fn unified_diff(name: &str, expected: &[&str], actual: &[&str]) -> String {
