@@ -34,6 +34,7 @@ use std::io::{Read, Write};
 
 mod fcs;
 pub mod state;
+pub mod xid;
 pub use state::Experiment;
 
 const USE_FCS: bool = false;
@@ -309,11 +310,10 @@ pub struct Test {
 ///
 /// ISO 8885 exchange of capabilities, like extended sequence numbers,
 /// max IFRAME size ("MTU"), and lots of other stuff.
-///
-/// TODO: Currently not implemented.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Xid {
-    poll: bool,
+    pub poll: bool,
+    pub parameters: Option<crate::xid::XidParameters>,
 }
 
 /// RNR - Receiver Not Ready (4.3.2.2, page 21)
@@ -421,6 +421,27 @@ const TYPE_MASK: u8 = 0b0000_0011;
 const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    /// Construct an XID command or response, with an optional information field.
+    #[must_use]
+    pub fn xid(
+        src: Addr,
+        dst: Addr,
+        command: bool,
+        poll: bool,
+        parameters: Option<xid::XidParameters>,
+    ) -> Self {
+        Self {
+            src,
+            dst,
+            digipeater: vec![],
+            rr_extseq: false,
+            command_response: command,
+            command_response_la: !command,
+            rr_dist1: false,
+            packet_type: PacketType::Xid(Xid { poll, parameters }),
+        }
+    }
+
     /// Construct a UI frame.
     // TODO: allow setting all the other fields.
     #[must_use]
@@ -503,8 +524,12 @@ impl Packet {
                 ret.push(s.pid);
                 ret.extend(&s.payload);
             }
-            // TODO: XID data too.
-            PacketType::Xid(s) => ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Xid(s) => {
+                ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 });
+                if let Some(parameters) = &s.parameters {
+                    ret.extend(parameters.serialize());
+                }
+            }
             PacketType::Test(s) => {
                 ret.push(CONTROL_TEST | if s.poll { CONTROL_POLL } else { 0 });
                 ret.extend(&s.payload);
@@ -689,7 +714,12 @@ impl Packet {
                         pid: bytes[0],
                         payload: bytes[1..].to_vec(),
                     }),
-                    CONTROL_XID => PacketType::Xid(Xid { poll }),
+                    CONTROL_XID => PacketType::Xid(Xid {
+                        poll,
+                        parameters: (!bytes.is_empty())
+                            .then(|| xid::XidParameters::parse(bytes))
+                            .transpose()?,
+                    }),
                     CONTROL_TEST => PacketType::Test(Test {
                         poll,
                         payload: bytes.to_vec(),

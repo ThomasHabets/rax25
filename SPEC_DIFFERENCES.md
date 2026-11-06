@@ -77,6 +77,12 @@ The implementation also interprets the initialization diagrams' `kr` as the
 transmit window `k`. The XID prose's use of `N1` for retry count is treated as
 a naming error: retry count is `N2`, while `N1` describes information-field size.
 
+## XID Packet Encoding
+
+The packet codec preserves XID information fields and supports the AX.25
+parameter format, including omitted and defaulted parameters. Capability bits
+follow the parameter tables rather than inconsistent example-frame values.
+
 ## Optional Experiments
 
 Both experiments below are disabled by default. They are selected through
