@@ -86,6 +86,7 @@ struct ModemLink {
 }
 impl ModemLink {
     #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Vec<u8>> {
         Ok(vec![])
     }
