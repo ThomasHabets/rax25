@@ -91,12 +91,39 @@ impl Client {
         }
     }
 
+    /// Configure XID negotiation for subsequent connections.
+    pub fn set_xid_config(&mut self, config: state::XidConfig) {
+        self.data.set_xid_config(config);
+    }
+
+    /// Parameters negotiated by XID, or `None` for an unnegotiated link.
+    #[must_use]
+    pub fn negotiated_parameters(&self) -> Option<&state::NegotiatedParameters> {
+        self.data.negotiated_parameters()
+    }
+
+    /// Negotiate parameters before connecting. `None` prefers extended mode;
+    /// `Some` constrains the offered mode. Legacy peers fall back to standard.
+    pub fn connect_with_xid(&mut self, addr: &Addr, ext: Option<bool>) -> Result<()> {
+        self.data.validate_xid_config()?;
+        self.actions(&state::Event::ConnectWithXid {
+            addr: addr.clone(),
+            ext,
+        });
+        self.wait_connected(addr)
+    }
+
     /// Connect to a remote node, optionally using extended (mod-128) mode.
     pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
+        self.data.validate_xid_config()?;
         self.actions(&state::Event::Connect {
             addr: addr.clone(),
             ext,
         });
+        self.wait_connected(addr)
+    }
+
+    fn wait_connected(&mut self, addr: &Addr) -> Result<()> {
         loop {
             let dead = self.data.next_timer_remaining();
             let packet = self
@@ -120,6 +147,9 @@ impl Client {
             if self.data.t3_expired() {
                 self.actions(&state::Event::T3);
             }
+            if self.data.management_expired() {
+                self.actions(&state::Event::ManagementTimeout);
+            }
             if self.state.is_state_disconnected() {
                 debug!("Connection timeout");
                 return Err(Error::msg("connection timeout"));
@@ -134,6 +164,8 @@ impl Client {
     /// TODO: Not sure Result<Option<_>> is a good pattern. It's not really
     /// compatible with must_use.
     pub fn accept(&mut self, until: std::time::Instant) -> Result<Option<Client>> {
+        self.data.validate_xid_config()?;
+        self.data.able_to_establish = true;
         loop {
             let now = std::time::Instant::now();
             if until < now {
@@ -148,21 +180,22 @@ impl Client {
                 if packet.dst.call() != self.data.me.call() {
                     continue;
                 }
-                match packet.packet_type {
-                    PacketType::Sabm(_) => {
-                        let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
-                        new_client.data.peer = Some(packet.src.clone());
-                        new_client.data.able_to_establish = true;
-                        new_client.actions_packet(&packet);
-                        return Ok(Some(new_client));
+                match &packet.packet_type {
+                    PacketType::Xid(_) => {
+                        self.actions_packet(&packet);
                     }
-                    PacketType::Sabme(_) => {
+                    PacketType::Sabm(_) | PacketType::Sabme(_) => {
                         let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
+                        new_client.data = self.data.accepted_data(&packet.src);
                         new_client.data.peer = Some(packet.src.clone());
-                        new_client.data.set_version_2_2();
                         new_client.data.able_to_establish = true;
+                        if matches!(&packet.packet_type, PacketType::Sabme(_)) {
+                            new_client.data.set_version_2_2();
+                        }
                         new_client.actions_packet(&packet);
-                        return Ok(Some(new_client));
+                        if new_client.state.is_state_connected() {
+                            return Ok(Some(new_client));
+                        }
                     }
                     _ => {}
                 }
@@ -195,13 +228,15 @@ impl Client {
     ///
     /// Possible uses for this if you're doing lower level stuff.
     fn try_read(&mut self) -> Result<Option<Packet>> {
-        let packet = Packet::parse(
-            &self
-                .kiss
-                .recv_timeout(std::time::Duration::from_millis(100))?
-                .ok_or(Error::msg("did not get a packet in time"))?,
-            Some(self.data.ext()),
-        )?;
+        let timeout = self
+            .data
+            .next_timer_remaining()
+            .unwrap_or(std::time::Duration::from_millis(100))
+            .min(std::time::Duration::from_millis(100));
+        let Some(bytes) = self.kiss.recv_timeout(timeout)? else {
+            return Ok(None);
+        };
+        let packet = Packet::parse(&bytes, Some(self.data.ext()))?;
         if packet.src.call() != self.data.peer.as_ref().unwrap().call()
             || packet.dst.call() != self.data.me.call()
         {
@@ -243,6 +278,15 @@ impl Client {
             if let Some(p) = self.try_read()? {
                 self.actions_packet(&p);
             }
+            if self.data.t1_expired() {
+                self.actions(&state::Event::T1);
+            }
+            if self.data.t3_expired() {
+                self.actions(&state::Event::T3);
+            }
+            if self.data.management_expired() {
+                self.actions(&state::Event::ManagementTimeout);
+            }
         }
         let ret: Vec<_> = self.incoming.iter().copied().collect();
         self.incoming.clear();
@@ -262,11 +306,17 @@ impl Client {
             PacketType::Ua(ua) => self.actions(&state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(&state::Event::Rnr(p.clone())),
-            PacketType::Rej(p) => self.actions(&state::Event::Rej(p.clone())),
+            PacketType::Rej(p) => {
+                self.actions(&state::Event::Rej(p.clone(), packet.command_response));
+            }
             PacketType::Srej(p) => self.actions(&state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => {
-                self.actions(&state::Event::Xid(p.clone(), packet.command_response));
+                self.actions(&state::Event::Xid(
+                    p.clone(),
+                    packet.command_response,
+                    packet.src.clone(),
+                ));
             }
             PacketType::Ui(p) => {
                 self.actions(&state::Event::Ui(p.clone(), packet.command_response));
@@ -327,6 +377,205 @@ mod tests {
     use super::*;
     use crate::{Addr, FakeKiss};
     use crate::{Iframe, PacketType, Sabm};
+
+    #[derive(Clone, Default)]
+    struct XidPeer {
+        queue: std::collections::VecDeque<Vec<u8>>,
+        sent: std::rc::Rc<std::cell::RefCell<Vec<Packet>>>,
+        respond: bool,
+    }
+
+    impl Hub for XidPeer {
+        fn send(&mut self, frame: &[u8]) -> Result<()> {
+            let packet = Packet::parse(frame, Some(false))?;
+            self.sent.borrow_mut().push(packet.clone());
+            let reply = match &packet.packet_type {
+                PacketType::Xid(xid) if packet.command_response && self.respond => {
+                    Some(PacketType::Xid(xid.clone()))
+                }
+                PacketType::Sabm(_) | PacketType::Sabme(_) => {
+                    Some(PacketType::Ua(crate::Ua { poll: true }))
+                }
+                _ => None,
+            };
+            if let Some(packet_type) = reply {
+                let mut reply = packet;
+                std::mem::swap(&mut reply.src, &mut reply.dst);
+                reply.command_response = false;
+                reply.command_response_la = true;
+                reply.packet_type = packet_type;
+                self.queue.push_back(reply.serialize(false));
+            }
+            Ok(())
+        }
+
+        fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+            if let Some(packet) = self.queue.pop_front() {
+                return Ok(Some(packet));
+            }
+            std::thread::sleep(timeout);
+            Ok(None)
+        }
+
+        fn clone(&self) -> Box<dyn Hub> {
+            Box::new(Self {
+                queue: std::collections::VecDeque::default(),
+                ..Clone::clone(self)
+            })
+        }
+    }
+
+    #[test]
+    fn xid_fake_peer_negotiates_both_modes() -> Result<()> {
+        for mode in [None, Some(false), Some(true)] {
+            let peer = XidPeer {
+                respond: true,
+                ..Default::default()
+            };
+            let sent = peer.sent.clone();
+            let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+            client.set_xid_config(state::XidConfig {
+                management_timeout: std::time::Duration::from_millis(20),
+                ..Default::default()
+            });
+            client.connect_with_xid(&Addr::new("M0THC-2")?, mode)?;
+            assert!(client.negotiated_parameters().is_some());
+            assert_eq!(client.data.ext(), mode.unwrap_or(true));
+            let sent = sent.borrow();
+            assert!(matches!(sent[0].packet_type, PacketType::Xid(_)));
+            assert!(matches!(
+                sent[1].packet_type,
+                PacketType::Sabm(_) | PacketType::Sabme(_)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn xid_fake_peer_timeout_falls_back_to_standard() -> Result<()> {
+        let peer = XidPeer::default();
+        let sent = peer.sent.clone();
+        let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+        client.set_xid_config(state::XidConfig {
+            management_timeout: std::time::Duration::from_millis(1),
+            management_retries: 1,
+            ..Default::default()
+        });
+        client.connect_with_xid(&Addr::new("M0THC-2")?, Some(true))?;
+        assert!(!client.data.ext());
+        assert!(client.negotiated_parameters().is_none());
+        let sent = sent.borrow();
+        assert!(matches!(sent[0].packet_type, PacketType::Xid(_)));
+        assert!(matches!(
+            sent.last().unwrap().packet_type,
+            PacketType::Sabm(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_xid_config_emits_no_frames() -> Result<()> {
+        let peer = XidPeer::default();
+        let sent = peer.sent.clone();
+        let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+        client.set_xid_config(state::XidConfig {
+            receive_length: 0,
+            ..Default::default()
+        });
+        let remote = Addr::new("M0THC-2")?;
+        assert!(client.connect_with_xid(&remote, None).is_err());
+        assert!(client.connect(&remote, false).is_err());
+        assert!(client.accept(std::time::Instant::now()).is_err());
+        assert!(sent.borrow().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn listener_processes_xid_before_sabm() -> Result<()> {
+        // Reuse a real initiator offer, so this test exercises both API paths.
+        let probe = XidPeer {
+            respond: true,
+            ..Default::default()
+        };
+        let sent = probe.sent.clone();
+        let mut initiator = Client::new(Addr::new("M0THC-1")?, Box::new(probe));
+        initiator.set_xid_config(state::XidConfig {
+            management_timeout: std::time::Duration::from_millis(20),
+            ..Default::default()
+        });
+        initiator.connect_with_xid(&Addr::new("M0THC-2")?, Some(false))?;
+        let frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
+        let peer = XidPeer {
+            queue: frames.into(),
+            ..Default::default()
+        };
+        let responses = peer.sent.clone();
+        let mut listener = Client::new(Addr::new("M0THC-2")?, Box::new(peer));
+        let accepted = listener
+            .accept(std::time::Instant::now() + std::time::Duration::from_secs(1))?
+            .expect("incoming connection");
+        assert!(accepted.negotiated_parameters().is_some());
+        let responses = responses.borrow();
+        assert!(matches!(responses[0].packet_type, PacketType::Xid(_)));
+        assert!(!responses[0].command_response);
+        assert!(matches!(responses[1].packet_type, PacketType::Ua(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn plain_reconnect_does_not_reuse_consumed_xid_proposal() -> Result<()> {
+        let probe = XidPeer {
+            respond: true,
+            ..Default::default()
+        };
+        let sent = probe.sent.clone();
+        let mut initiator = Client::new(Addr::new("M0THC-1")?, Box::new(probe));
+        initiator.set_xid_config(state::XidConfig {
+            receive_length: 8,
+            management_timeout: std::time::Duration::from_millis(20),
+            ..Default::default()
+        });
+        initiator.connect_with_xid(&Addr::new("M0THC-2")?, Some(false))?;
+        let mut frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
+        // Reconnect immediately with SABM alone, before the pending offer expires.
+        frames.push(frames.last().expect("initial SABM").clone());
+        let peer = XidPeer {
+            queue: frames.into(),
+            ..Default::default()
+        };
+        let responses = peer.sent.clone();
+        let mut listener = Client::new(Addr::new("M0THC-2")?, Box::new(peer));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut negotiated = listener.accept(until)?.expect("negotiated connection");
+        assert!(negotiated.negotiated_parameters().is_some());
+        let start = responses.borrow().len();
+        negotiated.write(b"0123456789abcdef")?;
+        let lengths: Vec<_> = responses.borrow()[start..]
+            .iter()
+            .filter_map(|packet| {
+                if let PacketType::Iframe(frame) = &packet.packet_type {
+                    Some(frame.payload.len())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(lengths, [8, 8]);
+        drop(negotiated);
+
+        let mut plain = listener.accept(until)?.expect("plain reconnection");
+        assert!(plain.negotiated_parameters().is_none());
+        assert!(!plain.data.ext());
+        let start = responses.borrow().len();
+        plain.write(b"0123456789abcdef")?;
+        let responses = responses.borrow();
+        assert_eq!(responses.len(), start + 1);
+        let PacketType::Iframe(frame) = &responses[start].packet_type else {
+            panic!("expected unfragmented information frame");
+        };
+        assert_eq!(frame.payload, b"0123456789abcdef");
+        Ok(())
+    }
 
     #[test]
     fn client() -> Result<()> {

@@ -77,11 +77,31 @@ The implementation also interprets the initialization diagrams' `kr` as the
 transmit window `k`. The XID prose's use of `N1` for retry count is treated as
 a naming error: retry count is `N2`, while `N1` describes information-field size.
 
-## XID Packet Encoding
+## XID Negotiation
 
-The packet codec preserves XID information fields and supports the AX.25
-parameter format, including omitted and defaulted parameters. Capability bits
-follow the parameter tables rather than inconsistent example-frame values.
+Active XID negotiation is opt-in; responding to pre-connection commands does
+not require enabling active negotiation. Negotiation occurs before SABM(E),
+following sections 4.3.3.7 and 6.3.2. Appendix C5 instead describes sending
+XID after UA. Rax25 deliberately follows the main text so the chosen modulus
+and limits are known before connection establishment and application data.
+
+An unspecified mode prefers modulo-128; an explicitly selected mode constrains
+negotiation. Rejection or management retry exhaustion falls back to modulo-8
+and v2.0 defaults, including when extended mode was requested. Only half
+duplex and REJ are advertised: receiving XID does not enable unimplemented
+SREJ or segmentation. Receive size and window are directional notifications;
+timeout and retry count are negotiated using the greater offered values.
+
+Management retransmissions have a separate timer and counter from data-link
+supervision. Established connections are not renegotiated in this implementation.
+
+A SABM does not indicate whether an earlier XID response reached the initiator.
+If every response was lost, a standard-mode initiator may have fallen back to
+v2.0 defaults while the responder still has a pending proposal. The responder
+therefore accepts at least the legacy 256-byte payload size even when it
+advertised a smaller receive limit. Compliant negotiated peers still transmit
+within the advertised limit; this receive tolerance prevents failed negotiation
+from making legacy fallback unusable.
 
 ## Optional Experiments
 
@@ -114,9 +134,9 @@ to the wire protocol.
   Section 6.7.1.2 describes T2 as optional, so its absence alone is not a
   protocol extension, but acknowledgement timing is not a complete rendering
   of all the diagrams.
-- **Recovery and negotiation:** SREJ is disabled, out-of-order frame storage
-  is incomplete, and REJ/SREJ support is not validated. XID negotiation and
-  some state/event handlers are placeholders. The full enquiry-response
+- **Recovery:** SREJ is disabled, out-of-order frame storage
+  is incomplete, and some state/event handlers are placeholders. Basic REJ
+  recovery is supported. The full enquiry-response
   procedure and simultaneous extended connection establishment are also
   incomplete. These gaps should not be treated as deliberate interoperability
   policies.

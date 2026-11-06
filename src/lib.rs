@@ -35,7 +35,7 @@ use std::io::{Read, Write};
 mod fcs;
 pub mod state;
 pub mod xid;
-pub use state::Experiment;
+pub use state::{Experiment, NegotiatedParameters, XidConfig};
 
 const USE_FCS: bool = false;
 

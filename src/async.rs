@@ -52,7 +52,7 @@ use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
-use crate::state::{self, Event, ReturnEvent};
+use crate::state::{self, Event, NegotiatedParameters, ReturnEvent, XidConfig};
 use crate::{Addr, Packet, PacketType};
 
 use anyhow::{Context, Error, Result, bail};
@@ -155,6 +155,7 @@ pub struct ConnectionBuilder {
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
     experiments: HashSet<crate::Experiment>,
+    xid: Option<XidConfig>,
 }
 
 impl ConnectionBuilder {
@@ -169,6 +170,7 @@ impl ConnectionBuilder {
             mtu: None,
             port,
             experiments: HashSet::new(),
+            xid: None,
         })
     }
 
@@ -180,11 +182,18 @@ impl ConnectionBuilder {
     /// Enable or disable extended mode with `Some(bool)`, or use `None` to have
     /// clients first try one, then the other.
     ///
-    /// TODO: Heuristics is not actually implemented, so passing None currently
-    /// forces extended mode to be off, since that's more supported.
+    /// With XID enabled, `None` prefers extended mode and permits standard
+    /// fallback. Without XID, `None` selects standard mode.
     #[must_use]
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
+        self
+    }
+
+    /// Enable XID parameter negotiation before establishing the link.
+    #[must_use]
+    pub fn xid(mut self, config: XidConfig) -> ConnectionBuilder {
+        self.xid = Some(config);
         self
     }
 
@@ -228,6 +237,9 @@ impl ConnectionBuilder {
     #[must_use]
     fn create_data(&self) -> state::Data {
         let mut data = state::Data::new(self.me.clone());
+        if let Some(config) = &self.xid {
+            data.set_xid_config(config.clone());
+        }
         if let Some(v) = self.srt {
             data.srt_default(v);
         }
@@ -245,6 +257,11 @@ impl ConnectionBuilder {
 
     /// Initiate a connection.
     pub async fn connect(self, peer: Addr) -> Result<Client> {
+        if let Some(config) = &self.xid {
+            config.validate()?;
+        }
+        let extended = self.extended;
+        let xid = self.xid.is_some();
         let mut cli = Client::internal_new(
             self.create_data(),
             self.port,
@@ -253,9 +270,7 @@ impl ConnectionBuilder {
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
-        // TODO: rather than default to false, we should support trying extended
-        // first, then standard.
-        cli.connect(peer).await
+        cli.connect(peer, xid, extended).await
     }
 
     /// Accept a single connection.
@@ -267,6 +282,9 @@ impl ConnectionBuilder {
     /// But this crate doesn't yet have a multi-connection API. Maybe it
     /// shouldn't, though, but instead rely on a TCP-based multiplexer?
     pub async fn accept(self) -> Result<Client> {
+        if let Some(config) = &self.xid {
+            config.validate()?;
+        }
         let mut data = self.create_data();
         data.able_to_establish = true;
 
@@ -442,12 +460,16 @@ impl Client {
     }
 
     /// Initiate a connection.
-    async fn connect(mut self, peer: Addr) -> Result<Self> {
-        self.actions(Event::Connect {
-            addr: peer,
-            ext: self.kissport.ext,
-        })
-        .await?;
+    async fn connect(mut self, peer: Addr, xid: bool, ext: Option<bool>) -> Result<Self> {
+        let event = if xid {
+            Event::ConnectWithXid { addr: peer, ext }
+        } else {
+            Event::Connect {
+                addr: peer,
+                ext: self.kissport.ext,
+            }
+        };
+        self.actions(event).await?;
         loop {
             self.wait_event().await?;
             trace!("rax25: State after waiting: {}", self.state.name());
@@ -521,8 +543,17 @@ impl Client {
         let (t1, t3) = self.timer_13();
         tokio::pin!(t1);
         tokio::pin!(t3);
+        let management = tokio::time::sleep(
+            self.data
+                .management_remaining()
+                .unwrap_or(std::time::Duration::from_hours(24)),
+        );
+        tokio::pin!(management);
 
         tokio::select! {
+            () = &mut management => {
+                self.actions(Event::ManagementTimeout).await?;
+            },
             () = &mut t1 => {
                 debug!("rax25: async con event: T1");
                 self.actions(Event::T1).await?;
@@ -557,12 +588,16 @@ impl Client {
             PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
-            PacketType::Rej(p) => self.actions(state::Event::Rej(p.clone())),
+            PacketType::Rej(p) => {
+                self.actions(state::Event::Rej(p.clone(), packet.command_response))
+            }
             PacketType::Srej(p) => self.actions(state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(state::Event::Frmr(p.clone())),
-            PacketType::Xid(p) => {
-                self.actions(state::Event::Xid(p.clone(), packet.command_response))
-            }
+            PacketType::Xid(p) => self.actions(state::Event::Xid(
+                p.clone(),
+                packet.command_response,
+                packet.src.clone(),
+            )),
             PacketType::Ui(p) => self.actions(state::Event::Ui(p.clone(), packet.command_response)),
             PacketType::Test(p) => {
                 self.actions(state::Event::Test(p.clone(), packet.command_response))
@@ -622,6 +657,12 @@ impl Client {
     /// Write data on an established connection.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(Event::Data(data.to_vec())).await
+    }
+
+    /// Parameters negotiated by XID, or `None` for an unnegotiated link.
+    #[must_use]
+    pub fn negotiated_parameters(&self) -> Option<&NegotiatedParameters> {
+        self.data.negotiated_parameters()
     }
 
     /// Get a pair of sleepers from the T1/T3 timers.
@@ -708,6 +749,67 @@ fn is_error_eof(e: &Error) -> bool {
         return false;
     };
     io_err.kind() == std::io::ErrorKind::UnexpectedEof
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn invalid_xid_config_emits_no_frames() -> Result<()> {
+        for accepting in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+            let (mut peer, _) = listener.accept().await?;
+            let builder = ConnectionBuilder::new(Addr::new("M0THC-1")?, PortType::Tcp(port))?.xid(
+                XidConfig {
+                    receive_length: 0,
+                    ..Default::default()
+                },
+            );
+            let result = if accepting {
+                builder.accept().await
+            } else {
+                builder.connect(Addr::new("M0THC-2")?).await
+            };
+            assert!(result.is_err());
+            let mut buf = [0; 1];
+            assert_eq!(peer.read(&mut buf).await?, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xid_connects_and_negotiates_both_modes() -> Result<()> {
+        for mode in [None, Some(false), Some(true)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+            let (server_port, _) = listener.accept().await?;
+            let client = ConnectionBuilder::new(Addr::new("M0THC-1")?, PortType::Tcp(client_port))?
+                .xid(XidConfig {
+                    management_timeout: Duration::from_millis(20),
+                    ..Default::default()
+                })
+                .extended(mode)
+                .srt_default(Duration::from_millis(20));
+            let server = ConnectionBuilder::new(Addr::new("M0THC-2")?, PortType::Tcp(server_port))?;
+            let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(
+                    client.connect(Addr::new("M0THC-2").unwrap()),
+                    server.accept()
+                )
+            })
+            .await?;
+            let client = client?;
+            let server = server?;
+            assert!(client.negotiated_parameters().is_some());
+            assert!(server.negotiated_parameters().is_some());
+            assert_eq!(client.data.ext(), mode.unwrap_or(true));
+            assert_eq!(server.data.ext(), client.data.ext());
+        }
+        Ok(())
+    }
 }
 /* vim: textwidth=80
  */

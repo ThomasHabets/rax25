@@ -22,6 +22,10 @@ use crate::{
     Ui, Xid,
 };
 
+#[path = "negotiation.rs"]
+pub mod negotiation;
+pub use negotiation::{NegotiatedParameters, XidConfig};
+
 /// Incoming events to the state machine.
 ///
 /// An incoming event is an incoming packet, or a command from the application,
@@ -29,10 +33,12 @@ use crate::{
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Connect { addr: Addr, ext: bool },
+    ConnectWithXid { addr: Addr, ext: Option<bool> },
     Disconnect,
     Data(Vec<u8>),
     T1,
     T3,
+    ManagementTimeout,
 
     // U frames.
     // Commands.
@@ -46,12 +52,12 @@ pub enum Event {
     // Commands or responses.
     Ui(Ui, /* command */ bool),
     Test(Test, /* command */ bool),
-    Xid(Xid, /* command */ bool),
+    Xid(Xid, /* command */ bool, /* peer */ Addr),
 
     // S frames.
     Rr(Rr, /* command */ bool),
     Rnr(Rnr),
-    Rej(Rej),
+    Rej(Rej, /* command */ bool),
     Srej(Srej),
 
     // I frames.
@@ -178,6 +184,7 @@ pub enum Action {
     SendIframe(Iframe),
     SendDm { pf: bool },
     SendSabm { pf: bool },
+    SendXid { peer: Addr, command: bool, xid: Xid },
     Deliver(Vec<u8>),
     EOF,
 }
@@ -320,6 +327,13 @@ impl Modulus {
 /// object.
 #[derive(Debug)]
 pub struct Data {
+    xid_config: Option<XidConfig>,
+    negotiated: Option<NegotiatedParameters>,
+    management: Timer,
+    management_retries: u8,
+    xid_extended: bool,
+    xid_required_mode: Option<bool>,
+    pending_xid: VecDeque<(Addr, NegotiatedParameters, std::time::Instant)>,
     /// My local address.
     pub(crate) me: Addr,
 
@@ -475,6 +489,7 @@ pub struct Data {
 
     /// MTU for this connection.
     mtu_out: usize,
+    mtu_out_default: usize,
 
     /// When an IFRAME is sent out, it's stared in this queue, until it's been
     /// acked. When a resend is required, it's sent from here.
@@ -513,6 +528,13 @@ impl Data {
     pub fn new(me: Addr) -> Self {
         Self {
             me,
+            xid_config: None,
+            negotiated: None,
+            management: Timer::default(),
+            management_retries: 0,
+            xid_extended: false,
+            xid_required_mode: None,
+            pending_xid: VecDeque::new(),
             peer: None,
             n1: DEFAULT_MTU_IN,
             layer3_initiated: false,
@@ -537,6 +559,7 @@ impl Data {
             own_receiver_busy: false,
             iframe_queue: Vec::new(),
             mtu_out: DEFAULT_MTU_OUT,
+            mtu_out_default: DEFAULT_MTU_OUT,
             obuf: VecDeque::new(),
             iframe_resend_queue: VecDeque::new(),
             able_to_establish: false,
@@ -562,6 +585,205 @@ impl Data {
     /// Set MTU.
     pub fn mtu(&mut self, v: usize) {
         self.mtu_out = v;
+        self.mtu_out_default = v;
+    }
+
+    /// Enable XID for outgoing connections and listening responders.
+    pub fn set_xid_config(&mut self, config: XidConfig) {
+        self.xid_config = Some(config);
+    }
+
+    /// Validate local policy before sending frames.
+    pub fn validate_xid_config(&self) -> Result<()> {
+        self.xid_config.as_ref().map_or(Ok(()), XidConfig::validate)
+    }
+
+    pub fn clear_xid_config(&mut self) {
+        self.xid_config = None;
+        self.pending_xid.clear();
+    }
+
+    #[must_use]
+    pub fn negotiated_parameters(&self) -> Option<&NegotiatedParameters> {
+        self.negotiated.as_ref()
+    }
+
+    /// Make a fresh accepted connection retaining listener negotiation state.
+    #[must_use]
+    pub fn accepted_data(&mut self, peer: &Addr) -> Self {
+        let mut data = Self::new(self.me.clone());
+        data.xid_config.clone_from(&self.xid_config);
+        self.expire_pending_xid();
+        if let Some(index) = self
+            .pending_xid
+            .iter()
+            .position(|(addr, _, _)| addr.call() == peer.call())
+        {
+            data.pending_xid
+                .push_back(self.pending_xid.remove(index).unwrap());
+        }
+        data.srt_default = self.srt_default;
+        data.t3v = self.t3v;
+        data.mtu_out = self.mtu_out_default;
+        data.mtu_out_default = self.mtu_out_default;
+        data.experiments.clone_from(&self.experiments);
+        data.able_to_establish = true;
+        data
+    }
+
+    #[must_use]
+    pub fn management_expired(&self) -> bool {
+        self.management.is_expired().unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn management_remaining(&self) -> Option<std::time::Duration> {
+        self.management.remaining()
+    }
+
+    fn apply_negotiated(&mut self, parameters: NegotiatedParameters) {
+        self.n1 = parameters.receive_length;
+        self.mtu_out = parameters.transmit_length;
+        self.k = parameters.transmit_window;
+        self.n2 = parameters.retries;
+        self.srt = parameters.acknowledgement_timer;
+        self.t1v = parameters.acknowledgement_timer;
+        self.negotiated = Some(parameters);
+    }
+
+    fn xid_command(&self) -> Action {
+        Action::SendXid {
+            peer: self.peer.clone().expect("XID requires a peer"),
+            command: true,
+            xid: Xid {
+                poll: true,
+                parameters: Some(
+                    self.xid_config
+                        .as_ref()
+                        .expect("XID requires config")
+                        .offer(self.xid_extended),
+                ),
+            },
+        }
+    }
+
+    fn start_xid(&mut self, peer: &Addr, extended: Option<bool>) -> Vec<Action> {
+        let config = self.xid_config.get_or_insert_with(XidConfig::default);
+        if config.validate().is_err() {
+            return vec![Action::DlError(DlError::K)];
+        }
+        self.management.start(config.management_timeout);
+        self.management_retries = 0;
+        self.xid_extended = extended.unwrap_or(true);
+        self.xid_required_mode = extended;
+        self.peer = Some(peer.clone());
+        self.negotiated = None;
+        self.layer3_initiated = true;
+        self.t1.stop();
+        self.t3.stop();
+        vec![Action::State(Box::new(AwaitingXid)), self.xid_command()]
+    }
+
+    fn finish_xid(&mut self, parameters: Option<NegotiatedParameters>) -> Vec<Action> {
+        self.management.stop();
+        self.negotiated = None;
+        self.mtu_out = self.mtu_out_default;
+        if parameters.as_ref().is_some_and(|p| p.extended) {
+            self.set_version_2_2();
+        } else {
+            self.set_version_2();
+        }
+        self.srt = self.srt_default;
+        self.t1v = 2 * self.srt;
+        if let Some(parameters) = parameters {
+            self.apply_negotiated(parameters);
+        } else {
+            self.n1 = 256;
+            self.mtu_out = self.mtu_out.min(256);
+            self.srt = DEFAULT_SRT;
+            self.t1v = DEFAULT_SRT;
+        }
+        vec![
+            Action::State(Box::new(AwaitingConnection::new())),
+            self.establish_data_link(),
+        ]
+    }
+
+    fn expire_pending_xid(&mut self) {
+        let now = std::time::Instant::now();
+        self.pending_xid.retain(|(_, _, expiry)| *expiry > now);
+    }
+
+    fn receive_xid(&mut self, packet: &Xid, command: bool, peer: &Addr) -> Vec<Action> {
+        self.expire_pending_xid();
+        let config = self.xid_config.clone().unwrap_or_default();
+        if config.validate().is_err() {
+            return vec![];
+        }
+        if command {
+            if !packet.poll {
+                return vec![];
+            }
+            let mut response = config.offer(true);
+            if let Some(offered) = &packet.parameters {
+                let Some(parameters) = config.negotiate(offered, true, self.mtu_out) else {
+                    return vec![];
+                };
+                response = config.offer(parameters.extended);
+                response.optional_functions = Some(
+                    response.optional_functions.unwrap()
+                        & !if parameters.extended {
+                            negotiation::MOD8
+                        } else {
+                            negotiation::MOD128
+                        },
+                );
+                response.acknowledgement_timer_ms = Some(
+                    u32::try_from(parameters.acknowledgement_timer.as_millis())
+                        .expect("validated timer"),
+                );
+                response.retries = Some(parameters.retries);
+                self.pending_xid
+                    .retain(|(addr, _, _)| addr.call() != peer.call());
+                if self.pending_xid.len() == 16 {
+                    self.pending_xid.pop_front();
+                }
+                let lifetime = config
+                    .management_timeout
+                    .saturating_mul(u32::from(config.management_retries) + 2);
+                self.pending_xid.push_back((
+                    peer.clone(),
+                    parameters,
+                    std::time::Instant::now() + lifetime,
+                ));
+            }
+            return vec![Action::SendXid {
+                peer: peer.clone(),
+                command: false,
+                xid: Xid {
+                    poll: packet.poll,
+                    parameters: Some(response),
+                },
+            }];
+        }
+        if !self.management.running
+            || !packet.poll
+            || self
+                .peer
+                .as_ref()
+                .is_none_or(|addr| addr.call() != peer.call())
+        {
+            return vec![];
+        }
+        let parameters = packet
+            .parameters
+            .as_ref()
+            .and_then(|p| config.negotiate(p, self.xid_extended, self.mtu_out))
+            .filter(|p| {
+                self.xid_required_mode
+                    .is_none_or(|required| p.extended == required)
+            });
+        self.finish_xid(parameters)
     }
 
     /// Return true if using 128 modulus.
@@ -592,6 +814,9 @@ impl Data {
         if self.t3_expired() {
             ret.push(Event::T3);
         }
+        if self.management_expired() {
+            ret.push(Event::ManagementTimeout);
+        }
         ret
     }
 
@@ -600,12 +825,14 @@ impl Data {
     #[must_use]
     #[allow(clippy::match_same_arms)]
     pub fn next_timer_remaining(&self) -> Option<std::time::Duration> {
-        match (self.t1.remaining(), self.t3.remaining()) {
-            (Some(t1), Some(t3)) => Some(std::cmp::min(t1, t3)),
-            (None, Some(t)) => Some(t),
-            (Some(t), None) => Some(t),
-            (None, None) => None,
-        }
+        [
+            self.t1.remaining(),
+            self.t3.remaining(),
+            self.management.remaining(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Do something with a received UI frame.
@@ -746,7 +973,10 @@ impl Data {
         // Or maybe we set rc=0 everywhere we enter Connected?
         if self.rc == 0 {
             // TODO: the real formula is stranger.
-            self.srt = self.srt_default;
+            self.srt = self
+                .negotiated
+                .as_ref()
+                .map_or(self.srt_default, |p| p.acknowledgement_timer);
         } else if self.t1_expired() {
             // 1998 spec says:
             // self.srt = self.srt * (2 ** (rc + 1));
@@ -1026,7 +1256,7 @@ pub trait State {
 
     /// REJ received from peer.
     #[must_use]
-    fn rej(&self, _data: &mut Data, _packet: &Rej) -> Vec<Action> {
+    fn rej(&self, _data: &mut Data, _packet: &Rej, _command: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected REJ");
         vec![]
     }
@@ -1144,6 +1374,21 @@ impl Disconnected {
         data.vr = 0;
         data.srt = data.srt_default;
         data.t1v = data.srt + data.srt;
+        data.negotiated = None;
+        data.n1 = DEFAULT_MTU_IN;
+        data.mtu_out = data.mtu_out_default;
+        data.expire_pending_xid();
+        if let Some(index) = data
+            .pending_xid
+            .iter()
+            .position(|(peer, p, _)| peer.call() == src.call() && p.extended == data.ext())
+        {
+            let (_, parameters, _) = data.pending_xid.remove(index).unwrap();
+            data.apply_negotiated(parameters);
+            // SABM cannot distinguish a negotiated peer from one whose XID
+            // responses were all lost. Tolerate legacy-sized receive frames.
+            data.n1 = data.n1.max(DEFAULT_MTU_OUT);
+        }
         data.t3.start(data.t3v);
         data.rc = 0;
         data.peer = Some(src);
@@ -1169,6 +1414,10 @@ impl State for Disconnected {
 
     // Page 85.
     fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
+        if data.xid_config.is_some() {
+            return data.start_xid(addr, Some(ext));
+        }
+        data.negotiated = None;
         data.modulus = if ext {
             Modulus::Extended
         } else {
@@ -1246,6 +1495,34 @@ impl State for Disconnected {
 // AwaitingConnection means a SABM(E) has been sent, and we are waiting for the
 // UA.
 struct AwaitingConnection {}
+
+/// Negotiation precedes SABM(E), following 4.3.3.7 and 6.3.2 rather than
+/// the conflicting post-connect exchange in appendix C5.
+struct AwaitingXid;
+
+impl State for AwaitingXid {
+    fn name(&self) -> String {
+        "AwaitingXid".to_string()
+    }
+
+    fn disconnect(&self, data: &mut Data) -> Vec<Action> {
+        data.management.stop();
+        data.negotiated = None;
+        vec![Action::State(Box::new(Disconnected::new())), Action::EOF]
+    }
+
+    fn dm(&self, data: &mut Data, packet: &Dm) -> Vec<Action> {
+        if packet.poll {
+            data.finish_xid(None)
+        } else {
+            vec![]
+        }
+    }
+
+    fn frmr(&self, data: &mut Data) -> Vec<Action> {
+        data.finish_xid(None)
+    }
+}
 
 impl AwaitingConnection {
     #[must_use]
@@ -1902,6 +2179,47 @@ impl State for Connected {
             ConnectedState::TimerRecovery => self.rr_timer_recovery(data, packet, cr),
         }
     }
+
+    // 6.4.7: acknowledge through N(R), then go back and resend the remainder.
+    //
+    // 1998: Page 96 (Connected) and 100 (TimerRecovery).
+    fn rej(&self, data: &mut Data, packet: &Rej, command: bool) -> Vec<Action> {
+        data.peer_receiver_busy = false;
+        if !in_range(data.va, packet.nr, data.vs, data.modulus) {
+            let mut actions = data.nr_error_recovery();
+            actions.push(Action::State(Box::new(AwaitingConnection::new())));
+            return actions;
+        }
+        let mut actions = if command && packet.poll {
+            vec![data.enquiry_response(true)]
+        } else {
+            vec![]
+        };
+        // Do not flush new application data until the rejected frames are resent.
+        while data.va != packet.nr {
+            data.iframe_resend_queue.pop_front();
+            data.va = (data.va + 1) % data.modulus.as_u8();
+        }
+        data.t1.stop();
+        data.rc = 0;
+        data.select_t1_value();
+        actions.extend(data.invoke_retransmission(packet.nr));
+        data.acknowledge_pending = false;
+        if data.va == data.vs {
+            data.t3.start(data.t3v);
+        } else {
+            data.t3.stop();
+            data.t1.start(data.t1v);
+        }
+        if matches!(self.connected_state, ConnectedState::TimerRecovery) && !command && packet.poll
+        {
+            actions.push(Action::State(Box::new(Self::new(
+                ConnectedState::Connected,
+            ))));
+        }
+        actions.extend(data.flush());
+        actions
+    }
 }
 
 /// Ugly range checker.
@@ -1956,6 +2274,26 @@ pub fn handle(
 ) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
     let actions = match packet {
         Event::Connect { addr, ext } => state.connect(data, addr, *ext),
+        Event::ConnectWithXid { addr, ext } => {
+            if state.is_state_disconnected() {
+                data.start_xid(addr, *ext)
+            } else {
+                vec![]
+            }
+        }
+        Event::ManagementTimeout => {
+            if !data.management.running {
+                vec![]
+            } else if data.management_retries < data.xid_config.as_ref().unwrap().management_retries
+            {
+                data.management_retries += 1;
+                data.management
+                    .start(data.xid_config.as_ref().unwrap().management_timeout);
+                vec![data.xid_command()]
+            } else {
+                data.finish_xid(None)
+            }
+        }
         Event::Disconnect => state.disconnect(data),
         Event::Data(payload) => state.data(data, payload),
         Event::T1 => state.t1(data),
@@ -1970,9 +2308,15 @@ pub fn handle(
         Event::Rr(p, command) => state.rr(data, p, *command),
         Event::Rnr(p) => state.rnr(data, p),
         Event::Frmr(_) => state.frmr(data),
-        Event::Rej(p) => state.rej(data, p),
+        Event::Rej(p, command) => state.rej(data, p, *command),
         Event::Srej(p) => state.srej(data, p),
-        Event::Xid(p, command) => state.xid(data, p, *command),
+        Event::Xid(p, command, peer) => {
+            if state.is_state_disconnected() || data.management.running {
+                data.receive_xid(p, *command, peer)
+            } else {
+                vec![]
+            }
+        }
         Event::Test(p, command) => state.test(data, p, *command),
     };
     let mut ret = Vec::new();
@@ -1983,6 +2327,13 @@ pub fn handle(
         use Action::*;
         match act {
             Action::State(_) => {} // Ignore state change at this stage.
+            SendXid { peer, command, xid } => ret.push(ReturnEvent::Packet(Packet::xid(
+                data.me.clone(),
+                peer.clone(),
+                *command,
+                xid.poll,
+                xid.parameters.clone(),
+            ))),
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             // U frames.
             SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2092,6 +2443,111 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xid_requires_final_and_selected_mode() -> Result<()> {
+        let mut data = Data::new(Addr::new("LOCAL")?);
+        let peer = Addr::new("REMOTE")?;
+        let config = XidConfig::default();
+        data.set_xid_config(config.clone());
+        data.start_xid(&peer, Some(true));
+        assert!(
+            data.receive_xid(
+                &Xid {
+                    poll: false,
+                    parameters: Some(config.offer(true))
+                },
+                false,
+                &peer
+            )
+            .is_empty()
+        );
+        assert!(data.management.running);
+        data.receive_xid(
+            &Xid {
+                poll: true,
+                parameters: Some(config.offer(false)),
+            },
+            false,
+            &peer,
+        );
+        assert!(!data.management.running);
+        assert!(!data.ext());
+        assert!(data.negotiated.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn xid_proposals_are_bounded_expire_and_do_not_lock_peer() -> Result<()> {
+        let mut data = Data::new(Addr::new("LOCAL")?);
+        data.able_to_establish = true;
+        let packet = Xid {
+            poll: true,
+            parameters: Some(XidConfig::default().offer(false)),
+        };
+        for index in 0..17 {
+            let peer = Addr::new(&format!("P{index:02}"))?;
+            assert!(!data.receive_xid(&packet, true, &peer).is_empty());
+        }
+        assert_eq!(data.pending_xid.len(), 16);
+        assert!(data.peer.is_none());
+        assert_eq!(data.pending_xid.front().unwrap().0.call(), "P01");
+        for (_, _, expiry) in &mut data.pending_xid {
+            *expiry = std::time::Instant::now();
+        }
+        data.expire_pending_xid();
+        assert!(data.pending_xid.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn crossed_xid_commands_leave_outstanding_exchange_active() -> Result<()> {
+        let mut data = Data::new(Addr::new("LOCAL")?);
+        let peer = Addr::new("REMOTE")?;
+        data.start_xid(&peer, None);
+        let packet = Xid {
+            poll: true,
+            parameters: Some(XidConfig::default().offer(true)),
+        };
+        assert!(!data.receive_xid(&packet, true, &peer).is_empty());
+        assert!(data.management.running);
+        assert!(data.negotiated.is_none());
+        data.receive_xid(&packet, false, &peer);
+        assert!(!data.management.running);
+        assert!(data.ext());
+        assert!(data.negotiated.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn rej_retires_acknowledged_frames_and_resends_remaining() -> Result<()> {
+        let mut data = Data::new(Addr::new("LOCAL")?);
+        data.vs = 2;
+        for ns in 0..2 {
+            data.iframe_resend_queue.push_back(Iframe {
+                ns,
+                nr: 0,
+                poll: false,
+                pid: 0xf0,
+                payload: vec![ns],
+            });
+        }
+        let connected = Connected::new(ConnectedState::Connected);
+        let actions = connected.rej(&mut data, &Rej { poll: false, nr: 1 }, false);
+        assert_eq!(data.va, 1);
+        assert_eq!(data.iframe_resend_queue.len(), 1);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::SendIframe(frame) if frame.ns == 1))
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, Action::SendIframe(frame) if frame.ns == 0))
+        );
+        Ok(())
+    }
 
     fn assert_all(want: &[ReturnEvent], got: &[ReturnEvent], more: &str) {
         for w in want {
