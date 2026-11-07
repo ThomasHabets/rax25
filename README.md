@@ -69,6 +69,21 @@ The examples provide `--no-extended` to constrain XID to modulo-8 and
 `--xid-receive-size` to set the advertised receive payload limit. `--srt`
 also sets the XID management retry interval.
 
+## Probe XID Capabilities
+
+The `xid_probe` example sends an XID capability query without establishing an
+AX.25 data connection. It prints the peer's advertised parameters and exits.
+Both serial and TCP KISS endpoints are supported:
+
+```shell
+cargo run --features async --example xid_probe -- -p tcp://localhost:8000 -s M0QQQ-1 M0QQQ-2
+cargo run --features async --example xid_probe -- -p serial:///dev/rfcomm0 -s M0QQQ-1 --timeout 3s --retries 3 M0QQQ-2
+```
+
+`--retries` counts retransmissions after the initial query. A timeout, rejected
+query, or closed KISS connection produces an error exit; the probe never falls
+back to SABM or SABME.
+
 ## Reference documentation
 
 See the [spec/](spec/) folder.

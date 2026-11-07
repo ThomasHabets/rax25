@@ -44,6 +44,10 @@ name = "async_server"
 required-features = ["async"]
 
 [[example]]
+name = "xid_probe"
+required-features = ["async"]
+
+[[example]]
 name = "server"
 required-features = ["serial"]
 
