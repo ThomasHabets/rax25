@@ -49,3 +49,35 @@ jobs:
           target/*.test.direwolf/direwolf_interop/*/*.pcap
           target/*.test.direwolf/direwolf_interop/*/*.conf
         if-no-files-found: ignore
+
+  msrv:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+    - name: apt install deps
+      run:  sudo apt-get install -y libudev-dev tshark
+    - name: Read MSRV from Cargo.toml
+      id: msrv
+      shell: bash
+      run: |
+        rust_version="$(cargo metadata --no-deps --format-version=1 \
+          | jq -r '.packages[0].rust_version')"
+
+        if [ "$rust_version" = "null" ] || [ -z "$rust_version" ]; then
+          echo "package.rust-version is not set in Cargo.toml" >&2
+          exit 1
+        fi
+
+        echo "version=$rust_version" >> "$GITHUB_OUTPUT"
+        echo "MSRV: $rust_version"
+
+    - name: Install Rust MSRV
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.msrv.outputs.version }}
+    - name: Build
+      run: cargo build --all-targets
+    - name: Test
+      run: cargo test --locked --all-targets
