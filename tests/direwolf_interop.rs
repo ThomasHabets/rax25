@@ -293,7 +293,16 @@ async fn interop(extended: bool) -> Result<()> {
         fs::write(&config, format!(
             "ADEVICE from-bell202 to-bell202\nARATE 48000\nACHANNELS 1\nCHANNEL 0\nMYCALL M0TST-2\nMODEM 1200\nAGWPORT {agw_port}\nKISSPORT 0\nTXDELAY 20\nTXTAIL 10\nPERSIST 255\nSLOTTIME 1\nFIX_BITS 0\n"
         ))?;
-        harness.spawn("direwolf", Command::new(std::env::var_os("DIREWOLF_BIN").unwrap_or_else(|| "/usr/bin/direwolf".into())).arg("-c").arg(config).args(["-t", "0"]))?;
+        // Dire Wolf 1.7 truncates long -c arguments; keep the filename short
+        // even when Tickbox's persistent target directory has a long path.
+        let binary = std::env::var_os("DIREWOLF_BIN").unwrap_or_else(|| "/usr/bin/direwolf".into());
+        let binary = PathBuf::from(binary);
+        let binary = if binary.is_relative() && binary.components().count() > 1 {
+            fs::canonicalize(binary)?
+        } else {
+            binary
+        };
+        harness.spawn("direwolf", Command::new(binary).current_dir(&harness.dir).arg("-c").arg("direwolf.conf").args(["-t", "0"]))?;
         let mut agw = AGWServer::new(harness.connect(agw_port).await?);
         agw.send(&Packet::RegisterCallsign(Port(0), Call::from_bytes(b"M0TST-2")?)).await?;
         let registered = timeout(DEADLINE, agw.recv()).await.context("AGW registration timed out")??;

@@ -91,7 +91,7 @@ also sets the XID management retry interval.
 
 ## Dire Wolf Audio Interoperability
 
-An opt-in integration test runs the `bell202` modem from the published
+An integration test runs the `bell202` modem from the published
 rustradio 0.20.2 release against an installed Dire Wolf binary, through two
 virtual audio cables. A registered AGW application echoes data using Dire
 Wolf's AX.25 stack; the test checks standard and extended connections,
@@ -105,12 +105,20 @@ On Linux, install Dire Wolf, PipeWire, `pipewire-pulse`, WirePlumber,
 bash tests/run_direwolf_interop.sh
 ```
 
-The launcher installs the pinned release's `bell202` example from crates.io
-with `--features audio --locked` into `target/direwolf_interop/rustradio-0.20.2/`
-and starts an isolated audio session, leaving desktop audio unchanged.
+The pre-commit Tickbox runs this test after the parallel checks. The Rust
+test cases are marked ignored so ordinary `cargo test` does not require the
+external audio tools. The launcher installs the pinned release's `bell202`
+example from crates.io with `--features audio --locked` and starts an isolated
+audio session, leaving desktop audio unchanged. Building the modem requires
+Rust 1.98 or newer and ALSA/JACK development libraries (`libasound2-dev`,
+`libjack-jackd2-dev`, and `pkg-config` on Debian).
 Set `BELL202_BIN` to use an already-built modem. `DIREWOLF_BIN` selects a
 different Dire Wolf executable. No sibling checkout is needed.
-Logs and captures remain under `target/direwolf_interop/` for inspection.
+Logs and captures remain under `target/direwolf_interop/` for inspection,
+or under `$CARGO_TARGET_DIR/direwolf_interop/` when set. Tickbox uses
+`target/<branch>.test.direwolf/`, retaining the modem between runs and keeping
+artifacts outside its temporary checkout. GitHub Actions uploads logs and
+captures on failure.
 
 ## Probe XID Capabilities
 

@@ -8,8 +8,10 @@ fi
 
 cd "$(dirname "$0")/.."
 repo_dir=$PWD
+target_dir=${CARGO_TARGET_DIR:-"$repo_dir/target"}
+if [[ $target_dir != /* ]]; then target_dir="$repo_dir/$target_dir"; fi
 if [[ -z ${BELL202_BIN:-} ]]; then
-    modem_root="$repo_dir/target/direwolf_interop/rustradio-0.20.2"
+    modem_root="$target_dir/direwolf_interop/rustradio-0.20.2"
     cargo install rustradio --version '=0.20.2' --registry crates-io --locked \
         --example bell202 --features audio --root "$modem_root" \
         --target-dir "$modem_root/build"
@@ -17,7 +19,7 @@ if [[ -z ${BELL202_BIN:-} ]]; then
 fi
 
 audio_runtime=$(mktemp -d /tmp/rax25-audio.XXXXXX)
-audio_logs="$repo_dir/target/direwolf_interop/audio-$(date +%s)-$$"
+audio_logs="$target_dir/direwolf_interop/audio-$(date +%s)-$$"
 mkdir -p "$audio_logs"
 audio_pids=()
 cleanup() {
