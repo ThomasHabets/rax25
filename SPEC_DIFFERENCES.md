@@ -157,8 +157,10 @@ to the wire protocol.
   implementation of every layer-3 protocol or segmentation PID in AX.25.
 
 Lossy integration tests exercise some recovery paths, but do not establish
-full conformance. In particular, the data-only loss test is currently ignored
-as flaky, and a seed associated with a lost UA is excluded from the test cases.
+full conformance. Required tests use bounded, explicit losses; unrestricted
+random-loss tests are opt-in stress tests because loss can exceed the finite
+retry budget. The data-only random-loss test is also ignored, and a seed
+associated with a lost UA is excluded from the random test cases.
 The source also contains disabled proposals for automatically leaving
 TimerRecovery when all data is acknowledged; those proposals are not current
 behavior.

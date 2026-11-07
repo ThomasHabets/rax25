@@ -3,7 +3,6 @@
 //!
 //! This whole thing was AI-coded. It looks right, and I fixed a thing or two,
 //! but being a test I have not super validated it.
-use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -14,7 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -141,6 +140,39 @@ fn run_xid_test(
 
 #[test]
 fn async_examples_echo_over_lossy_tcp() -> TestResult {
+    for fault in [Fault::Data, Fault::FinalRr, Fault::Disc] {
+        for extended in [false, true] {
+            let args = if extended {
+                &["-e", "--srt", "100ms", "--t3v", "200ms"][..]
+            } else {
+                &["--srt", "100ms", "--t3v", "200ms"][..]
+            };
+            run_async_examples_echo_test(TestCase {
+                name: match (fault, extended) {
+                    (Fault::Data, false) => "recovery-data",
+                    (Fault::Data, true) => "recovery-data-extended",
+                    (Fault::FinalRr, false) => "recovery-final-rr",
+                    (Fault::FinalRr, true) => "recovery-final-rr-extended",
+                    (Fault::Disc, false) => "recovery-disc",
+                    (Fault::Disc, true) => "recovery-disc-extended",
+                },
+                client_extra_args: args,
+                server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
+                bridge_mode: BridgeMode::Recovery { fault, extended },
+                timeout: Duration::from_secs(5),
+                expected_capture: None,
+                preserve_captures_on_failure: true,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Seeded random loss is stress coverage, not a bounded recovery guarantee:
+/// unbounded loss can exceed N2, and timer-driven frames change RNG consumption.
+#[test]
+#[ignore = "stress: unbounded random loss can exceed N2"]
+fn random_loss_stress() -> TestResult {
     for seeds in [
         (0, 0),
         (0x44, 0),
@@ -226,12 +258,24 @@ struct TestCase {
 enum BridgeMode {
     Reliable,
     Xid(XidFault),
+    Recovery {
+        fault: Fault,
+        extended: bool,
+    },
     Lossy {
         data_only: bool,
         drop_probability_percent: u8,
         client_to_server_seed: u64,
         server_to_client_seed: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    Data,
+    // Data loss forces polls in both directions without idle-time ordering.
+    FinalRr,
+    Disc,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -247,9 +291,10 @@ enum XidFault {
 fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
     // Tickbox reuses binaries across temporary checkouts, so a compile-time
     // path could refer to a checkout that has already been deleted.
-    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
-        io::Error::other("CARGO_MANIFEST_DIR was not set when running the integration test")
-    })?);
+    let manifest_dir =
+        std::path::absolute(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+            io::Error::other("CARGO_MANIFEST_DIR was not set when running the integration test")
+        })?)?;
     build_examples(&manifest_dir)?;
 
     let bridge = start_kiss_bridge(test_case.bridge_mode)?;
@@ -329,6 +374,9 @@ fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
         }
         if test_case.client_extra_args.contains(&"--xid") {
             assert_xid_captures(test_case, &client_capture, &server_capture)?;
+        }
+        if let BridgeMode::Recovery { fault, extended } = test_case.bridge_mode {
+            assert_recovery_captures(fault, extended, &client_capture, &server_capture)?;
         }
         //return Err(Box::new(io::Error::other("fake break just to get captures")));
         Ok(())
@@ -413,6 +461,89 @@ fn read_capture(path: &Path) -> TestResult<Vec<Vec<u8>>> {
         remaining = &remaining[size..];
     }
     Ok(frames)
+}
+
+fn assert_recovery_captures(
+    fault: Fault,
+    extended: bool,
+    client: &Path,
+    server: &Path,
+) -> TestResult {
+    let client = read_capture(client)?;
+    let server = read_capture(server)?;
+    for (name, sender, receiver, ssid) in [
+        ("client-to-server", &client, &server, 2),
+        ("server-to-client", &server, &client, 4),
+    ] {
+        let from_sender = |frames: &[Vec<u8>]| {
+            frames
+                .iter()
+                .filter(|f| f[13] & 0x1e == ssid)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let sent = from_sender(sender);
+        let received = from_sender(receiver);
+        let mut loss = RecoveryLoss::new(fault, extended);
+        let forwarded: Vec<_> = sent
+            .iter()
+            .filter(|f| !loss.should_drop(f))
+            .cloned()
+            .collect();
+        if received != forwarded {
+            return Err(
+                io::Error::other(format!("{name}: captures do not match scripted losses")).into(),
+            );
+        }
+        if matches!(fault, Fault::Data | Fault::FinalRr) {
+            let first = sent
+                .iter()
+                .map(|f| recovery_frame(f, extended))
+                .find(|f| matches!(f, RecoveryFrame::Data { .. }))
+                .ok_or_else(|| io::Error::other(format!("{name}: missing data")))?;
+            let copies = sent
+                .iter()
+                .filter(|f| recovery_frame(f, extended) == first)
+                .count();
+            if loss.data_dropped != 2 || copies < 3 {
+                return Err(io::Error::other(format!(
+                    "{name}: must transmit the initial payload at least three times; got {copies}"
+                ))
+                .into());
+            }
+        }
+        if matches!(fault, Fault::FinalRr) {
+            let finals = sent
+                .iter()
+                .filter(|f| recovery_frame(f, extended) == RecoveryFrame::FinalRr)
+                .count();
+            if loss.rr_dropped != 1 || finals < 2 {
+                return Err(
+                    io::Error::other(format!("{name}: final RR loss/retry not exercised")).into(),
+                );
+            }
+        }
+        if matches!(fault, Fault::Disc) && ssid == 2 {
+            let discs = sent
+                .iter()
+                .filter(|f| recovery_frame(f, extended) == RecoveryFrame::Disc)
+                .count();
+            if loss.disc_dropped != 1 || discs < 2 {
+                return Err(io::Error::other("EOF DISC loss/retry not exercised").into());
+            }
+        }
+    }
+    for frames in [&client, &server] {
+        if !frames
+            .iter()
+            .any(|f| control(f) == if extended { 0x6f } else { 0x2f })
+            || !frames.iter().any(|f| control(f) == 0x43)
+            || frames.last().is_none_or(|f| control(f) != 0x63)
+        {
+            return Err(io::Error::other("missing setup or EOF DISC/UA exchange").into());
+        }
+    }
+    Ok(())
 }
 
 fn assert_xid_captures(case: TestCase, client: &Path, server: &Path) -> TestResult {
@@ -676,17 +807,20 @@ fn build_examples(manifest_dir: &Path) -> TestResult {
 }
 
 fn example_exe(manifest_dir: &Path, name: &str) -> PathBuf {
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| manifest_dir.join("target"), PathBuf::from);
-    let target_dir = if target_dir.is_absolute() {
-        target_dir
-    } else {
-        manifest_dir.join(target_dir)
-    };
-    target_dir
+    target_dir(manifest_dir)
         .join("debug")
         .join("examples")
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn target_dir(manifest_dir: &Path) -> PathBuf {
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| manifest_dir.join("target"), PathBuf::from);
+    if target_dir.is_absolute() {
+        target_dir
+    } else {
+        manifest_dir.join(target_dir)
+    }
 }
 
 struct TestDir {
@@ -714,8 +848,7 @@ impl TestDir {
                 self.path.display()
             ))
         })?;
-        let dest = manifest_dir
-            .join("target")
+        let dest = target_dir(manifest_dir)
             .join("async_tcp_example_captures")
             .join(test_name)
             .join(dir_name);
@@ -911,22 +1044,26 @@ fn run_kiss_bridge(
     let (client_to_server_loss, server_to_client_loss) = match mode {
         BridgeMode::Reliable => (None, None),
         BridgeMode::Xid(_) => unreachable!(),
+        BridgeMode::Recovery { fault, extended } => (
+            Some(LossDecision::recovery(fault, extended)),
+            Some(LossDecision::recovery(fault, extended)),
+        ),
         BridgeMode::Lossy {
             data_only,
             drop_probability_percent,
             client_to_server_seed,
             server_to_client_seed,
         } => (
-            Some(LossConfig {
+            Some(LossDecision::random(LossConfig {
                 data_only,
                 drop_probability_percent,
                 seed: client_to_server_seed,
-            }),
-            Some(LossConfig {
+            })),
+            Some(LossDecision::random(LossConfig {
                 data_only,
                 drop_probability_percent,
                 seed: server_to_client_seed,
-            }),
+            })),
         ),
     };
 
@@ -949,6 +1086,203 @@ struct LossConfig {
     data_only: bool,
     drop_probability_percent: u8,
     seed: u64,
+}
+
+enum LossDecision {
+    Random {
+        config: LossConfig,
+        rng: Box<StdRng>,
+    },
+    Recovery(RecoveryLoss),
+}
+
+impl LossDecision {
+    fn random(config: LossConfig) -> Self {
+        Self::Random {
+            rng: Box::new(StdRng::seed_from_u64(config.seed)),
+            config,
+        }
+    }
+
+    fn recovery(fault: Fault, extended: bool) -> Self {
+        Self::Recovery(RecoveryLoss::new(fault, extended))
+    }
+
+    fn should_drop(&mut self, frame: &[u8]) -> bool {
+        match self {
+            Self::Recovery(loss) => {
+                decode_kiss_data(frame).is_some_and(|raw| loss.should_drop(&raw))
+            }
+            Self::Random { config, rng } => {
+                if config.data_only {
+                    let Some(raw) = decode_kiss_data(frame) else {
+                        return false;
+                    };
+                    if raw.len() < 15
+                        || matches!(
+                            control(&raw),
+                            0x2f | 0x6f | 0x63 | 0x43 | 0xaf | 0x87 | 0x0f
+                        )
+                    {
+                        return false;
+                    }
+                }
+                rng.random_range(0_u8..100) < config.drop_probability_percent
+            }
+        }
+    }
+}
+
+// Only complete KISS data frames may participate in the loss script. Reject
+// malformed escapes rather than classifying partial or non-data commands.
+fn decode_kiss_data(frame: &[u8]) -> Option<Vec<u8>> {
+    let [0xc0, command, payload @ .., 0xc0] = frame else {
+        return None;
+    };
+    if command & 0x0f != 0 {
+        return None;
+    }
+    let mut raw = Vec::new();
+    let mut bytes = payload.iter();
+    while let Some(&byte) = bytes.next() {
+        raw.push(match byte {
+            0xdb => match bytes.next()? {
+                0xdc => 0xc0,
+                0xdd => 0xdb,
+                _ => return None,
+            },
+            0xc0 => return None,
+            _ => byte,
+        });
+    }
+    Some(raw)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryFrame {
+    Data { sequence: u8, payload: Vec<u8> },
+    FinalRr,
+    Disc,
+    Other,
+}
+
+fn recovery_frame(raw: &[u8], extended: bool) -> RecoveryFrame {
+    // Fixed direct addresses, no digipeaters; require complementary C/R bits.
+    if raw.len() < 15 || raw[6] & 1 != 0 || raw[13] & 1 != 1 || (raw[6] ^ raw[13]) & 0x80 == 0 {
+        return RecoveryFrame::Other;
+    }
+    let c = raw[14];
+    if c & 1 == 0 {
+        let payload_start = if extended { 17 } else { 16 };
+        if let Some(payload) = raw.get(payload_start..) {
+            return RecoveryFrame::Data {
+                sequence: (c >> 1) & if extended { 127 } else { 7 },
+                payload: payload.to_vec(),
+            };
+        }
+    } else if c & 0x0f == 1 && !is_command(raw) {
+        let final_bit = if extended {
+            raw.get(15).map(|c| c & 1 != 0)
+        } else {
+            Some(c & 0x10 != 0)
+        };
+        if final_bit == Some(true) {
+            return RecoveryFrame::FinalRr;
+        }
+    } else if c & !0x10 == 0x43 && is_command(raw) {
+        return RecoveryFrame::Disc;
+    }
+    RecoveryFrame::Other
+}
+
+struct RecoveryLoss {
+    fault: Fault,
+    extended: bool,
+    data_dropped: usize,
+    rr_dropped: usize,
+    disc_dropped: usize,
+}
+
+impl RecoveryLoss {
+    fn new(fault: Fault, extended: bool) -> Self {
+        Self {
+            fault,
+            extended,
+            data_dropped: 0,
+            rr_dropped: 0,
+            disc_dropped: 0,
+        }
+    }
+
+    fn should_drop(&mut self, raw: &[u8]) -> bool {
+        match recovery_frame(raw, self.extended) {
+            RecoveryFrame::Data { .. }
+                if matches!(self.fault, Fault::Data | Fault::FinalRr) && self.data_dropped < 2 =>
+            {
+                self.data_dropped += 1;
+                true
+            }
+            RecoveryFrame::FinalRr
+                if matches!(self.fault, Fault::FinalRr) && self.rr_dropped == 0 =>
+            {
+                self.rr_dropped += 1;
+                true
+            }
+            RecoveryFrame::Disc if matches!(self.fault, Fault::Disc) && self.disc_dropped == 0 => {
+                self.disc_dropped += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[test]
+fn recovery_classifier_and_independent_loss_decisions() {
+    assert_eq!(
+        decode_kiss_data(&[0xc0, 0, 0xdb, 0xdc, 0xdb, 0xdd, 0xc0]),
+        Some(vec![0xc0, 0xdb])
+    );
+    for frame in [
+        &[][..],
+        &[0xc0],
+        &[0xc0, 0, 0xdb, 0xc0],
+        &[0xc0, 0, 0xdb, 0, 0xc0],
+        &[0xc0, 1, 0, 0xc0],
+        &[0xc0, 0, 0xc0, 0, 0xc0],
+    ] {
+        assert_eq!(decode_kiss_data(frame), None);
+    }
+    for extended in [false, true] {
+        let mut data = vec![0; if extended { 17 } else { 16 }];
+        data[6] = 0x80;
+        data[13] = 1;
+        data.push(b'x');
+        for len in 0..15 {
+            assert_eq!(recovery_frame(&data[..len], extended), RecoveryFrame::Other);
+        }
+        let mut response = data[..14].to_vec();
+        response[6] = 0;
+        response[13] = 0x81;
+        response.push(if extended { 1 } else { 0x11 });
+        if extended {
+            response.push(1);
+        }
+        assert_eq!(recovery_frame(&response, extended), RecoveryFrame::FinalRr);
+        let mut command = response.clone();
+        command[6] = 0x80;
+        command[13] = 1;
+        assert_eq!(recovery_frame(&command, extended), RecoveryFrame::Other);
+        for _ in 0..2 {
+            let mut loss = RecoveryLoss::new(Fault::FinalRr, extended);
+            assert!(!loss.should_drop(&command));
+            assert!(loss.should_drop(&data));
+            assert!(loss.should_drop(&data));
+            assert!(!loss.should_drop(&data));
+            assert!(loss.should_drop(&response));
+            assert!(!loss.should_drop(&response));
+        }
+    }
 }
 
 fn copy_xid_frames(
@@ -1018,7 +1352,7 @@ fn copy_xid_frames(
 fn copy_kiss_until_eof(
     mut src: TcpStream,
     mut dst: TcpStream,
-    loss: Option<LossConfig>,
+    loss: Option<LossDecision>,
 ) -> io::Result<()> {
     match loss {
         Some(loss) => copy_kiss_frames_with_loss(&mut src, &mut dst, loss)?,
@@ -1032,28 +1366,18 @@ fn copy_kiss_until_eof(
 fn copy_kiss_frames_with_loss(
     src: &mut TcpStream,
     dst: &mut TcpStream,
-    loss: LossConfig,
+    mut loss: LossDecision,
 ) -> io::Result<()> {
     const KISS_FEND: u8 = 0xC0;
 
-    let mut rng = StdRng::seed_from_u64(loss.seed);
-    let mut seen_frames = HashSet::new();
     let mut frame = Vec::new();
     let mut in_frame = false;
     let mut buf = [0; 1024];
     loop {
         let n = src.read(&mut buf)?;
         if n == 0 {
-            if !frame.is_empty()
-                && !should_drop(
-                    &mut rng,
-                    loss.drop_probability_percent,
-                    &mut seen_frames,
-                    loss.data_only,
-                    &frame,
-                )
-            {
-                dst.write_all(&frame)?;
+            if !frame.is_empty() {
+                return Err(io::Error::other("truncated KISS frame"));
             }
             return Ok(());
         }
@@ -1062,13 +1386,7 @@ fn copy_kiss_frames_with_loss(
             if byte == KISS_FEND {
                 if in_frame {
                     frame.push(byte);
-                    if !should_drop(
-                        &mut rng,
-                        loss.drop_probability_percent,
-                        &mut seen_frames,
-                        loss.data_only,
-                        &frame,
-                    ) {
+                    if !loss.should_drop(&frame) {
                         dst.write_all(&frame)?;
                     }
                     frame.clear();
@@ -1085,50 +1403,6 @@ fn copy_kiss_frames_with_loss(
             }
         }
     }
-}
-
-fn should_drop(
-    rng: &mut impl Rng,
-    drop_probability_percent: u8,
-    seen_frames: &mut HashSet<Vec<u8>>,
-    data_only: bool,
-    frame: &[u8],
-) -> bool {
-    #[allow(clippy::collapsible_if)]
-    if false {
-        if !seen_frames.insert(frame.to_vec()) {
-            return false;
-        }
-    }
-    if data_only {
-        use rax25::PacketType;
-        const KISS_FEND: u8 = 0xC0;
-        let [KISS_FEND, _kiss_command, payload @ .., KISS_FEND] = frame else {
-            panic!()
-        };
-        let frame = rax25::unescape(payload);
-        let packet = rax25::Packet::parse(&frame, None).unwrap();
-        match packet.packet_type() {
-            PacketType::Sabm(_)
-            | PacketType::Sabme(_)
-            | PacketType::Ua(_)
-            | PacketType::Disc(_)
-            | PacketType::Xid(_)
-            | PacketType::Frmr(_)
-            | PacketType::Dm(_) => return false,
-            PacketType::Rr(_)
-            | PacketType::Rnr(_)
-            | PacketType::Ui(_)
-            | PacketType::Test(_)
-            | PacketType::Rej(_)
-            | PacketType::Iframe(_)
-            | PacketType::Srej(_) => {}
-        }
-    }
-
-    // Here's room to put some extra rules about which packets to drop, if
-    // needed.
-    rng.random_range(0_u8..100) < drop_probability_percent
 }
 
 fn spawn_line_reader<R: Read + Send + 'static>(

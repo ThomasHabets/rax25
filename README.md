@@ -36,6 +36,16 @@ address and high-bit indicators explicitly.
 
 ## Testing
 
+Required lossy TCP tests use explicit, bounded packet-drop scenarios so timer
+scheduling cannot change the fault being tested. They check retransmission,
+echo delivery, and shutdown in standard and extended modes. Unrestricted
+seeded random loss remains an opt-in stress test: random outages can exceed
+the protocol's finite retry budget, so successful delivery is not guaranteed.
+
+```shell
+cargo test --features async --test async_tcp_examples random_loss_stress -- --ignored --nocapture
+```
+
 The easiest test setup is to simply use a "bent pipe" TCP socket that both ends
 connect to. That way it's fast, doesn't lose any packets, and doesn't require
 any hardware.
