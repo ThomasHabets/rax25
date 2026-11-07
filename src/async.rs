@@ -703,7 +703,7 @@ impl Client {
     /// This function must be called to keep the state machine running.
     /// Otherwise timers and incoming packets are not processed.
     ///
-    /// If the caller intends to not call read() for a long time, then it should
+    /// If the caller intends to not call `read()` for a long time, then it should
     /// spawn a task that does it anyway, and handle any read data on its own
     /// side.
     pub async fn read(&mut self) -> Result<Vec<u8>> {

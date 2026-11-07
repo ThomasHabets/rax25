@@ -162,7 +162,7 @@ impl Client {
     /// Return a new client for that connection.
     ///
     /// TODO: Not sure Result<Option<_>> is a good pattern. It's not really
-    /// compatible with must_use.
+    /// compatible with `must_use`.
     pub fn accept(&mut self, until: std::time::Instant) -> Result<Option<Client>> {
         self.data.validate_xid_config()?;
         self.data.able_to_establish = true;

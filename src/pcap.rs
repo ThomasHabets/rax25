@@ -36,7 +36,7 @@ fn write_u32(mut w: impl std::io::Write, v: u32) -> Result<()> {
     Ok(())
 }
 
-/// PcapWriter writes AX.25 pcap files.
+/// [`PcapWriter`] writes AX.25 pcap files.
 ///
 /// It writes them buffered, for efficiency, so a crash could lose the last
 /// packets.

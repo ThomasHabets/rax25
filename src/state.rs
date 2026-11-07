@@ -97,7 +97,7 @@ impl ReturnEvent {
     }
 }
 
-/// DLErrors (C4.3, page 81)
+/// Data-link errors (C4.3, page 81).
 ///
 /// Error codes of all kinds.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -167,7 +167,7 @@ impl std::fmt::Display for DlError {
     }
 }
 
-/// Actions are like ReturnEvent, except packets are separated.
+/// Actions are like [`ReturnEvent`], except packets are separated.
 ///
 /// Basically anything the state machine wants to do, aside from
 /// modifying the `Data` struct, is to produce "Actions".
@@ -406,7 +406,7 @@ pub struct Data {
 
     /// Max incoming packet payload size.
     ///
-    /// Max outgoing packet payload size is in mtu_out.
+    /// Max outgoing packet payload size is in `mtu_out`.
     ///
     /// Spec says 256 bytes, but why not allow bigger if it does come in? See
     /// `DEFAULT_MTU_IN`.

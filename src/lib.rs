@@ -23,8 +23,6 @@
 // TODO: fix the excessive bools?
 #![allow(clippy::fn_params_excessive_bools)]
 #![allow(clippy::struct_excessive_bools)]
-// TODO: fix up the docstrings.
-#![allow(clippy::doc_markdown)]
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
