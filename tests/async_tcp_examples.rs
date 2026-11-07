@@ -245,7 +245,11 @@ enum XidFault {
 }
 
 fn run_async_examples_echo_test(test_case: TestCase) -> TestResult {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Tickbox reuses binaries across temporary checkouts, so a compile-time
+    // path could refer to a checkout that has already been deleted.
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+        io::Error::other("CARGO_MANIFEST_DIR was not set when running the integration test")
+    })?);
     build_examples(&manifest_dir)?;
 
     let bridge = start_kiss_bridge(test_case.bridge_mode)?;
