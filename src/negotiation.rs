@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use crate::xid::XidParameters;
+use crate::{Error, Result};
 
 pub(crate) const REJ: u32 = 0x0000_0002;
 pub(crate) const MOD8: u32 = 0x0000_0400;
@@ -38,27 +39,24 @@ impl Default for XidConfig {
 
 impl XidConfig {
     /// Reject invalid policy before opening a connection or emitting frames.
-    pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            (1..=(u32::MAX / 8) as usize).contains(&self.receive_length),
-            "invalid XID receive length"
-        );
-        anyhow::ensure!(
-            (1..=7).contains(&self.receive_window),
-            "invalid modulo-8 window"
-        );
-        anyhow::ensure!(
-            (1..=127).contains(&self.receive_window_extended),
-            "invalid modulo-128 window"
-        );
-        for duration in [self.acknowledgement_timer, self.management_timeout] {
-            anyhow::ensure!(
-                duration >= Duration::from_millis(1)
-                    && duration.as_millis() <= u128::from(u32::MAX),
-                "invalid XID timer"
-            );
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=(u32::MAX / 8) as usize).contains(&self.receive_length) {
+            return Err(Error::InvalidXidConfig("invalid XID receive length"));
         }
-        anyhow::ensure!(self.retries > 0, "invalid XID retry count");
+        if !(1..=7).contains(&self.receive_window) {
+            return Err(Error::InvalidXidConfig("invalid modulo-8 window"));
+        }
+        if !(1..=127).contains(&self.receive_window_extended) {
+            return Err(Error::InvalidXidConfig("invalid modulo-128 window"));
+        }
+        for duration in [self.acknowledgement_timer, self.management_timeout] {
+            if duration < Duration::from_millis(1) || duration.as_millis() > u128::from(u32::MAX) {
+                return Err(Error::InvalidXidConfig("invalid XID timer"));
+            }
+        }
+        if self.retries == 0 {
+            return Err(Error::InvalidXidConfig("invalid XID retry count"));
+        }
         Ok(())
     }
 
@@ -191,6 +189,59 @@ mod tests {
         assert!(!result.extended);
         assert_eq!(result.transmit_length, 32);
         assert_eq!(result.transmit_window, 4);
+    }
+
+    #[test]
+    fn invalid_config_returns_typed_errors() {
+        for (config, reason) in [
+            (
+                XidConfig {
+                    receive_length: 0,
+                    ..XidConfig::default()
+                },
+                "invalid XID receive length",
+            ),
+            (
+                XidConfig {
+                    receive_window: 8,
+                    ..XidConfig::default()
+                },
+                "invalid modulo-8 window",
+            ),
+            (
+                XidConfig {
+                    receive_window_extended: 128,
+                    ..XidConfig::default()
+                },
+                "invalid modulo-128 window",
+            ),
+            (
+                XidConfig {
+                    acknowledgement_timer: Duration::ZERO,
+                    ..XidConfig::default()
+                },
+                "invalid XID timer",
+            ),
+            (
+                XidConfig {
+                    management_timeout: Duration::ZERO,
+                    ..XidConfig::default()
+                },
+                "invalid XID timer",
+            ),
+            (
+                XidConfig {
+                    retries: 0,
+                    ..XidConfig::default()
+                },
+                "invalid XID retry count",
+            ),
+        ] {
+            assert!(
+                matches!(config.validate(), Err(Error::InvalidXidConfig(actual)) if actual == reason)
+            );
+        }
+        assert!(XidConfig::default().validate().is_ok());
     }
 
     #[test]

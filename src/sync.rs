@@ -21,7 +21,7 @@
 //! client.connect(&Addr::new("M0THC-2")?, false)?;
 //! client.write("Hello\r".as_bytes())?;
 //! println!("{:?}", client.read_until(done.clone()));
-//! # Ok::<(), anyhow::Error>(())
+//! # rax25::Result::<()>::Ok(())
 //! ```
 //!
 //! ## Server
@@ -45,9 +45,9 @@
 //! eprintln!("Connected!");
 //! drop(listener);
 //! con.write("Hello client!\n".as_bytes())?;
-//! # Ok::<(), anyhow::Error>(())
+//! # rax25::Result::<()>::Ok(())
 //! ```
-use anyhow::{Error, Result};
+use crate::{Error, Result};
 use log::{debug, error};
 
 use crate::state;
@@ -152,7 +152,7 @@ impl Client {
             }
             if self.state.is_state_disconnected() {
                 debug!("Connection timeout");
-                return Err(Error::msg("connection timeout"));
+                return Err(Error::ConnectionTimeout);
             }
         }
     }

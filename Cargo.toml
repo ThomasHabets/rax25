@@ -11,7 +11,7 @@ keywords = ["radio"]
 rust-version = "1.91"
 
 [dependencies]
-anyhow = "1.0.86"
+thiserror = "2"
 bus = "2.4.1"
 log = "0.4.22"
 regex = "1.10.6"
@@ -27,6 +27,7 @@ async = ["dep:tokio", "dep:tokio-serial"]
 serial = ["dep:serialport"]
 
 [dev-dependencies]
+anyhow = "1.0.86"
 stderrlog = "0.6.0"
 ctrlc = "3.4.5"
 agw = "0.6.0"

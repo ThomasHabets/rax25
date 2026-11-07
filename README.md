@@ -19,6 +19,11 @@ push to github.
 
 ## Technical details
 
+Library operations return `rax25::Result<T>` with a typed `rax25::Error`.
+Callers can match error variants and inspect wrapped causes through
+`std::error::Error::source`. The examples use `anyhow` for application-level
+error reporting; it is not a library dependency.
+
 * The reserved bit used by the Linux kernel (and other Linux tools,
   like `axlisten`) to indicate extended sequence numbers is set. This
   crate sets it too, but since we know the connection state, it's

@@ -18,7 +18,7 @@
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
+//! async fn main() -> rax25::Result<()> {
 //!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
 //!         .extended(Some(true))
@@ -38,7 +38,7 @@
 //! use rax25::Addr;
 //!
 //! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
+//! async fn main() -> rax25::Result<()> {
 //!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
 //!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-2")?, port)?
 //!         .accept()
@@ -53,9 +53,8 @@ use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
 use crate::state::{self, Event, NegotiatedParameters, ReturnEvent, XidConfig};
-use crate::{Addr, Packet, PacketType};
+use crate::{Addr, Error, Packet, PacketType, Result};
 
-use anyhow::{Context, Error, Result, bail};
 use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -74,27 +73,42 @@ pub enum PortType {
 pub async fn connect_kiss_endpoint(endpoint: &str) -> Result<PortType> {
     if let Some(addr) = endpoint.strip_prefix("tcp://") {
         if addr.is_empty() {
-            bail!("empty TCP KISS endpoint");
+            return Err(Error::InvalidEndpoint {
+                endpoint: endpoint.to_owned(),
+                reason: "empty TCP KISS endpoint",
+            });
         }
         return Ok(PortType::Tcp(
             tokio::net::TcpStream::connect(addr)
                 .await
-                .with_context(|| format!("connecting to TCP KISS endpoint {endpoint:?}"))?,
+                .map_err(|source| Error::Endpoint {
+                    endpoint: endpoint.to_owned(),
+                    source,
+                })?,
         ));
     }
 
     if let Some(path) = endpoint.strip_prefix("serial://") {
         if path.is_empty() {
-            bail!("empty serial KISS endpoint");
+            return Err(Error::InvalidEndpoint {
+                endpoint: endpoint.to_owned(),
+                reason: "empty serial KISS endpoint",
+            });
         }
         return Ok(PortType::Serial(
             tokio_serial::new(path, 9600)
                 .open_native_async()
-                .with_context(|| format!("opening serial KISS endpoint {endpoint:?}"))?,
+                .map_err(|source| Error::SerialEndpoint {
+                    endpoint: endpoint.to_owned(),
+                    source,
+                })?,
         ));
     }
 
-    bail!("KISS endpoint must start with tcp:// or serial://");
+    Err(Error::InvalidEndpoint {
+        endpoint: endpoint.to_owned(),
+        reason: "KISS endpoint must start with tcp:// or serial://",
+    })
 }
 
 impl tokio::io::AsyncRead for PortType {
@@ -477,7 +491,7 @@ impl Client {
                 return Ok(self);
             }
             if self.state.is_state_disconnected() {
-                return Err(Error::msg("connection timed out"));
+                return Err(Error::ConnectionTimeout);
             }
         }
     }
@@ -745,16 +759,82 @@ impl Drop for Client {
 }
 
 fn is_error_eof(e: &Error) -> bool {
-    let Some(io_err) = e.chain().find_map(|e| e.downcast_ref::<std::io::Error>()) else {
-        return false;
-    };
-    io_err.kind() == std::io::ErrorKind::UnexpectedEof
+    matches!(e, Error::Io(io_err) if io_err.kind() == std::io::ErrorKind::UnexpectedEof)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn eof_detection_preserves_io_errors() {
+        let eof = Error::from(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "KISS port closed",
+        ));
+        assert!(is_error_eof(&eof));
+        let Error::Io(source) = &eof else {
+            panic!("expected an IO error");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(source.to_string(), "KISS port closed");
+
+        let other = Error::from(std::io::Error::other("read failed"));
+        assert!(!is_error_eof(&other));
+        let Error::Io(source) = &other else {
+            panic!("expected an IO error");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::Other);
+        assert_eq!(source.to_string(), "read failed");
+        assert!(!is_error_eof(&Error::ConnectionTimeout));
+    }
+
+    #[tokio::test]
+    async fn invalid_endpoints_return_typed_errors() {
+        for (endpoint, reason) in [
+            ("tcp://", "empty TCP KISS endpoint"),
+            ("serial://", "empty serial KISS endpoint"),
+            ("", "KISS endpoint must start with tcp:// or serial://"),
+            (
+                "udp://localhost:8000",
+                "KISS endpoint must start with tcp:// or serial://",
+            ),
+        ] {
+            let Err(Error::InvalidEndpoint {
+                endpoint: actual,
+                reason: actual_reason,
+            }) = connect_kiss_endpoint(endpoint).await
+            else {
+                panic!("expected an invalid endpoint error for {endpoint:?}");
+            };
+            assert_eq!(actual, endpoint);
+            assert_eq!(actual_reason, reason);
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_endpoint_failure_preserves_context_and_source() {
+        let endpoint = "tcp://127.0.0.1:not-a-port";
+        let Err(error @ Error::Endpoint { .. }) = connect_kiss_endpoint(endpoint).await else {
+            panic!("expected a TCP endpoint error");
+        };
+        let Error::Endpoint {
+            endpoint: actual,
+            source,
+        } = &error
+        else {
+            unreachable!();
+        };
+        assert_eq!(actual, endpoint);
+        assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .is_some()
+        );
+    }
 
     #[tokio::test]
     async fn invalid_xid_config_emits_no_frames() -> Result<()> {
@@ -773,7 +853,7 @@ mod tests {
             } else {
                 builder.connect(Addr::new("M0THC-2")?).await
             };
-            assert!(result.is_err());
+            assert!(matches!(result, Err(Error::InvalidXidConfig(_))));
             let mut buf = [0; 1];
             assert_eq!(peer.read(&mut buf).await?, 0);
         }

@@ -25,16 +25,17 @@
 #![allow(clippy::struct_excessive_bools)]
 // TODO: fix up the docstrings.
 #![allow(clippy::doc_markdown)]
-use anyhow::{Error, Result};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::debug;
-use std::io::{Read, Write};
 
+mod error;
 mod fcs;
 pub mod state;
 pub mod xid;
+pub use error::{Error, Result};
 pub use state::{Experiment, NegotiatedParameters, XidConfig};
 
 const USE_FCS: bool = false;
@@ -98,7 +99,7 @@ impl Addr {
         let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
             .expect("can't happen: Regex compile fail");
         if !re.is_match(&s) {
-            return Err(Error::msg(format!("invalid callsign: {s}")));
+            return Err(Error::InvalidCallsign(s));
         }
         Ok(Self {
             t: s,
@@ -148,9 +149,7 @@ impl Addr {
     /// Parse the callsign and the extra bits from the packet format.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != 7 {
-            return Err(Error::msg(format!(
-                "invalid serialized callsign: {bytes:?}"
-            )));
+            return Err(Error::InvalidSerializedCallsign(bytes.to_vec()));
         }
         let call = {
             let call = bytes
@@ -621,10 +620,9 @@ impl Packet {
     pub fn parse(bytes: &[u8], ext: Option<bool>) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
-            return Err(Error::msg(format!(
-                "packet too short: {} bytes",
-                bytes.len()
-            )));
+            return Err(Error::PacketTooShort {
+                length: bytes.len(),
+            });
         }
         // TODO: check FCS.
         let bytes = if do_fcs {
@@ -664,7 +662,7 @@ impl Packet {
                 )
             } else {
                 if rest.len() < 2 {
-                    return Err(Error::msg("AX.25 in ext mode, but S/U frame is too short"));
+                    return Err(Error::ExtendedControlTooShort);
                 }
                 let control2 = rest[1];
                 (
@@ -859,7 +857,7 @@ impl Hub for BusHub {
                 sender: 0,
                 data: frame.to_vec(),
             })
-            .map_err(|_| Error::msg("failed to broadcast"))?;
+            .map_err(|_| Error::BroadcastFailed)?;
         Ok(())
     }
 
@@ -943,7 +941,7 @@ impl BusKiss {
                         sender: self.id,
                         data: rx,
                     })
-                    .map_err(|_| Error::msg("queue full"))
+                    .map_err(|_| Error::QueueFull)
                     .expect("failed to broadcast");
             }
         }
@@ -1123,7 +1121,7 @@ mod tests {
             panic!("Wrong type of packet {packet:?}");
         };
         assert_eq!(
-            &String::from_utf8(ui.payload.clone())?,
+            &String::from_utf8(ui.payload.clone()).expect("test payload is UTF-8"),
             ";Google   *512175z5131.99N/00007.55W.Google\r"
         );
         Ok(())

@@ -16,7 +16,7 @@
 //! Spec bug(1997): Retries parameter (PI=10) from Figure 4.5, although its
 //! prose and example still use it.
 
-use anyhow::{Result, bail};
+use crate::{Error, Result};
 
 macro_rules! capability_flags {
     ($(#[$doc:meta])* $name:ident, $integer:ty, {$($(#[$flag_doc:meta])* $flag:ident = $value:expr;)*}) => {
@@ -152,7 +152,7 @@ impl XidParameters {
     /// groups/parameters, and oversized known parameter values are errors.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 4 || bytes.first() != Some(&0x82) {
-            bail!("invalid XID format identifier");
+            return Err(Error::InvalidXid("invalid XID format identifier"));
         }
         let mut bytes = &bytes[1..];
         let mut result = Self::default();
@@ -165,7 +165,9 @@ impl XidParameters {
                 continue;
             }
             if found {
-                bail!("duplicate XID parameter-negotiation group");
+                return Err(Error::InvalidXid(
+                    "duplicate XID parameter-negotiation group",
+                ));
             }
             found = true;
             result = Self::parse_group(group)?;
@@ -189,14 +191,16 @@ impl XidParameters {
                 continue;
             }
             if std::mem::replace(&mut seen[usize::from(id)], true) {
-                bail!("duplicate XID parameter {id}");
+                return Err(Error::DuplicateXidParameter(id));
             }
             match id {
                 2 => {
                     result.classes = Some(if value.is_empty() {
                         defaults.classes.unwrap()
                     } else {
-                        let value: [u8; 2] = value.try_into()?;
+                        let value: [u8; 2] = value.try_into().map_err(|_| {
+                            Error::InvalidXid("invalid XID classes-of-procedures length")
+                        })?;
                         u16::from_le_bytes(value)
                     });
                 }
@@ -205,7 +209,7 @@ impl XidParameters {
                         defaults.optional_functions.unwrap()
                     } else {
                         if value.len() != 3 {
-                            bail!("invalid XID optional-functions length");
+                            return Err(Error::InvalidXid("invalid XID optional-functions length"));
                         }
                         let mut octets = [0; 4];
                         octets[..value.len()].copy_from_slice(value);
@@ -282,7 +286,7 @@ impl XidParameters {
 
 fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8]> {
     let Some((value, rest)) = bytes.split_at_checked(length) else {
-        bail!("truncated XID group or parameter");
+        return Err(Error::InvalidXid("truncated XID group or parameter"));
     };
     *bytes = rest;
     Ok(value)
@@ -293,7 +297,7 @@ fn number(bytes: &[u8], maximum_length: usize, default: u32) -> Result<u32> {
         return Ok(default);
     }
     if bytes.len() > maximum_length {
-        bail!("oversized XID numeric parameter");
+        return Err(Error::InvalidXid("oversized XID numeric parameter"));
     }
     Ok(bytes
         .iter()
@@ -422,6 +426,34 @@ mod tests {
             XidParameters::parse(&[0x82, 0x80, 0, 5, 0xff, 3, 1, 2, 3]).unwrap(),
             XidParameters::default()
         );
+    }
+
+    #[test]
+    fn malformed_fields_return_typed_errors() {
+        assert!(matches!(
+            XidParameters::parse(&[]),
+            Err(Error::InvalidXid("invalid XID format identifier"))
+        ));
+        assert!(matches!(
+            XidParameters::parse(&[0x82, 0x80, 0, 3, 2, 1, 0]),
+            Err(Error::InvalidXid(
+                "invalid XID classes-of-procedures length"
+            ))
+        ));
+        assert!(matches!(
+            XidParameters::parse(&[0x82, 0x80, 0, 4, 2, 0, 2, 0]),
+            Err(Error::DuplicateXidParameter(2))
+        ));
+        assert!(matches!(
+            XidParameters::parse(&[0x82, 0x80, 0, 0, 0x80, 0, 0]),
+            Err(Error::InvalidXid(
+                "duplicate XID parameter-negotiation group"
+            ))
+        ));
+        assert!(matches!(
+            XidParameters::parse(&[0x82, 0x80, 0, 4, 10, 2, 1, 0]),
+            Err(Error::IntegerConversion(_))
+        ));
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! <https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c>
 use std::collections::{HashSet, VecDeque};
 
-use anyhow::Result;
+use crate::Result;
 use log::{debug, error, warn};
 
 use crate::{

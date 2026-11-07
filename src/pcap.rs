@@ -13,7 +13,7 @@
 use std::io::BufWriter;
 use std::io::Write;
 
-use anyhow::Result;
+use crate::Result;
 
 // Little endian magic.
 const MAGIC: [u8; 4] = [0xd4, 0xc3, 0xb2, 0xa1];
