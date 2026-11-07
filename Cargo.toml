@@ -63,3 +63,7 @@ required-features = ["async"]
 [[test]]
 name = "async_tcp_examples"
 required-features = ["async"]
+
+[[test]]
+name = "direwolf_interop"
+required-features = ["async"]

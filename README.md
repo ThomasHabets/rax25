@@ -89,6 +89,29 @@ The examples provide `--no-extended` to constrain XID to modulo-8 and
 `--xid-receive-size` to set the advertised receive payload limit. `--srt`
 also sets the XID management retry interval.
 
+## Dire Wolf Audio Interoperability
+
+An opt-in integration test runs the `bell202` modem from the published
+rustradio 0.20.2 release against an installed Dire Wolf binary, through two
+virtual audio cables. A registered AGW application echoes data using Dire
+Wolf's AX.25 stack; the test checks standard and extended connections,
+bidirectional binary data, and disconnect. No Dire Wolf source is required.
+
+On Linux, install Dire Wolf, PipeWire, `pipewire-pulse`, WirePlumber,
+`dbus-run-session`, `pactl`, and the ALSA PulseAudio plugin
+(`libasound2-plugins` on Debian). Then run:
+
+```shell
+bash tests/run_direwolf_interop.sh
+```
+
+The launcher installs the pinned release's `bell202` example from crates.io
+with `--features audio --locked` into `target/direwolf_interop/rustradio-0.20.2/`
+and starts an isolated audio session, leaving desktop audio unchanged.
+Set `BELL202_BIN` to use an already-built modem. `DIREWOLF_BIN` selects a
+different Dire Wolf executable. No sibling checkout is needed.
+Logs and captures remain under `target/direwolf_interop/` for inspection.
+
 ## Probe XID Capabilities
 
 The `xid_probe` example sends an XID capability query without establishing an
