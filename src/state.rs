@@ -326,6 +326,7 @@ impl Modulus {
 /// The state object only carries the state itself. Further data is in this
 /// object.
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // Keep state variables aligned with the AX.25 specification.
 pub struct Data {
     xid_config: Option<XidConfig>,
     negotiated: Option<NegotiatedParameters>,
@@ -2344,7 +2345,7 @@ pub fn handle(
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2355,7 +2356,7 @@ pub fn handle(
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2366,7 +2367,7 @@ pub fn handle(
                 command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
             SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2377,7 +2378,7 @@ pub fn handle(
                 command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Dm(Dm { poll: *pf }),
             })),
             // S frames.
@@ -2389,7 +2390,7 @@ pub fn handle(
                 command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
@@ -2399,7 +2400,7 @@ pub fn handle(
                 command_response_la: !*command,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
@@ -2409,7 +2410,7 @@ pub fn handle(
                 command_response_la: !*command,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
             // I frame.
@@ -2423,7 +2424,7 @@ pub fn handle(
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Iframe(iframe.clone()),
             })),
             // TODO: can we avoid the copy?
@@ -2593,7 +2594,7 @@ mod tests {
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             })],
             &events,
@@ -2617,7 +2618,7 @@ mod tests {
                     command_response_la: false,
                     digipeater: vec![],
                     rr_dist1: false,
-                    rr_extseq: false,
+                    rr_extseq: Modulus::Standard,
                     packet_type: PacketType::Sabm(Sabm { poll: true }),
                 })],
                 &events,
@@ -2649,7 +2650,7 @@ mod tests {
                 command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: true }),
             })],
             &events,
@@ -2690,7 +2691,7 @@ mod tests {
                     command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
-                    rr_extseq: false,
+                    rr_extseq: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
                 }),
             ],
@@ -2722,7 +2723,7 @@ mod tests {
                 command_response_la: true,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
             })],
             &events,
@@ -2755,7 +2756,7 @@ mod tests {
                     command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
-                    rr_extseq: false,
+                    rr_extseq: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
                 }),
             ],
@@ -2782,7 +2783,7 @@ mod tests {
                     command_response_la: true,
                     digipeater: vec![],
                     rr_dist1: false,
-                    rr_extseq: false,
+                    rr_extseq: Modulus::Standard,
                     packet_type: PacketType::Ua(Ua { poll: true }),
                 }),
             ],

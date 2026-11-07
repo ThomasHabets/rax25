@@ -100,11 +100,11 @@ mod tests {
         ));
         let mut frame = crate::Addr::new("M0AAA")
             .unwrap()
-            .serialize(false, false, false, false);
+            .serialize(crate::AddrFlags::default());
         frame.extend(
             crate::Addr::new("M0BBB")
                 .unwrap()
-                .serialize(true, false, false, false),
+                .serialize(crate::AddrFlags::LAST),
         );
         frame.push(0);
         assert!(matches!(

@@ -24,6 +24,11 @@ Callers can match error variants and inspect wrapped causes through
 `std::error::Error::source`. The examples use `anyhow` for application-level
 error reporting; it is not a library dependency.
 
+Address construction and serialization use named `AddrFlags` instead of
+positional boolean arguments. For example,
+`Addr::new_bits("M0QQQ-1", AddrFlags::LAST | AddrFlags::HIGH)` sets the final
+address and high-bit indicators explicitly.
+
 * The reserved bit used by the Linux kernel (and other Linux tools,
   like `axlisten`) to indicate extended sequence numbers is set. This
   crate sets it too, but since we know the connection state, it's

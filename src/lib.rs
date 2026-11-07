@@ -20,13 +20,11 @@
 //! * Direwolf
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::missing_errors_doc)]
-// TODO: fix the excessive bools?
-#![allow(clippy::fn_params_excessive_bools)]
-#![allow(clippy::struct_excessive_bools)]
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::state::Modulus;
 use log::debug;
 
 mod error;
@@ -66,6 +64,58 @@ pub fn parse_duration(arg: &str) -> Result<std::time::Duration> {
     Ok(std::time::Duration::from_secs(arg.parse()?))
 }
 
+/// Extra AX.25 address flags, independent of their wire encoding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct AddrFlags(u8);
+
+impl AddrFlags {
+    /// This is the last address in the address field.
+    pub const LAST: Self = Self(1);
+    /// Command/response for source/destination, or repeated for a digipeater.
+    pub const HIGH: Self = Self(2);
+    /// Extended sequencing; encoded by clearing reserved wire bit 6.
+    pub const EXTENDED: Self = Self(4);
+    /// DAMA; encoded by clearing reserved wire bit 5.
+    pub const DAMA: Self = Self(8);
+
+    /// No extra flags (both reserved wire bits are set).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Whether all the supplied flags are set.
+    #[must_use]
+    pub const fn contains(self, flags: Self) -> bool {
+        self.0 & flags.0 == flags.0
+    }
+
+    /// Set or clear the supplied flags.
+    #[must_use]
+    pub const fn with(self, flags: Self, enabled: bool) -> Self {
+        if enabled {
+            Self(self.0 | flags.0)
+        } else {
+            Self(self.0 & !flags.0)
+        }
+    }
+}
+
+impl std::ops::BitOr for AddrFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for AddrFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// AX.25 address.
 ///
 /// The encoding for an AX.25 address includes some extra bits, so they're
@@ -76,18 +126,7 @@ pub fn parse_duration(arg: &str) -> Result<std::time::Duration> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
     t: String,
-    rbit_ext: bool,
-
-    // Most significant bit of the last byte.
-    //
-    // * On src/dst this is command/response per LA PA 6.1.2.
-    // * On repeater it's "has been repeated".
-    highbit: bool,
-
-    // The least significant bit on the last byte. Used to indicate more
-    // repeaters are provided.
-    lowbit: bool,
-    rbit_dama: bool,
+    flags: AddrFlags,
 }
 
 impl Addr {
@@ -101,40 +140,28 @@ impl Addr {
         }
         Ok(Self {
             t: s,
-            rbit_ext: false,
-            highbit: false,
-            lowbit: false,
-            rbit_dama: false,
+            flags: AddrFlags::empty(),
         })
     }
 
-    /// Set lowbit.
+    /// Set the command/response or repeated bit.
     #[must_use]
     pub fn set_highbit(mut self, v: bool) -> Self {
-        self.highbit = v;
+        self.flags = self.flags.with(AddrFlags::HIGH, v);
         self
     }
 
     /// Set lowbit.
     #[must_use]
     pub fn set_lowbit(mut self, v: bool) -> Self {
-        self.lowbit = v;
+        self.flags = self.flags.with(AddrFlags::LAST, v);
         self
     }
 
     /// Create a new Addr from string and the extra bits.
-    pub fn new_bits(
-        s: &str,
-        lowbit: bool,
-        highbit: bool,
-        rbit_ext: bool,
-        rbit_dama: bool,
-    ) -> Result<Self> {
+    pub fn new_bits(s: &str, flags: AddrFlags) -> Result<Self> {
         let mut a = Self::new(s)?;
-        a.lowbit = lowbit;
-        a.highbit = highbit;
-        a.rbit_ext = rbit_ext;
-        a.rbit_dama = rbit_dama;
+        a.flags = flags;
         Ok(a)
     }
 
@@ -166,22 +193,17 @@ impl Addr {
         };
         Self::new_bits(
             &call,
-            bytes[6] & 1 != 0,
-            bytes[6] & 0x80 != 0,
-            bytes[6] & 0b0100_0000 == 0,
-            bytes[6] & 0b0010_0000 == 0,
+            AddrFlags::empty()
+                .with(AddrFlags::LAST, bytes[6] & 1 != 0)
+                .with(AddrFlags::HIGH, bytes[6] & 0x80 != 0)
+                .with(AddrFlags::EXTENDED, bytes[6] & 0b0100_0000 == 0)
+                .with(AddrFlags::DAMA, bytes[6] & 0b0010_0000 == 0),
         )
     }
 
     /// Serialize the callsign and SSID, plus explicit bits.
     #[must_use]
-    pub fn serialize(
-        &self,
-        lowbit: bool,
-        highbit: bool,
-        rbit_ext: bool,
-        rbit_dama: bool,
-    ) -> Vec<u8> {
+    pub fn serialize(&self, flags: AddrFlags) -> Vec<u8> {
         // TODO: confirm format.
         let mut ret = vec![b' ' << 1; 7];
         for (i, ch) in self.t.chars().take(6).enumerate() {
@@ -199,10 +221,22 @@ impl Addr {
             }
         };
         ret[6] = (ssid << 1)
-            | (if rbit_ext { 0 } else { 0b0100_0000 })
-            | (if rbit_dama { 0 } else { 0b0010_0000 })
-            | u8::from(lowbit)
-            | (if highbit { 0x80 } else { 0 });
+            | (if flags.contains(AddrFlags::EXTENDED) {
+                0
+            } else {
+                0b0100_0000
+            })
+            | (if flags.contains(AddrFlags::DAMA) {
+                0
+            } else {
+                0b0010_0000
+            })
+            | u8::from(flags.contains(AddrFlags::LAST))
+            | (if flags.contains(AddrFlags::HIGH) {
+                0x80
+            } else {
+                0
+            });
         ret
     }
 }
@@ -215,7 +249,7 @@ pub struct Packet {
     src: Addr,
     dst: Addr,
     digipeater: Vec<Addr>,
-    rr_extseq: bool,
+    rr_extseq: Modulus,
     command_response: bool,
     command_response_la: bool,
     rr_dist1: bool,
@@ -418,6 +452,14 @@ const TYPE_MASK: u8 = 0b0000_0011;
 const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    fn sequence_modulus(src: &Addr, ext: Option<bool>) -> Modulus {
+        if ext.unwrap_or_else(|| src.flags.contains(AddrFlags::EXTENDED)) {
+            Modulus::Extended
+        } else {
+            Modulus::Standard
+        }
+    }
+
     /// Construct an XID command or response, with an optional information field.
     #[must_use]
     pub fn xid(
@@ -431,7 +473,7 @@ impl Packet {
             src,
             dst,
             digipeater: vec![],
-            rr_extseq: false,
+            rr_extseq: Modulus::Standard,
             command_response: command,
             command_response_la: !command,
             rr_dist1: false,
@@ -447,7 +489,7 @@ impl Packet {
             src,
             dst,
             digipeater: vec![],
-            rr_extseq: false,
+            rr_extseq: Modulus::Standard,
             command_response: false,
             command_response_la: true,
             rr_dist1: false,
@@ -476,26 +518,27 @@ impl Packet {
                 },
         );
         ret.extend(
-            self.dst
-                .serialize(false, self.command_response, self.rr_dist1, false),
+            self.dst.serialize(
+                AddrFlags::empty()
+                    .with(AddrFlags::HIGH, self.command_response)
+                    .with(AddrFlags::EXTENDED, self.rr_dist1),
+            ),
         );
         assert_ne!(self.command_response, self.command_response_la);
-        ret.extend(self.src.serialize(
-            self.digipeater.is_empty(),
-            self.command_response_la,
-            self.rr_extseq, // Setting this bit for extseq seems to be a de facto standard.
-            false,
-        ));
+        ret.extend(
+            self.src.serialize(
+                AddrFlags::empty()
+                    .with(AddrFlags::LAST, self.digipeater.is_empty())
+                    .with(AddrFlags::HIGH, self.command_response_la)
+                    // Setting this bit for extseq seems to be a de facto standard.
+                    .with(AddrFlags::EXTENDED, self.rr_extseq.is_extended()),
+            ),
+        );
 
         {
             let l = self.digipeater.len();
             for (n, digi) in self.digipeater.iter().enumerate() {
-                ret.extend(digi.serialize(
-                    n == l - 1, // last repeater?
-                    false,      // "has been repeated"
-                    false,
-                    false,
-                ));
+                ret.extend(digi.serialize(AddrFlags::empty().with(AddrFlags::LAST, n == l - 1)));
             }
         }
 
@@ -631,17 +674,15 @@ impl Packet {
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
-        let ext = match ext {
-            Some(v) => v,
-            None => src.rbit_ext,
-        };
+        let rr_extseq = Self::sequence_modulus(&src, ext);
+        let ext = rr_extseq.is_extended();
 
         let mut digipeater = Vec::new();
         let mut pos = 14;
-        let mut more_addresses = !src.lowbit;
+        let mut more_addresses = !src.flags.contains(AddrFlags::LAST);
         while more_addresses {
             let digi = Addr::parse(&bytes[pos..pos + 7])?;
-            more_addresses = !digi.lowbit;
+            more_addresses = !digi.flags.contains(AddrFlags::LAST);
             pos += 7;
             digipeater.push(digi);
         }
@@ -674,10 +715,10 @@ impl Packet {
         Ok(Packet {
             src: src.clone(),
             dst: dst.clone(),
-            command_response: dst.highbit,
-            command_response_la: src.highbit,
-            rr_dist1: dst.rbit_ext,
-            rr_extseq: ext,
+            command_response: dst.flags.contains(AddrFlags::HIGH),
+            command_response_la: src.flags.contains(AddrFlags::HIGH),
+            rr_dist1: dst.flags.contains(AddrFlags::EXTENDED),
+            rr_extseq,
             digipeater,
             packet_type: match control1 & TYPE_MASK {
                 // I frames. Second control byte, with NR and NS.
@@ -769,7 +810,7 @@ impl FakeKiss {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: false,
+            rr_extseq: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Iframe(Iframe {
                 nr: 0,
@@ -789,7 +830,7 @@ impl FakeKiss {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: false,
+            rr_extseq: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
         }
@@ -1101,17 +1142,11 @@ mod tests {
             [
                 Addr {
                     t: "WIDE1-1".to_string(),
-                    rbit_ext: false,
-                    highbit: false,
-                    lowbit: false,
-                    rbit_dama: false,
+                    flags: AddrFlags::empty(),
                 },
                 Addr {
                     t: "WIDE2-1".to_string(),
-                    rbit_ext: false,
-                    highbit: false,
-                    lowbit: true,
-                    rbit_dama: false,
+                    flags: AddrFlags::LAST,
                 },
             ]
         );
@@ -1128,29 +1163,94 @@ mod tests {
     #[test]
     fn addr_serial() -> Result<()> {
         // TODO: test invalid calls.
-        let a = Addr::new("M0THC")?.serialize(true, false, false, false);
+        let a = Addr::new("M0THC")?.serialize(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
-        let a = Addr::new("M0THC-0")?.serialize(true, false, false, false);
+        let a = Addr::new("M0THC-0")?.serialize(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
-        let a = Addr::new("M0THC-1")?.serialize(true, false, false, false);
+        let a = Addr::new("M0THC-1")?.serialize(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-1");
 
-        let a = Addr::new("M0THC-2")?.serialize(false, true, false, false);
+        let a = Addr::new("M0THC-2")?.serialize(AddrFlags::HIGH);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 100 + 0x80]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-2");
 
-        let a = Addr::new("M0THC-3")?.serialize(false, false, true, false);
+        let a = Addr::new("M0THC-3")?.serialize(AddrFlags::EXTENDED);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 38]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-3");
 
-        let a = Addr::new("M0THC-4")?.serialize(false, false, false, true);
+        let a = Addr::new("M0THC-4")?.serialize(AddrFlags::DAMA);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-4");
+        Ok(())
+    }
+
+    #[test]
+    fn addr_flags_all_wire_combinations() -> Result<()> {
+        assert_eq!(std::mem::size_of::<AddrFlags>(), 1);
+        assert_eq!(AddrFlags::default(), AddrFlags::empty());
+        // Indexed by LAST, HIGH, EXTENDED, DAMA; reserved bits are active-low.
+        let wire_bits = [
+            0x60, 0x61, 0xe0, 0xe1, 0x20, 0x21, 0xa0, 0xa1, 0x40, 0x41, 0xc0, 0xc1, 0x00, 0x01,
+            0x80, 0x81,
+        ];
+        for (combination, wire) in wire_bits.into_iter().enumerate() {
+            let mut flags = AddrFlags::empty();
+            for (index, flag) in [
+                AddrFlags::LAST,
+                AddrFlags::HIGH,
+                AddrFlags::EXTENDED,
+                AddrFlags::DAMA,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let enabled = combination & (1 << index) != 0;
+                if enabled {
+                    flags |= flag;
+                }
+                assert_eq!(flags.contains(flag), enabled);
+            }
+            for ssid in 0..16 {
+                let call = if ssid == 0 {
+                    "M0THC".to_string()
+                } else {
+                    format!("M0THC-{ssid}")
+                };
+                let addr = Addr::new_bits(&call, flags)?;
+                let expected = vec![154, 96, 168, 144, 134, 64, wire | (ssid << 1)];
+                assert_eq!(addr.serialize(flags), expected);
+                let parsed = Addr::parse(&expected)?;
+                assert_eq!(parsed, addr);
+                assert_eq!(parsed.flags, flags);
+                assert_eq!(parsed.serialize(parsed.flags), expected);
+                // Explicit serialization flags override the stored flags.
+                assert_eq!(addr.serialize(AddrFlags::empty())[6], 0x60 | (ssid << 1));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn addr_flag_setters_preserve_other_flags() -> Result<()> {
+        let reserved = AddrFlags::EXTENDED | AddrFlags::DAMA;
+        let addr = Addr::new_bits("M0THC", reserved)?
+            .set_highbit(true)
+            .set_lowbit(true);
+        assert_eq!(addr.flags, reserved | AddrFlags::HIGH | AddrFlags::LAST);
+        assert_eq!(
+            addr.clone().set_highbit(false).flags,
+            reserved | AddrFlags::LAST
+        );
+        assert_eq!(
+            addr.clone().set_lowbit(false).flags,
+            reserved | AddrFlags::HIGH
+        );
+        assert_eq!(addr.set_highbit(false).set_lowbit(false).flags, reserved);
         Ok(())
     }
 
@@ -1165,7 +1265,7 @@ mod tests {
                 command_response: true,
                 command_response_la: false,
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
@@ -1182,7 +1282,7 @@ mod tests {
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: false,
+                rr_extseq: Modulus::Standard,
                 src,
                 dst,
                 packet_type: PacketType::Sabm(Sabm { poll: false })
@@ -1205,7 +1305,7 @@ mod tests {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: false,
+            rr_extseq: Modulus::Standard,
             digipeater: vec![
                 Addr::new("WIDE1-1")?,
                 Addr::new("WIDE2-2")?.set_lowbit(true),
