@@ -173,7 +173,7 @@ impl Addr {
 
     /// Parse the callsign and the extra bits from the packet format.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != 7 {
+        if bytes.len() != 7 || bytes[..6].iter().any(|byte| byte & 1 != 0) {
             return Err(Error::InvalidSerializedCallsign(bytes.to_vec()));
         }
         let call = {
@@ -1187,6 +1187,37 @@ mod tests {
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-4");
         Ok(())
+    }
+
+    #[test]
+    fn addr_parse_rejects_callsign_low_bits() -> Result<()> {
+        for call in ["M0THC", "ABCDEF"] {
+            let valid = Addr::new(call)?.serialize(AddrFlags::LAST);
+            assert_eq!(Addr::parse(&valid)?.call(), call);
+            for index in 0..6 {
+                let mut invalid = valid.clone();
+                invalid[index] |= 1;
+                assert!(
+                    matches!(
+                        Addr::parse(&invalid),
+                        Err(Error::InvalidSerializedCallsign(bytes)) if bytes == invalid
+                    ),
+                    "accepted low bit at callsign octet {index} in {call}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn addr_parse_rejects_invalid_lengths() {
+        for length in (0..=10).filter(|&length| length != 7) {
+            let invalid = vec![0x40; length];
+            assert!(matches!(
+                Addr::parse(&invalid),
+                Err(Error::InvalidSerializedCallsign(bytes)) if bytes == invalid
+            ));
+        }
     }
 
     #[test]
