@@ -300,7 +300,9 @@ pub struct Packet {
     src: Addr,
     dst: Addr,
     digipeater: Vec<Addr>,
-    rr_extseq: Modulus,
+    /// Effective sequencing mode, which may override the nonstandard
+    /// `AddrFlags::EXTENDED` wire hint retained in the source address.
+    modulus: Modulus,
     command_response: bool,
     command_response_la: bool,
     rr_dist1: bool,
@@ -524,7 +526,7 @@ impl Packet {
             src,
             dst,
             digipeater: vec![],
-            rr_extseq: Modulus::Standard,
+            modulus: Modulus::Standard,
             command_response: command,
             command_response_la: !command,
             rr_dist1: false,
@@ -540,7 +542,7 @@ impl Packet {
             src,
             dst,
             digipeater: vec![],
-            rr_extseq: Modulus::Standard,
+            modulus: Modulus::Standard,
             command_response: false,
             command_response_la: true,
             rr_dist1: false,
@@ -582,7 +584,7 @@ impl Packet {
                     .with(AddrFlags::LAST, self.digipeater.is_empty())
                     .with(AddrFlags::HIGH, self.command_response_la)
                     // Setting this bit for extseq seems to be a de facto standard.
-                    .with(AddrFlags::EXTENDED, self.rr_extseq.is_extended()),
+                    .with(AddrFlags::EXTENDED, self.modulus.is_extended()),
             ),
         );
 
@@ -727,8 +729,8 @@ impl Packet {
         let dst = Addr::parse(&bytes[0..7])?;
         let src = Addr::parse(&bytes[7..14])?;
 
-        let rr_extseq = Self::sequence_modulus(&src, ext);
-        let ext = rr_extseq.is_extended();
+        let modulus = Self::sequence_modulus(&src, ext);
+        let ext = modulus.is_extended();
 
         let mut digipeater = Vec::new();
         let mut pos = 14;
@@ -771,7 +773,7 @@ impl Packet {
             command_response: dst.flags.contains(AddrFlags::HIGH),
             command_response_la: src.flags.contains(AddrFlags::HIGH),
             rr_dist1: dst.flags.contains(AddrFlags::EXTENDED),
-            rr_extseq,
+            modulus,
             digipeater,
             packet_type: match control1 & TYPE_MASK {
                 // I frames. Second control byte, with NR and NS.
@@ -863,7 +865,7 @@ impl FakeKiss {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: Modulus::Standard,
+            modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Iframe(Iframe {
                 nr: 0,
@@ -883,7 +885,7 @@ impl FakeKiss {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: Modulus::Standard,
+            modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
         }
@@ -1354,7 +1356,7 @@ mod tests {
                 command_response: true,
                 command_response_la: false,
                 rr_dist1: false,
-                rr_extseq: Modulus::Standard,
+                modulus: Modulus::Standard,
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
@@ -1371,7 +1373,7 @@ mod tests {
                 command_response_la: false,
                 digipeater: vec![],
                 rr_dist1: false,
-                rr_extseq: Modulus::Standard,
+                modulus: Modulus::Standard,
                 src,
                 dst,
                 packet_type: PacketType::Sabm(Sabm { poll: false })
@@ -1394,7 +1396,7 @@ mod tests {
             command_response: true,
             command_response_la: false,
             rr_dist1: false,
-            rr_extseq: Modulus::Standard,
+            modulus: Modulus::Standard,
             digipeater: vec![
                 Addr::new("WIDE1-1")?,
                 Addr::new("WIDE2-2")?.set_lowbit(true),
