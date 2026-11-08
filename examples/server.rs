@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     std::thread::spawn(move || {
         bk.run();
     });
-    let k = BusHub::new(bus);
+    let k = BusHub::new(bus)?;
     let mut listener = Client::new(Callsign::new(&opt.src)?, Box::new(k));
 
     let d = done.clone();

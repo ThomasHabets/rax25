@@ -14,9 +14,10 @@
 //! <https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c>
 use std::collections::{HashSet, VecDeque};
 
-use crate::Result;
 use log::{debug, error, warn};
 
+use crate::Addr;
+use crate::Result;
 use crate::{
     Callsign, CommandResponse, Disc, Dm, Frmr, Iframe, Packet, PacketType, PollFinal, Rej, Rnr, Rr,
     Sabm, Sabme, Srej, Test, Ua, Ui, Xid,
@@ -2326,6 +2327,20 @@ pub enum Res {
     Some(Vec<u8>),
 }
 
+fn abort_missing_peer(
+    data: &mut Data,
+    mut events: Vec<ReturnEvent>,
+) -> (Option<Box<dyn State>>, Vec<ReturnEvent>) {
+    error!("Outgoing frame has no peer; closing the connection");
+    data.t1.stop();
+    data.t3.stop();
+    data.management.stop();
+    data.clear_iframe_queue();
+    data.obuf.clear();
+    events.push(ReturnEvent::Data(Res::EOF));
+    (Some(Box::new(Disconnected::new())), events)
+}
+
 /// Handle an incoming state, by shoving it through the state machine.
 ///
 /// Source and destination address are assumed to be correct, or in the case of
@@ -2403,74 +2418,112 @@ pub fn handle(
             ))),
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             // U frames.
-            SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
-                // Always command per 4.3.3.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Sabm(Sabm { poll: *pf }),
-            })),
-            SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
-                // Always command per 4.3.3.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Disc(Disc { poll: *pf }),
-            })),
-            SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
-                // Always response per 4.3.3.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Ua(Ua { poll: *pf }),
-            })),
-            SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
-                // Always response per 4.3.3.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Dm(Dm { poll: *pf }),
-            })),
+            SendSabm { pf } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                    dst: Addr::from(peer.clone()).with_highbit(true),
+                    // Always command per 4.3.3.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Sabm(Sabm { poll: *pf }),
+                }));
+            }
+            SendDisc { pf } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                    dst: Addr::from(peer.clone()).with_highbit(true),
+                    // Always command per 4.3.3.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Disc(Disc { poll: *pf }),
+                }));
+            }
+            SendUa { pf } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                    dst: Addr::from(peer.clone()).with_highbit(false),
+                    // Always response per 4.3.3.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Ua(Ua { poll: *pf }),
+                }));
+            }
+            SendDm { pf } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                    dst: Addr::from(peer.clone()).with_highbit(false),
+                    // Always response per 4.3.3.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Dm(Dm { poll: *pf }),
+                }));
+            }
             // S frames.
-            SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
-                // TODO: REJ can be commands, in status probes.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
-            })),
-            SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone())
-                    .with_highbit(command.is_command()),
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
-            })),
-            SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone())
-                    .with_highbit(command.is_command()),
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
-            })),
+            SendRej { pf, nr } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                    dst: Addr::from(peer.clone()).with_highbit(false),
+                    // TODO: REJ can be commands, in status probes.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
+                }));
+            }
+            SendRr { pf, nr, command } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
+                    dst: Addr::from(peer.clone()).with_highbit(command.is_command()),
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
+                }));
+            }
+            SendRnr { pf, nr, command } => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
+                    dst: Addr::from(peer.clone()).with_highbit(command.is_command()),
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
+                }));
+            }
             // I frame.
-            SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
-                // 4.3.1 seems to say that all I frames are commands.
-                //
-                // TODO: confirm this.
-                digipeater: vec![],
-                modulus: data.modulus,
-                packet_type: PacketType::Iframe(iframe.clone()),
-            })),
+            SendIframe(iframe) => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                    dst: Addr::from(peer.clone()).with_highbit(true),
+                    // 4.3.1 seems to say that all I frames are commands.
+                    //
+                    // TODO: confirm this.
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Iframe(iframe.clone()),
+                }));
+            }
             // TODO: can we avoid the copy?
             Deliver(p) => ret.push(ReturnEvent::Data(Res::Some(p.clone()))),
             EOF => ret.push(ReturnEvent::Data(Res::EOF)),
@@ -2488,6 +2541,40 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_peer_terminates_and_preserves_prior_events() -> Result<()> {
+        struct BrokenState;
+        impl State for BrokenState {
+            fn name(&self) -> String {
+                "Broken".to_string()
+            }
+            fn t1(&self, _data: &mut Data) -> Vec<Action> {
+                vec![
+                    Action::DlError(DlError::A),
+                    Action::SendDisc { pf: PollFinal::Set },
+                    Action::State(Box::new(Connected::new(ConnectedState::Connected))),
+                ]
+            }
+        }
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        data.t1.start(std::time::Duration::from_secs(60));
+        data.t3.start(std::time::Duration::from_secs(60));
+        data.management.start(std::time::Duration::from_secs(60));
+        let (state, events) = handle(&BrokenState, &mut data, &Event::T1);
+        assert!(state.is_some_and(|state| state.is_state_disconnected()));
+        assert_eq!(
+            events,
+            [
+                ReturnEvent::DlError(DlError::A),
+                ReturnEvent::Data(Res::EOF)
+            ]
+        );
+        assert!(!data.t1.running);
+        assert!(!data.t3.running);
+        assert!(!data.management.running);
+        Ok(())
+    }
 
     #[test]
     fn clearing_xid_config_stops_retries_and_ignores_stale_timeout() -> Result<()> {

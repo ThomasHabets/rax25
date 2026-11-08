@@ -16,14 +16,14 @@
 //!
 //! * Linux kernel (removed in newer kernels)
 //! * Direwolf
-#![allow(clippy::missing_panics_doc)]
 #![allow(clippy::missing_errors_doc)]
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::state::Modulus;
 use log::debug;
+
+use crate::state::Modulus;
 
 mod error;
 mod fcs;
@@ -326,7 +326,15 @@ impl Addr {
             if s.len() == 1 {
                 0
             } else {
-                s[1].parse::<u8>().unwrap()
+                #[expect(
+                    clippy::missing_panics_doc,
+                    reason = "SSID is validated by Callsign construction"
+                )]
+                {
+                    let ssid = s[1].parse::<u8>().unwrap();
+                    assert!(ssid < 16, "ssid has impossible value {ssid}");
+                    ssid
+                }
             }
         };
         ret[6] = (ssid << 1)
@@ -894,6 +902,7 @@ impl Packet {
     ///
     /// This code supports using the Linux bit, by providing `None` as `ext`, as
     /// opposed to `Some(bool)`.
+    #[allow(clippy::too_many_lines)]
     pub fn parse(bytes: &[u8], ext: Option<bool>) -> Result<Self> {
         let do_fcs = USE_FCS;
         if bytes.len() < if do_fcs { 17 } else { 15 } {
@@ -917,14 +926,19 @@ impl Packet {
         let mut pos = 14;
         let mut more_addresses = !src.flags.contains(AddrFlags::LAST);
         while more_addresses {
-            let digi = Addr::parse(&bytes[pos..pos + 7])?;
+            let address = bytes.get(pos..pos + 7).ok_or(Error::PacketTooShort {
+                length: bytes.len(),
+            })?;
+            let digi = Addr::parse(address)?;
             more_addresses = !digi.flags.contains(AddrFlags::LAST);
             pos += 7;
             digipeater.push(digi);
         }
 
         let rest = &bytes[pos..];
-        let control1 = rest[0];
+        let control1 = *rest.first().ok_or(Error::PacketTooShort {
+            length: bytes.len(),
+        })?;
         let (poll, nr, ns, bytes) = {
             if !ext || control1 & TYPE_MASK == 3 {
                 // NOTE: ns/nr will be nonsense for U frames.
@@ -962,7 +976,10 @@ impl Packet {
                     nr,
                     poll,
                     pid: NO_L3,
-                    payload: bytes[1..].to_vec(),
+                    payload: bytes
+                        .get(1..)
+                        .ok_or(Error::PacketTooShort { length: rest.len() })?
+                        .to_vec(),
                 }),
                 // S frames. Second control byte, with NR.
                 1 => match control1 & !NR_MASK & !CONTROL_POLL {
@@ -970,7 +987,11 @@ impl Packet {
                     CONTROL_RNR => PacketType::Rnr(Rnr { poll, nr }),
                     CONTROL_REJ => PacketType::Rej(Rej { poll, nr }),
                     CONTROL_SREJ => PacketType::Srej(Srej { poll, nr }),
-                    _ => panic!("Impossible logic error: {control1} failed to be supervisor"),
+                    _ => {
+                        return Err(Error::Impossible(format!(
+                            "Impossible logic error: {control1} failed to be supervisor"
+                        )));
+                    }
                 },
                 // U frames. No second control byte.
                 3 => match !CONTROL_POLL & control1 {
@@ -995,9 +1016,13 @@ impl Packet {
                         poll,
                         payload: bytes.to_vec(),
                     }),
-                    c => todo!("Control {c:b} not implemented"),
+                    c => return Err(Error::UnsupportedControl(c)),
                 },
-                _ => panic!("Logic error: {control1} & 3 > 3"),
+                _ => {
+                    return Err(Error::Impossible(format!(
+                        "Logic error: {control1} & 3 > 3"
+                    )));
+                }
             },
         })
     }
@@ -1024,7 +1049,7 @@ pub trait Hub {
 
     /// Clone a kisser.
     /// All packets get delivered to all clones.
-    fn clone(&self) -> Box<dyn Hub>;
+    fn clone(&self) -> Result<Box<dyn Hub>>;
 }
 
 #[cfg(test)]
@@ -1095,8 +1120,8 @@ impl Hub for FakeKiss {
     fn recv_timeout(&mut self, _timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
         Ok(self.queue.pop_front())
     }
-    fn clone(&self) -> Box<dyn Hub> {
-        Box::new(FakeKiss::default())
+    fn clone(&self) -> Result<Box<dyn Hub>> {
+        Ok(Box::new(FakeKiss::default()))
     }
 }
 
@@ -1111,20 +1136,25 @@ pub struct BusHub {
     bus: Arc<Mutex<bus::Bus<BusMessage>>>,
 }
 
+fn broadcast_to_bus(bus: &Mutex<bus::Bus<BusMessage>>, message: BusMessage) -> Result<()> {
+    bus.lock()
+        .map_err(|_| Error::MutexPoisoned)?
+        .try_broadcast(message)
+        .map_err(|_| Error::QueueFull)
+}
+
 impl BusHub {
-    pub fn new(bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Self {
-        let rx = {
-            let bus = bus.lock();
-            bus.unwrap().add_rx()
-        };
-        Self { rx, bus }
+    pub fn new(bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
+        let rx = bus.lock().map_err(|_| Error::MutexPoisoned)?.add_rx();
+        Ok(Self { rx, bus })
     }
 }
 
 impl Hub for BusHub {
     fn send(&mut self, frame: &[u8]) -> Result<()> {
-        let bus = self.bus.lock();
-        bus.unwrap()
+        self.bus
+            .lock()
+            .map_err(|_| Error::MutexPoisoned)?
             .try_broadcast(BusMessage {
                 sender: 0,
                 data: frame.to_vec(),
@@ -1137,8 +1167,8 @@ impl Hub for BusHub {
         Ok(Some(self.rx.recv_timeout(timeout)?.data))
     }
 
-    fn clone(&self) -> Box<dyn Hub> {
-        Box::new(Self::new(self.bus.clone()))
+    fn clone(&self) -> Result<Box<dyn Hub>> {
+        Ok(Box::new(Self::new(self.bus.clone())?))
     }
 }
 
@@ -1186,10 +1216,7 @@ pub struct BusKiss {
 #[cfg(feature = "serial")]
 impl BusKiss {
     pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
-        let rx = {
-            let bus = bus.lock();
-            bus.unwrap().add_rx()
-        };
+        let rx = bus.lock().map_err(|_| Error::MutexPoisoned)?.add_rx();
         Ok(Self {
             id: BUSKISS_ID.fetch_add(1, Ordering::SeqCst),
             kiss: Kiss::new(port)?,
@@ -1202,19 +1229,22 @@ impl BusKiss {
             let d = std::time::Duration::from_millis(10);
             if let Ok(rx) = self.rx.recv_timeout(d)
                 && rx.sender != self.id
+                && let Err(e) = self.kiss.send(&rx.data)
             {
-                self.kiss.send(&rx.data).unwrap();
+                log::warn!("Sending to KISS failed: {e}");
+                break;
             }
-            if let Ok(Some(rx)) = self.kiss.recv_timeout(d) {
-                self.bus
-                    .lock()
-                    .unwrap()
-                    .try_broadcast(BusMessage {
+            if let Ok(Some(rx)) = self.kiss.recv_timeout(d)
+                && let Err(e) = broadcast_to_bus(
+                    &self.bus,
+                    BusMessage {
                         sender: self.id,
                         data: rx,
-                    })
-                    .map_err(|_| Error::QueueFull)
-                    .expect("failed to broadcast");
+                    },
+                )
+            {
+                log::warn!("Failed to broadcast: {e}");
+                break;
             }
         }
     }
@@ -1269,8 +1299,7 @@ pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize,
 
 /// Unescape KISS data stream.
 /// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
-#[must_use]
-pub fn unescape(data: &[u8]) -> Vec<u8> {
+pub fn unescape(data: &[u8]) -> Result<Vec<u8>> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;
     for &byte in data {
@@ -1278,7 +1307,7 @@ pub fn unescape(data: &[u8]) -> Vec<u8> {
             unescaped.push(match byte {
                 KISS_TFESC => KISS_FESC,
                 KISS_TFEND => KISS_FEND,
-                other => panic!("TODO: kiss unescape error: escaped {other}"),
+                other => return Err(Error::Kiss(format!("escaped {other}"))),
             });
             is_escaped = false;
         } else if byte == KISS_FESC {
@@ -1289,14 +1318,18 @@ pub fn unescape(data: &[u8]) -> Vec<u8> {
             unescaped.push(byte);
         }
     }
-    assert!(!is_escaped);
-    unescaped
+    if is_escaped {
+        return Err(Error::Kiss("frame ends on escape state".to_string()));
+    }
+    Ok(unescaped)
 }
 
 #[cfg(feature = "serial")]
 impl Hub for Kiss {
-    fn clone(&self) -> Box<dyn Hub> {
-        todo!()
+    fn clone(&self) -> Result<Box<dyn Hub>> {
+        Err(Error::Kiss(
+            "serial KISS interfaces cannot be cloned; use BusHub".to_string(),
+        ))
     }
     fn send(&mut self, frame: &[u8]) -> Result<()> {
         let parsed = Packet::parse(frame, None)?;
@@ -1337,16 +1370,11 @@ impl Hub for Kiss {
                     .collect();
                 self.buf.drain(..b);
                 debug!("After drain: {:?}", self.buf);
-                let bytes = unescape(&bytes);
+                let bytes = unescape(&bytes)?;
                 if bytes.len() > 14 {
                     debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
-                    match Packet::parse(&bytes, None) {
-                        Ok(packet) => debug!("... Decoded as: {packet:?}"),
-                        Err(e) => {
-                            debug!("... Failed to decode: {e:?}");
-                            panic!();
-                        }
-                    }
+                    let packet = Packet::parse(&bytes, None)?;
+                    debug!("... Decoded as: {packet:?}");
                     return Ok(Some(bytes));
                 }
             }
@@ -1358,6 +1386,97 @@ impl Hub for Kiss {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kiss_unescape_reports_malformed_sequences() -> Result<()> {
+        assert!(matches!(unescape(&[KISS_FESC]), Err(Error::Kiss(_))));
+        assert!(matches!(unescape(&[KISS_FESC, 0]), Err(Error::Kiss(_))));
+        let payload: Vec<u8> = (0..=255).collect();
+        let frame = escape(&payload);
+        assert_eq!(unescape(&frame[2..frame.len() - 1])?, payload);
+        assert_eq!(unescape(&[])?, []);
+        Ok(())
+    }
+
+    #[test]
+    fn bus_errors_preserve_queue_and_poison_failures() -> Result<()> {
+        let bus = Arc::new(Mutex::new(bus::Bus::new(1)));
+        let mut hub = BusHub::new(bus.clone())?;
+        broadcast_to_bus(
+            &bus,
+            BusMessage {
+                sender: 1,
+                data: vec![1],
+            },
+        )?;
+        assert!(matches!(
+            broadcast_to_bus(
+                &bus,
+                BusMessage {
+                    sender: 1,
+                    data: vec![2]
+                }
+            ),
+            Err(Error::QueueFull)
+        ));
+        assert!(matches!(hub.send(&[3]), Err(Error::BroadcastFailed)));
+        assert_eq!(hub.recv_timeout(std::time::Duration::ZERO)?, Some(vec![1]));
+        let poisoned = bus.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = poisoned.lock().unwrap();
+                panic!("poison test bus");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(matches!(
+            BusHub::new(bus.clone()),
+            Err(Error::MutexPoisoned)
+        ));
+        assert!(matches!(Hub::clone(&hub), Err(Error::MutexPoisoned)));
+        assert!(matches!(hub.send(&[4]), Err(Error::MutexPoisoned)));
+        assert!(matches!(
+            broadcast_to_bus(
+                &bus,
+                BusMessage {
+                    sender: 1,
+                    data: vec![]
+                }
+            ),
+            Err(Error::MutexPoisoned)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn packet_parse_rejects_truncation_and_unknown_control() -> Result<()> {
+        let packet = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, []);
+        let mut bytes = packet.serialize();
+        bytes[14] = 0xff;
+        assert!(matches!(
+            Packet::parse(&bytes, None),
+            Err(Error::UnsupportedControl(_))
+        ));
+        bytes.truncate(15);
+        bytes[14] = 0;
+        assert!(matches!(
+            Packet::parse(&bytes, None),
+            Err(Error::PacketTooShort { .. })
+        ));
+        bytes[13] &= !1;
+        assert!(matches!(
+            Packet::parse(&bytes, None),
+            Err(Error::PacketTooShort { .. })
+        ));
+        bytes.truncate(14);
+        bytes.extend(Addr::new("DIGI")?.with_lowbit(true).serialize());
+        assert!(matches!(
+            Packet::parse(&bytes, None),
+            Err(Error::PacketTooShort { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn frame_role_and_poll_final_bit_conversions() {

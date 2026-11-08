@@ -433,7 +433,13 @@ fn kisser_read(
         }
         let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).copied().collect();
         ibuf.drain(..b);
-        let pb = crate::unescape(&pb);
+        let pb = match crate::unescape(&pb) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                debug!("Discarding malformed KISS frame: {error}");
+                continue;
+            }
+        };
         match Packet::parse(&pb, ext) {
             Ok(packet) => {
                 trace!("rax25: parsed {packet:?}");
@@ -789,6 +795,19 @@ fn is_error_eof(e: &Error) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn malformed_kiss_frame_does_not_hide_next_packet() -> Result<()> {
+        let expected = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, b"hello");
+        let mut wire = vec![0xc0, 0];
+        wire.extend([b'x'; 15]);
+        wire.extend([0xdb, 0, 0xc0]);
+        wire.extend(crate::escape(&expected.serialize()));
+        let packets = kisser_read(&mut wire.into(), Some(false), None);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].packet_type, expected.packet_type);
+        Ok(())
+    }
 
     #[test]
     fn eof_detection_preserves_io_errors() {

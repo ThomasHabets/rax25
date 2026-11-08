@@ -1303,7 +1303,8 @@ fn copy_xid_frames(
             frame.pop();
             continue;
         }
-        let raw = rax25::unescape(&frame[2..frame.len() - 1]);
+        let raw = rax25::unescape(&frame[2..frame.len() - 1])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let xid = frame[1].trailing_zeros() >= 4 && raw.len() >= 15 && control(&raw) == 0xaf;
         let drop = xid
             && match fault {

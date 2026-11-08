@@ -77,6 +77,14 @@ pub enum Error {
     DuplicateXidParameter(u8),
     #[error("invalid XID configuration: {0}")]
     InvalidXidConfig(&'static str),
+    #[error("impossible state encountered: {0}")]
+    Impossible(String),
+    #[error("KISS error: {0}")]
+    Kiss(String),
+    #[error("internal mutex was poisoned")]
+    MutexPoisoned,
+    #[error("unsupported AX.25 control field: {0:#04x}")]
+    UnsupportedControl(u8),
 }
 
 #[cfg(test)]

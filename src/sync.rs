@@ -37,7 +37,7 @@
 //! std::thread::spawn(move || {
 //!     bk.run();
 //! });
-//! let hub = BusHub::new(bus);
+//! let hub = BusHub::new(bus)?;
 //! let mut listener = Client::new(Callsign::new("M0THC-1")?, Box::new(hub));
 //! let mut con = listener
 //!     .accept(std::time::Instant::now() + std::time::Duration::from_secs(600))?
@@ -191,7 +191,7 @@ impl Client {
                         self.actions_packet(&packet);
                     }
                     PacketType::Sabm(_) | PacketType::Sabme(_) => {
-                        let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
+                        let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone()?);
                         new_client.data = self.data.accepted_data(packet.src.callsign());
                         new_client.data.peer = Some(packet.src.callsign().clone());
                         new_client.data.able_to_establish = true;
@@ -442,11 +442,11 @@ mod tests {
             Ok(None)
         }
 
-        fn clone(&self) -> Box<dyn Hub> {
-            Box::new(Self {
+        fn clone(&self) -> Result<Box<dyn Hub>> {
+            Ok(Box::new(Self {
                 queue: std::collections::VecDeque::default(),
                 ..Clone::clone(self)
-            })
+            }))
         }
     }
 
