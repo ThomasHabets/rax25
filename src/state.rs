@@ -667,9 +667,9 @@ impl Data {
             .pending_xid
             .iter()
             .position(|(addr, _, _)| addr == peer)
+            && let Some(proposal) = self.pending_xid.remove(index)
         {
-            data.pending_xid
-                .push_back(self.pending_xid.remove(index).unwrap());
+            data.pending_xid.push_back(proposal);
         }
         data.srt_default = self.srt_default;
         data.t3v = self.t3v;
@@ -2484,6 +2484,32 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepted_data_transfers_only_matching_live_proposal() -> Result<()> {
+        let mut listener = Data::new(Callsign::new("LOCAL")?);
+        let peer = Callsign::new("REMOTE")?;
+        let other = Callsign::new("OTHER")?;
+        let stale = Callsign::new("STALE")?;
+        let request = Xid {
+            poll: PollFinal::Set,
+            parameters: Some(XidConfig::default().offer(false)),
+        };
+        for station in [&peer, &other, &stale] {
+            listener.receive_xid(&request, CommandResponse::Command, station);
+        }
+        assert_eq!(listener.pending_xid.len(), 3);
+        listener.pending_xid[2].2 = std::time::Instant::now();
+        let proposal = listener.pending_xid[0].clone();
+        let unrelated = listener.pending_xid[1].clone();
+
+        let accepted = listener.accepted_data(&peer);
+        assert_eq!(accepted.pending_xid, VecDeque::from([proposal]));
+        assert_eq!(listener.pending_xid, VecDeque::from([unrelated.clone()]));
+        assert_eq!(listener.accepted_data(&peer).pending_xid, VecDeque::new());
+        assert_eq!(listener.pending_xid, VecDeque::from([unrelated]));
+        Ok(())
+    }
 
     #[test]
     fn accepted_connection_inherits_linux_hint_policy() -> Result<()> {
