@@ -2357,32 +2357,32 @@ pub fn handle(
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             // U frames.
             SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
             SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
@@ -2390,31 +2390,31 @@ pub fn handle(
             })),
             // S frames.
             SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(true),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).with_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // TODO: REJ can be commands, in status probes.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(!*command),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(!*command),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
             // I frame.
             SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).set_highbit(false),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).with_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
                 // 4.3.1 seems to say that all I frames are commands.
                 //
                 // TODO: confirm this.
@@ -2583,8 +2583,8 @@ mod tests {
         assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
-                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2604,8 +2604,8 @@ mod tests {
             assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
             assert_all(
                 &[ReturnEvent::Packet(Packet {
-                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
-                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(false),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2633,8 +2633,8 @@ mod tests {
         assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
-                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(true),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: true }),
@@ -2671,8 +2671,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
                 ReturnEvent::Packet(Packet {
-                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
-                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
@@ -2700,8 +2700,8 @@ mod tests {
         assert!(c2.is_none());
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
-                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(true),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
@@ -2730,8 +2730,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![11, 22, 33])),
                 ReturnEvent::Packet(Packet {
-                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
-                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
@@ -2754,8 +2754,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::EOF),
                 ReturnEvent::Packet(Packet {
-                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
-                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Ua(Ua { poll: true }),

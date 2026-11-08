@@ -228,20 +228,20 @@ impl Addr {
         Ok(Callsign::new(s)?.into())
     }
 
-    /// Set the command/response or repeated bit.
+    /// Return this address with the command/response or repeated bit set to `v`.
     #[must_use]
-    pub fn set_highbit(mut self, v: bool) -> Self {
+    pub fn with_highbit(mut self, v: bool) -> Self {
         self.flags = self.flags.with(AddrFlags::HIGH, v);
         self
     }
 
-    /// Set lowbit.
+    /// Return this address with the last-address bit set to `v`.
     ///
     /// This bit is used in the spec to signify the last address in a list of
     /// addresses. I.e. the source address for no-digipeater packets, or the
     /// last digipeater if packet has digipeaters.
     #[must_use]
-    pub fn set_lowbit(mut self, v: bool) -> Self {
+    pub fn with_lowbit(mut self, v: bool) -> Self {
         self.flags = self.flags.with(AddrFlags::LAST, v);
         self
     }
@@ -590,8 +590,8 @@ impl Packet {
         parameters: Option<xid::XidParameters>,
     ) -> Self {
         Self {
-            src: src.into().set_highbit(!command),
-            dst: dst.into().set_highbit(command),
+            src: src.into().with_highbit(!command),
+            dst: dst.into().with_highbit(command),
             digipeater: vec![],
             modulus: Modulus::Standard,
             packet_type: PacketType::Xid(Xid { poll, parameters }),
@@ -603,8 +603,8 @@ impl Packet {
     #[must_use]
     pub fn ui<T: Into<Vec<u8>>>(src: impl Into<Addr>, dst: impl Into<Addr>, payload: T) -> Self {
         Self {
-            src: src.into().set_highbit(true),
-            dst: dst.into().set_highbit(false),
+            src: src.into().with_highbit(true),
+            dst: dst.into().with_highbit(false),
             digipeater: vec![],
             modulus: Modulus::Standard,
             packet_type: PacketType::Ui(Ui {
@@ -920,8 +920,8 @@ impl FakeKiss {
     #[must_use]
     fn make_iframe(src: Addr, dst: Addr, payload: Vec<u8>) -> Packet {
         Packet {
-            src: src.set_highbit(false),
-            dst: dst.set_highbit(true),
+            src: src.with_highbit(false),
+            dst: dst.with_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Iframe(Iframe {
@@ -937,8 +937,8 @@ impl FakeKiss {
     #[must_use]
     fn make_ua(src: Addr, dst: Addr) -> Packet {
         Packet {
-            src: src.set_highbit(false),
-            dst: dst.set_highbit(true),
+            src: src.with_highbit(false),
+            dst: dst.with_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
@@ -1421,21 +1421,21 @@ mod tests {
     }
 
     #[test]
-    fn addr_flag_setters_preserve_other_flags() -> Result<()> {
+    fn addr_flag_builders_preserve_other_flags() -> Result<()> {
         let reserved = AddrFlags::EXTENDED | AddrFlags::DAMA;
         let addr = Addr::new_bits("M0THC", reserved)?
-            .set_highbit(true)
-            .set_lowbit(true);
+            .with_highbit(true)
+            .with_lowbit(true);
         assert_eq!(addr.flags, reserved | AddrFlags::HIGH | AddrFlags::LAST);
         assert_eq!(
-            addr.clone().set_highbit(false).flags,
+            addr.clone().with_highbit(false).flags,
             reserved | AddrFlags::LAST
         );
         assert_eq!(
-            addr.clone().set_lowbit(false).flags,
+            addr.clone().with_lowbit(false).flags,
             reserved | AddrFlags::HIGH
         );
-        assert_eq!(addr.set_highbit(false).set_lowbit(false).flags, reserved);
+        assert_eq!(addr.with_highbit(false).with_lowbit(false).flags, reserved);
         Ok(())
     }
 
@@ -1500,8 +1500,8 @@ mod tests {
         let dst = Addr::new("M0THC-2")?;
         assert_eq!(
             Packet {
-                src: src.clone().set_highbit(false),
-                dst: dst.clone().set_highbit(true),
+                src: src.clone().with_highbit(false),
+                dst: dst.clone().with_highbit(true),
                 modulus: Modulus::Standard,
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
@@ -1517,8 +1517,8 @@ mod tests {
             Packet {
                 digipeater: vec![],
                 modulus: Modulus::Standard,
-                src: src.set_highbit(false),
-                dst: dst.set_highbit(true),
+                src: src.with_highbit(false),
+                dst: dst.with_highbit(true),
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(false),
@@ -1532,14 +1532,14 @@ mod tests {
     #[test]
     fn serialize_ui_repeat() -> Result<()> {
         let src = Addr::new("M0THC-1")?;
-        let dst = Addr::new("M0THC-2")?.set_highbit(true);
+        let dst = Addr::new("M0THC-2")?.with_highbit(true);
         let packet = Packet {
-            src: src.clone().set_highbit(false),
-            dst: dst.clone().set_highbit(true),
+            src: src.clone().with_highbit(false),
+            dst: dst.clone().with_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![
                 Addr::new("WIDE1-1")?,
-                Addr::new("WIDE2-2")?.set_lowbit(true),
+                Addr::new("WIDE2-2")?.with_lowbit(true),
             ],
             packet_type: PacketType::Ui(Ui {
                 pid: 0xF0,

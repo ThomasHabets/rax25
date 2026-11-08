@@ -594,8 +594,8 @@ mod tests {
             reply,
             Packet {
                 // TODO: is this even the bit set we expect
-                src: crate::Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?.set_highbit(false),
-                dst: crate::Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?.set_highbit(true),
+                src: crate::Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?.with_highbit(false),
+                dst: crate::Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?.with_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Iframe(Iframe {
@@ -627,8 +627,8 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
-                dst: crate::Addr::from(Callsign::new("M0THC-3")?).set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-3")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -649,8 +649,8 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
-                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).with_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
