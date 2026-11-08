@@ -562,7 +562,7 @@ impl Packet {
     /// Source C bit: true for a v2.x response, false for a command.
     /// Legacy frames may have equal source and destination C bits.
     #[must_use]
-    pub fn command_response_la(&self) -> bool {
+    pub fn command_response_src(&self) -> bool {
         self.src.flags.contains(AddrFlags::HIGH)
     }
 
@@ -645,7 +645,7 @@ impl Packet {
             self.src.serialize_with_flags(
                 AddrFlags::empty()
                     .with(AddrFlags::LAST, self.digipeater.is_empty())
-                    .with(AddrFlags::HIGH, self.command_response_la())
+                    .with(AddrFlags::HIGH, self.command_response_src())
                     // Setting this bit for extseq seems to be a de facto standard.
                     .with(AddrFlags::EXTENDED, self.modulus.is_extended()),
             ),
@@ -1450,7 +1450,7 @@ mod tests {
         for command in [true, false, true] {
             packet.set_command_response(command);
             assert_eq!(packet.command_response(), command);
-            assert_eq!(packet.command_response_la(), !command);
+            assert_eq!(packet.command_response_src(), !command);
             assert_eq!(packet.dst.flags, flags.with(AddrFlags::HIGH, command));
             assert_eq!(packet.src.flags, flags.with(AddrFlags::HIGH, !command));
             let bytes = packet.serialize(false);
@@ -1471,7 +1471,7 @@ mod tests {
 
                 let parsed = Packet::parse(&bytes, None)?;
                 assert_eq!(parsed.command_response(), destination_c);
-                assert_eq!(parsed.command_response_la(), source_c);
+                assert_eq!(parsed.command_response_src(), source_c);
                 assert_eq!(parsed.serialize(false), bytes);
             }
         }
