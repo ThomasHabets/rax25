@@ -23,7 +23,7 @@ if [[ -z ${BELL202_BIN:-} ]]; then
     export BELL202_BIN="$modem_root/bin/bell202"
 fi
 
-audio_runtime=$(mktemp -d /tmp/rax25-audio.XXXXXX)
+audio_runtime="$(mktemp -d /tmp/rax25-audio.XXXXXX)"
 audio_logs="$target_dir/direwolf_interop/audio-$(date +%s)-$$"
 mkdir -p "$audio_logs"
 audio_pids=()

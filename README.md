@@ -114,11 +114,12 @@ also sets the XID management retry interval.
 
 ## Dire Wolf Audio Interoperability
 
-An integration test runs the `bell202` modem from the published
-rustradio 0.20.2 release against an installed Dire Wolf binary, through two
-virtual audio cables. A registered AGW application echoes data using Dire
-Wolf's AX.25 stack; the test checks standard and extended connections,
-bidirectional binary data, and disconnect. No Dire Wolf source is required.
+An integration test runs the `bell202` modem from the published rustradio
+release pinned in `tests/run_direwolf_interop.sh` against an installed Dire Wolf
+binary, through two virtual audio cables. A registered AGW application echoes
+data using Dire Wolf's AX.25 stack; the test checks standard and extended
+connections, bidirectional binary data, and disconnect. No Dire Wolf source is
+required.
 
 On Linux, install Dire Wolf, PipeWire, `pipewire-pulse`, WirePlumber,
 `dbus-run-session`, `pactl`, and the ALSA PulseAudio plugin
@@ -137,6 +138,8 @@ Rust 1.98 or newer and ALSA/JACK development libraries (`libasound2-dev`,
 `libjack-jackd2-dev`, and `pkg-config` on Debian).
 Set `BELL202_BIN` to use an already-built modem. `DIREWOLF_BIN` selects a
 different Dire Wolf executable. No sibling checkout is needed.
+Directly running the ignored Rust tests requires both `BELL202_BIN` and a
+live Pulse server; the tests never install dependencies themselves.
 Logs and captures remain under `target/direwolf_interop/` for inspection,
 or under `$CARGO_TARGET_DIR/direwolf_interop/` when set. Tickbox uses
 `target/<branch>.test.direwolf/`, retaining the modem between runs and keeping

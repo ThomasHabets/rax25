@@ -1,5 +1,6 @@
 //! Opt-in, real Bell 202 audio interop with the installed Dire Wolf binary.
-//! Run with `tests/run_direwolf_interop.sh`, or provide a live Pulse server.
+//! Run with `tests/run_direwolf_interop.sh`, or provide `BELL202_BIN` and a live
+//! Pulse server. Dependency installation belongs to the launcher, not the test.
 //! No Dire Wolf source or dependencies are copied into this repository.
 #![cfg(feature = "async")]
 
@@ -150,42 +151,11 @@ impl Harness {
         .context("waiting for interop TCP listener")?
     }
 
-    fn bell202(&self) -> Result<PathBuf> {
-        if let Some(binary) = std::env::var_os("BELL202_BIN") {
-            return Ok(binary.into());
-        }
-        let root = manifest_dir()?;
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map_or_else(|| root.join("target"), |path| root.join(path))
-            .join("direwolf_interop/rustradio-0.20.2");
-        let log = File::create(self.dir.join("bell202-build.log"))?;
-        let status = Command::new("cargo")
-            .args([
-                "install",
-                "rustradio",
-                "--version",
-                "=0.20.2",
-                "--registry",
-                "crates-io",
-                "--locked",
-                "--example",
-                "bell202",
-                "--features",
-                "audio",
-            ])
-            .arg("--root")
-            .arg(&target)
-            .arg("--target-dir")
-            .arg(target.join("build"))
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .status()
-            .context("installing rustradio 0.20.2 bell202; alternatively set BELL202_BIN")?;
-        ensure!(
-            status.success(),
-            "bell202 build failed; inspect bell202-build.log"
-        );
-        Ok(target.join("bin/bell202"))
+    fn bell202() -> Result<PathBuf> {
+        std::env::var_os("BELL202_BIN")
+            .filter(|binary| !binary.is_empty())
+            .map(PathBuf::from)
+            .context("BELL202_BIN must point to a built bell202 modem; run tests/run_direwolf_interop.sh to install and configure it")
     }
 }
 
@@ -283,9 +253,9 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
 }
 
 async fn interop(extended: bool) -> Result<()> {
+    let bell202 = Harness::bell202()?;
     let mut harness = Harness::new(extended)?;
     let result = async {
-        let bell202 = harness.bell202()?;
         let agw_port = free_port()?;
         let mut kiss_port = free_port()?;
         while kiss_port == agw_port { kiss_port = free_port()?; }
