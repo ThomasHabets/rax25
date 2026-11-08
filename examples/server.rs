@@ -12,6 +12,13 @@ use rax25::{BusHub, BusKiss, Callsign};
 
 #[derive(Parser, Debug)]
 struct Opt {
+    /// Configure XID link parameters for accepted connections.
+    #[clap(long)]
+    xid: bool,
+
+    /// Disable SREJ for accepted connections, even if the peer requests it.
+    #[clap(long)]
+    no_srej: bool,
     /// KISS serial port.
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
@@ -44,6 +51,10 @@ fn main() -> Result<()> {
     });
     let k = BusHub::new(bus)?;
     let mut listener = Client::new(Callsign::new(&opt.src)?, Box::new(k));
+    listener.set_srej(!opt.no_srej);
+    if opt.xid {
+        listener.set_xid_config(rax25::XidConfig::default());
+    }
 
     let d = done.clone();
     ctrlc::set_handler(move || {

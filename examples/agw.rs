@@ -26,6 +26,9 @@ enum LogLevel {
 #[derive(Parser)]
 #[command(group(ArgGroup::new("modem").required(true).args(["dev", "tcp"])))]
 struct Opt {
+    /// Disable selective reject capability for connections on this modem.
+    #[arg(long)]
+    no_srej: bool,
     /// Serial KISS device (mutually exclusive with --tcp).
     #[arg(long, short)]
     dev: Option<std::path::PathBuf>,
@@ -568,6 +571,7 @@ async fn main() -> Result<()> {
     };
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
     let (mut engine, commands, events) = PacketEngine::new();
+    engine.set_srej(!opt.no_srej);
     if opt.xid {
         engine.set_xid_config(rax25::XidConfig::default())?;
     }

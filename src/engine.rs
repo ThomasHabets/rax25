@@ -170,6 +170,7 @@ impl Link {
 
 /// An engine and bounded command/event channels. Drive `run` continuously.
 pub struct PacketEngine {
+    srej: bool,
     outgoing: crate::r#async::KissWrites,
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Notification>,
@@ -181,12 +182,17 @@ pub struct PacketEngine {
     experiments: std::collections::HashSet<Experiment>,
 }
 impl PacketEngine {
+    /// Permit negotiated SREJ for subsequent links without initiating XID.
+    pub fn set_srej(&mut self, enabled: bool) {
+        self.srej = enabled;
+    }
     #[must_use]
     pub fn new() -> (Self, mpsc::Sender<Command>, mpsc::Receiver<Notification>) {
         let (tx, commands) = mpsc::channel(256);
         let (events, rx) = mpsc::channel(256);
         (
             Self {
+                srej: true,
                 outgoing: crate::r#async::KissWrites::default(),
                 commands,
                 events,
@@ -341,6 +347,7 @@ impl PacketEngine {
                 } else {
                     let mut link =
                         Link::new(owner, route.local.clone(), via, false, &self.experiments);
+                    link.data.set_srej(self.srej);
                     if let Some(config) = &self.xid {
                         link.data.set_xid_config(config.clone());
                     }
@@ -484,6 +491,7 @@ impl PacketEngine {
                 .map(|a| a.with_highbit(false))
                 .collect();
             let mut link = Link::new(owner, route.local.clone(), via, true, &self.experiments);
+            link.data.set_srej(self.srej);
             if let Some(config) = &self.xid {
                 link.data.set_xid_config(config.clone());
             }
@@ -573,7 +581,7 @@ pub(crate) fn packet_event(p: &Packet) -> state::Event {
         PacketType::Rr(v) => E::Rr(v.clone(), cr),
         PacketType::Rnr(v) => E::Rnr(v.clone()),
         PacketType::Rej(v) => E::Rej(v.clone(), cr),
-        PacketType::Srej(v) => E::Srej(v.clone()),
+        PacketType::Srej(v) => E::Srej(v.clone(), cr),
         PacketType::Frmr(v) => E::Frmr(v.clone()),
         PacketType::Ui(v) => E::Ui(v.clone(), cr),
         PacketType::Test(v) => E::Test(v.clone(), cr),

@@ -25,7 +25,7 @@ use crate::{
 
 #[path = "negotiation.rs"]
 pub mod negotiation;
-pub use negotiation::{NegotiatedParameters, XidConfig};
+pub use negotiation::{NegotiatedParameters, RejectMode, XidConfig};
 
 /// Incoming events to the state machine.
 ///
@@ -38,6 +38,10 @@ pub enum Event {
         ext: bool,
     },
     ConnectWithXid {
+        addr: Callsign,
+        ext: Option<bool>,
+    },
+    ConnectThenXid {
         addr: Callsign,
         ext: Option<bool>,
     },
@@ -69,7 +73,7 @@ pub enum Event {
     Rr(Rr, /* command */ CommandResponse),
     Rnr(Rnr),
     Rej(Rej, /* command */ CommandResponse),
-    Srej(Srej),
+    Srej(Srej, CommandResponse),
 
     // I frames.
     Iframe(Iframe, /* command */ CommandResponse),
@@ -209,6 +213,7 @@ pub enum Action {
         pf: PollFinal,
         nr: u8,
     },
+    SendSrej(Srej),
     SendRnr {
         pf: PollFinal,
         nr: u8,
@@ -373,6 +378,13 @@ impl Modulus {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum XidPhase {
+    BeforeLink,
+    Confirming,
+    Complete,
+}
+
 /// Connection (or socket, if you will) extra data.
 ///
 /// The state object only carries the state itself. Further data is in this
@@ -381,6 +393,8 @@ impl Modulus {
 #[allow(clippy::struct_excessive_bools)] // Keep state variables aligned with the AX.25 specification.
 pub struct Data {
     xid_config: Option<XidConfig>,
+    srej_allowed: bool,
+    xid_phase: XidPhase,
     negotiated: Option<NegotiatedParameters>,
     management: Timer,
     management_retries: u8,
@@ -495,10 +509,12 @@ pub struct Data {
     /// In a modern spec, able to establish and not would be separate states.
     pub(crate) able_to_establish: bool,
 
-    /// An SREJ has been sent to the remote end.
-    ///
-    /// TODO: this counts outstanding SREJs?
-    sreject_exception: u32,
+    /// Missing sequence numbers for which SREJ has already been sent.
+    sreject_exception: HashSet<u8>,
+    /// Correctly received frames above V(R), bounded by the receive window.
+    selective_buffer: Vec<Iframe>,
+    /// Requests already actioned since the current P=1 checkpoint.
+    srej_retransmitted: HashSet<u8>,
 
     /// We are busy.
     ///
@@ -509,9 +525,8 @@ pub struct Data {
     /// ACK, like RR, RNR, or IFRAME, pending.
     acknowledge_pending: bool,
 
-    /// This implementation doesn't yet implement SREJ, so this
-    /// is always false for now.
-    srej_enabled: bool,
+    /// REJ until an XID exchange selects selective recovery.
+    reject_mode: RejectMode,
 
     /// Maximum number of iframes outstanding.
     ///
@@ -596,6 +611,8 @@ impl Data {
         Self {
             me,
             xid_config: None,
+            srej_allowed: true,
+            xid_phase: XidPhase::Complete,
             negotiated: None,
             management: Timer::default(),
             management_retries: 0,
@@ -620,8 +637,10 @@ impl Data {
             modulus: Modulus::Standard,
             peer_receiver_busy: false,
             reject_exception: false,
-            sreject_exception: 0,
-            srej_enabled: false,
+            sreject_exception: HashSet::new(),
+            selective_buffer: Vec::new(),
+            srej_retransmitted: HashSet::new(),
+            reject_mode: RejectMode::Rej,
             acknowledge_pending: false,
             own_receiver_busy: false,
             iframe_queue: Vec::new(),
@@ -664,6 +683,18 @@ impl Data {
         self.xid_config = Some(config);
     }
 
+    /// Permit SREJ during subsequent setup (default true), without starting XID.
+    /// A false value also restricts any explicitly supplied XID configuration.
+    pub fn set_srej(&mut self, enabled: bool) {
+        self.srej_allowed = enabled;
+    }
+
+    fn xid_policy(&self) -> XidConfig {
+        let mut config = self.xid_config.clone().unwrap_or_default();
+        config.srej &= self.srej_allowed;
+        config
+    }
+
     /// Validate local policy before sending frames.
     ///
     /// # Errors
@@ -681,6 +712,7 @@ impl Data {
         self.management.stop();
         self.xid_config = None;
         self.pending_xid.clear();
+        self.xid_phase = XidPhase::Complete;
     }
 
     #[must_use]
@@ -693,6 +725,7 @@ impl Data {
     pub fn accepted_data(&mut self, peer: &Callsign) -> Self {
         let mut data = Self::new(self.me.clone());
         data.xid_config.clone_from(&self.xid_config);
+        data.srej_allowed = self.srej_allowed;
         self.expire_pending_xid();
         if let Some(index) = self
             .pending_xid
@@ -722,6 +755,7 @@ impl Data {
     }
 
     fn apply_negotiated(&mut self, parameters: NegotiatedParameters) {
+        self.reject_mode = parameters.reject_mode;
         self.n1 = parameters.receive_length;
         self.mtu_out = parameters.transmit_length;
         self.k = parameters.transmit_window;
@@ -732,22 +766,28 @@ impl Data {
     }
 
     fn xid_command(&self) -> Action {
+        let mut offer = self.xid_policy().offer(self.xid_extended);
+        if self.xid_phase == XidPhase::Confirming {
+            offer.optional_functions = offer.optional_functions.map(|bits| {
+                bits & !if self.ext() {
+                    negotiation::MOD8
+                } else {
+                    negotiation::MOD128
+                }
+            });
+        }
         Action::SendXid {
             peer: self.peer.clone().expect("XID requires a peer"),
             command: CommandResponse::Command,
             xid: Xid {
                 poll: PollFinal::Set,
-                parameters: Some(
-                    self.xid_config
-                        .as_ref()
-                        .expect("XID requires config")
-                        .offer(self.xid_extended),
-                ),
+                parameters: Some(offer),
             },
         }
     }
 
     fn start_xid(&mut self, peer: &Callsign, extended: Option<bool>) -> Vec<Action> {
+        self.xid_phase = XidPhase::BeforeLink;
         let config = self.xid_config.get_or_insert_with(XidConfig::default);
         if config.validate().is_err() {
             return vec![Action::DlError(DlError::K)];
@@ -758,15 +798,47 @@ impl Data {
         self.xid_required_mode = extended;
         self.peer = Some(peer.clone());
         self.negotiated = None;
+        self.reject_mode = RejectMode::Rej;
         self.layer3_initiated = true;
         self.t1.stop();
         self.t3.stop();
         vec![Action::State(Box::new(AwaitingXid)), self.xid_command()]
     }
 
+    fn start_link_then_xid(&mut self, peer: &Callsign, extended: Option<bool>) -> Vec<Action> {
+        if self.validate_xid_config().is_err() {
+            return vec![Action::DlError(DlError::K)];
+        }
+        self.xid_config.get_or_insert_with(XidConfig::default);
+        self.xid_phase = XidPhase::BeforeLink;
+        self.negotiated = None;
+        self.peer = Some(peer.clone());
+        self.layer3_initiated = true;
+        if extended.unwrap_or(true) {
+            self.set_version_2_2();
+        } else {
+            self.set_version_2();
+        }
+        vec![
+            Action::State(Box::new(AwaitingConnection::new())),
+            self.establish_data_link(),
+        ]
+    }
+
     fn finish_xid(&mut self, parameters: Option<NegotiatedParameters>) -> Vec<Action> {
         self.management.stop();
+        if self.xid_phase == XidPhase::Confirming {
+            self.xid_phase = XidPhase::Complete;
+            if let Some(parameters) = parameters {
+                self.apply_negotiated(parameters);
+                self.t3.start(self.t3v);
+                return self.flush();
+            }
+            // No confirmed agreement: re-establish standard mode, whose legacy
+            // recovery is REJ, rather than assume an extended peer chose REJ.
+        }
         self.negotiated = None;
+        self.reject_mode = RejectMode::Rej;
         self.mtu_out = self.mtu_out_default;
         if parameters.as_ref().is_some_and(|p| p.extended) {
             self.set_version_2_2();
@@ -779,6 +851,7 @@ impl Data {
             self.apply_negotiated(parameters);
         } else {
             self.n1 = 256;
+            self.xid_phase = XidPhase::Complete;
             self.mtu_out = self.mtu_out.min(256);
             self.srt = DEFAULT_SRT;
             self.t1v = DEFAULT_SRT;
@@ -787,6 +860,97 @@ impl Data {
             Action::State(Box::new(AwaitingConnection::new())),
             self.establish_data_link(),
         ]
+    }
+
+    /// True while setup is waiting for XID confirmation after UA.
+    pub(crate) fn confirming_xid(&self) -> bool {
+        self.xid_phase == XidPhase::Confirming
+    }
+
+    fn confirm_xid(&mut self) -> Vec<Action> {
+        // Interoperability, not an extra exchange required by AX.25: Dire Wolf
+        // 1.7 resets XID parameters on SABM(E). Repeat negotiation after UA so
+        // both peers use the selected rejection method, including REJ opt-out.
+        self.xid_phase = XidPhase::Confirming;
+        self.reject_mode = RejectMode::Rej;
+        self.xid_extended = self.ext();
+        self.xid_required_mode = Some(self.ext());
+        self.management_retries = 0;
+        if let Some(config) = &self.xid_config {
+            self.management.start(config.management_timeout);
+        }
+        self.t3.stop();
+        vec![self.xid_command()]
+    }
+
+    fn receive_connected_xid(
+        &mut self,
+        packet: &Xid,
+        command: CommandResponse,
+        peer: &Callsign,
+    ) -> Vec<Action> {
+        if self.peer.as_ref() != Some(peer) {
+            return vec![];
+        }
+        if command.is_response() {
+            return self.receive_xid(packet, command, peer);
+        }
+        if !packet.poll.is_set() {
+            return vec![];
+        }
+        let config = self.xid_policy();
+        if config.validate().is_err() || !self.selective_buffer.is_empty() {
+            // Do not change recovery while selective gaps are unresolved.
+            // The new transmit window must also fit any outstanding frames.
+            return vec![];
+        }
+        let mut response = config.offer(self.ext());
+        let mode_bit = if self.ext() {
+            negotiation::MOD128
+        } else {
+            negotiation::MOD8
+        };
+        if let Some(offered) = &packet.parameters {
+            let Some(parameters) = config
+                .negotiate(offered, self.ext(), self.mtu_out_default)
+                .filter(|p| {
+                    p.extended == self.ext()
+                        && self.iframe_resend_queue.len() <= usize::from(p.transmit_window)
+                })
+            else {
+                return vec![];
+            };
+            // Connected XID can update recovery, but must not reset sequence
+            // numbers or change the established control-field width.
+            response.optional_functions = Some(
+                response.optional_functions.unwrap()
+                    & !(negotiation::REJ
+                        | negotiation::SREJ
+                        | negotiation::MULTI_SREJ
+                        | negotiation::MOD8
+                        | negotiation::MOD128)
+                    | mode_bit
+                    | parameters.reject_mode.bit(),
+            );
+            response.acknowledgement_timer_ms = Some(
+                u32::try_from(parameters.acknowledgement_timer.as_millis())
+                    .expect("validated timer"),
+            );
+            response.retries = Some(parameters.retries);
+            self.apply_negotiated(parameters);
+        } else {
+            response.optional_functions = response
+                .optional_functions
+                .map(|bits| bits & !(negotiation::MOD8 | negotiation::MOD128) | mode_bit);
+        }
+        vec![Action::SendXid {
+            peer: peer.clone(),
+            command: CommandResponse::Response,
+            xid: Xid {
+                poll: PollFinal::Set,
+                parameters: Some(response),
+            },
+        }]
     }
 
     fn expire_pending_xid(&mut self) {
@@ -801,7 +965,7 @@ impl Data {
         peer: &Callsign,
     ) -> Vec<Action> {
         self.expire_pending_xid();
-        let config = self.xid_config.clone().unwrap_or_default();
+        let config = self.xid_policy();
         if config.validate().is_err() {
             return vec![];
         }
@@ -816,12 +980,14 @@ impl Data {
                 };
                 response = config.offer(parameters.extended);
                 response.optional_functions = Some(
-                    response.optional_functions.unwrap()
+                    (response.optional_functions.unwrap()
                         & !if parameters.extended {
                             negotiation::MOD8
                         } else {
                             negotiation::MOD128
-                        },
+                        }
+                        & !(negotiation::REJ | negotiation::SREJ | negotiation::MULTI_SREJ))
+                        | parameters.reject_mode.bit(),
                 );
                 response.acknowledgement_timer_ms = Some(
                     u32::try_from(parameters.acknowledgement_timer.as_millis())
@@ -1023,6 +1189,18 @@ impl Data {
                 nr: self.vr,
                 command: CommandResponse::Response,
             }
+        } else if !self.sreject_exception.is_empty() {
+            // 2017 section 4.4.4: repeat the oldest unresolved request with F=1.
+            let missing = self.missing_frames();
+            Action::SendSrej(Srej {
+                poll: pf,
+                nr: self.vr,
+                additional: if self.reject_mode == RejectMode::MultiSrej {
+                    missing.into_iter().skip(1).collect()
+                } else {
+                    vec![]
+                },
+            })
         } else {
             // 1998 spec says commmand, which is wrong.
             Action::SendRr {
@@ -1030,6 +1208,69 @@ impl Data {
                 nr: self.vr,
                 command: CommandResponse::Response,
             }
+        }
+    }
+
+    fn missing_frames(&self) -> Vec<u8> {
+        let modulus = self.modulus.as_u8();
+        let last = self
+            .selective_buffer
+            .iter()
+            .map(|p| p.ns.wrapping_sub(self.vr) % modulus)
+            .max()
+            .unwrap_or(0);
+        (0..last)
+            .map(|offset| (self.vr + offset) % modulus)
+            .filter(|nr| !self.selective_buffer.iter().any(|p| p.ns == *nr))
+            .collect()
+    }
+
+    fn request_missing(&mut self, poll: PollFinal) -> Vec<Action> {
+        let missing = self.missing_frames();
+        let new: Vec<_> = missing
+            .iter()
+            .copied()
+            .filter(|nr| !self.sreject_exception.contains(nr))
+            .collect();
+        self.sreject_exception.extend(missing);
+        if poll.is_set() {
+            return vec![self.enquiry_response(PollFinal::Set)];
+        }
+        self.acknowledge_pending = false;
+        if self.reject_mode == RejectMode::MultiSrej {
+            new.split_first()
+                .map_or_else(Vec::new, |(&nr, additional)| {
+                    vec![Action::SendSrej(Srej {
+                        poll: PollFinal::Clear,
+                        nr,
+                        additional: additional.to_vec(),
+                    })]
+                })
+        } else {
+            new.into_iter()
+                .map(|nr| {
+                    Action::SendSrej(Srej {
+                        poll: PollFinal::Clear,
+                        nr,
+                        additional: vec![],
+                    })
+                })
+                .collect()
+        }
+    }
+
+    fn receive_selective(&mut self, packet: &Iframe) -> Vec<Action> {
+        let distance = packet.ns.wrapping_sub(self.vr) % self.modulus.as_u8();
+        let window = self.negotiated.as_ref().map_or(1, |p| p.receive_window);
+        if distance < window && !self.selective_buffer.iter().any(|p| p.ns == packet.ns) {
+            self.selective_buffer.push(packet.clone());
+            self.request_missing(packet.poll)
+        } else if packet.poll.is_set() {
+            vec![self.enquiry_response(PollFinal::Set)]
+        } else {
+            // Old duplicates must be acknowledged, not delivered a second time.
+            self.acknowledge_pending = true;
+            vec![]
         }
     }
 
@@ -1047,10 +1288,11 @@ impl Data {
         self.iframe_resend_queue
             .iter()
             .map(|i| {
+                // 4.2.4.4 requires current V(R), including on retransmissions.
+                // A saved N(R) can be older than an ACK already sent by RR.
                 let mut frame = i.clone();
-                // N(S) and payload identify the retransmission, but N(R)
-                // must acknowledge our current receive state, not an old one.
                 frame.nr = self.vr;
+                frame.poll = PollFinal::Clear;
                 Action::SendIframe(frame)
             })
             .collect()
@@ -1095,6 +1337,7 @@ impl Data {
     /// Page 106.
     #[must_use]
     fn transmit_enquiry(&mut self) -> Action {
+        self.srej_retransmitted.clear();
         self.acknowledge_pending = false;
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
@@ -1173,6 +1416,9 @@ impl Data {
     fn clear_iframe_queue(&mut self) {
         self.iframe_queue.clear();
         self.iframe_resend_queue.clear();
+        self.selective_buffer.clear();
+        self.sreject_exception.clear();
+        self.srej_retransmitted.clear();
     }
 
     /// Clear exception conditions as a new connection is established.
@@ -1183,7 +1429,9 @@ impl Data {
         self.acknowledge_pending = false;
 
         // The following added in 2017 spec.
-        self.sreject_exception = 0;
+        self.sreject_exception.clear();
+        self.selective_buffer.clear();
+        self.srej_retransmitted.clear();
 
         // Huh? Clearing the iframe queue inside a subroutine called "clear
         // exception conditions"? That doesn't seem right.
@@ -1204,6 +1452,14 @@ impl Data {
     #[must_use]
     fn establish_data_link(&mut self) -> Action {
         self.clear_exception_conditions();
+        if self.negotiated.is_some() {
+            // SABM(E) resets the peer's link parameters. Reconfirm after UA,
+            // including for locally initiated error recovery, rather than
+            // retain a possibly stale multi-SREJ agreement.
+            self.xid_phase = XidPhase::BeforeLink;
+            self.xid_config.get_or_insert_with(XidConfig::default);
+            self.reject_mode = RejectMode::Rej;
+        }
 
         // 1998 spec says to set rc to 0, 2017 says 1.
         // Yeah I think 1 is right.
@@ -1220,7 +1476,7 @@ impl Data {
     ///
     /// Page 109.
     pub(crate) fn set_version_2_2(&mut self) {
-        // TODO: set half duplex SREJ
+        self.reject_mode = RejectMode::Rej;
         self.modulus = Modulus::Extended;
         // TODO: n1r = 2048
 
@@ -1235,6 +1491,7 @@ impl Data {
     ///
     /// Page 109.
     pub(crate) fn set_version_2(&mut self) {
+        self.reject_mode = RejectMode::Rej;
         self.modulus = Modulus::Standard;
         // TODO: n1r = 2048
 
@@ -1251,7 +1508,7 @@ impl Data {
     // Page 92, "I frame pops off queue".
     #[must_use]
     fn flush(&mut self) -> Vec<Action> {
-        if self.peer_receiver_busy {
+        if self.peer_receiver_busy || self.confirming_xid() {
             return vec![];
         }
         let mut act = Vec::new();
@@ -1375,8 +1632,8 @@ pub trait State: Send {
 
     /// SREJ received from peer.
     #[must_use]
-    fn srej(&self, _data: &mut Data, _packet: &Srej) -> Vec<Action> {
-        warn!("TODO: unexpected SREJ");
+    fn srej(&self, _data: &mut Data, _packet: &Srej, _cr: CommandResponse) -> Vec<Action> {
+        eprintln!("TODO: unexpected SREJ");
         vec![]
     }
 
@@ -1694,9 +1951,13 @@ impl State for AwaitingConnection {
         data.vr = 0;
         data.rc = 0; // Missing from 1998 & 2017 spec, but done by direwolf.
         data.select_t1_value();
-        vec![Action::State(Box::new(Connected::new(
+        let mut actions = vec![Action::State(Box::new(Connected::new(
             ConnectedState::Connected,
-        )))]
+        )))];
+        if data.xid_phase == XidPhase::BeforeLink {
+            actions.extend(data.confirm_xid());
+        }
+        actions
     }
 
     // Page 86.
@@ -1916,6 +2177,9 @@ impl Connected {
 
     // Page 93 and page 99.
     fn sabm_or_sabme(&self, data: &mut Data, poll: PollFinal) -> Vec<Action> {
+        data.management.stop();
+        data.xid_phase = XidPhase::Complete;
+        data.negotiated = None;
         data.clear_exception_conditions();
         if data.vs != data.va {
             data.iframe_queue.clear();
@@ -2124,24 +2388,16 @@ impl State for Connected {
             // Frame is in order.
             data.vr = (data.vr + 1) % data.modulus.as_u8();
             data.reject_exception = false;
-            if data.sreject_exception > 0 {
-                data.sreject_exception -= 1;
-            }
+            data.sreject_exception.remove(&p.ns);
             actions.push(Action::Deliver(p.payload.clone()));
-            // TODO: check for stored out of order frames
-            while
-            /* i frame stored */
-            false {
-                // retrieve stored vr in frame
-                // Deliver
+            while let Some(index) = data.selective_buffer.iter().position(|p| p.ns == data.vr) {
+                let stored = data.selective_buffer.remove(index);
+                data.sreject_exception.remove(&stored.ns);
+                actions.push(Action::Deliver(stored.payload));
                 data.vr = (data.vr + 1) % data.modulus.as_u8();
             }
             if p.poll.is_set() {
-                actions.push(Action::SendRr {
-                    pf: PollFinal::Set,
-                    nr: data.vr,
-                    command: CommandResponse::Response,
-                });
+                actions.push(data.enquiry_response(PollFinal::Set));
                 data.acknowledge_pending = false;
                 return actions;
             }
@@ -2164,7 +2420,7 @@ impl State for Connected {
             }
             return actions;
         }
-        if !data.srej_enabled {
+        if data.reject_mode == RejectMode::Rej {
             // discard iframe (implicit)
             //
             // TODO: should we maybe wait a bit with sending a REJ?
@@ -2180,27 +2436,7 @@ impl State for Connected {
             data.acknowledge_pending = false;
             return actions;
         }
-        // TODO: save contents of iframe
-        if data.sreject_exception > 0 {
-            data.sreject_exception += 1;
-            // TODO: actions.push(Action::SendSrej(final=false, nr=p.ns));
-            data.acknowledge_pending = false;
-            return actions;
-        }
-        // if ns > vr + 1
-        // TODO: Maybe a version of if in_range(p.ns) {
-        if p.ns != (data.vr + 1) % data.modulus.as_u8() {
-            // discard iframe (implicit)
-            actions.push(Action::SendRej {
-                pf: p.poll,
-                nr: data.vr,
-            });
-            data.acknowledge_pending = false;
-            return actions;
-        }
-        data.sreject_exception += 1;
-        // TODO: actions.push(Action::SendSrej(final=false, nr=data.vr));
-        data.acknowledge_pending = false;
+        actions.extend(data.receive_selective(p));
         actions
     }
 
@@ -2342,6 +2578,80 @@ impl State for Connected {
         actions.extend(data.flush());
         actions
     }
+
+    // Selective acknowledgment.
+    //
+    // Unlike the other handlers, this is less strictly implemented from the
+    // diagrams. I don't really believe the diagrams though. E.g. bug(2017) the
+    // prose (4.3.2.4) is poorly worded but clearly removed SREJ command as
+    // allowed, but then the diagram clearly allows it.
+    //
+    // * 2017: C4.4c page 93 (Connected), and C4.5e page 98 (TimerRecovery)
+    fn srej(&self, data: &mut Data, packet: &Srej, cr: CommandResponse) -> Vec<Action> {
+        if cr.is_command()
+            || data.reject_mode == RejectMode::Rej
+            || (data.reject_mode == RejectMode::Srej && !packet.additional.is_empty())
+        {
+            return vec![Action::DlError(DlError::L)];
+        }
+        let mut requested = vec![packet.nr];
+        requested.extend(&packet.additional);
+        let mut seen = HashSet::new();
+        requested.retain(|nr| seen.insert(*nr));
+        if requested
+            .iter()
+            .any(|nr| !data.iframe_resend_queue.iter().any(|p| p.ns == *nr))
+        {
+            let mut actions = data.nr_error_recovery();
+            actions.push(Action::State(Box::new(AwaitingConnection::new())));
+            return actions;
+        }
+        data.peer_receiver_busy = false;
+        // Unlike RR/REJ, F=0 does not acknowledge preceding I frames (4.3.2.4).
+        if packet.poll.is_set() {
+            while data.va != packet.nr {
+                data.srej_retransmitted.remove(&data.va);
+                data.iframe_resend_queue.pop_front();
+                data.va = (data.va + 1) % data.modulus.as_u8();
+            }
+        }
+        let mut actions: Vec<_> = requested
+            .iter()
+            .filter_map(|nr| {
+                // 4.4.4: a final response to our checkpoint must not repeat an
+                // earlier F=0 request already serviced after that same poll.
+                if packet.poll.is_set()
+                    && matches!(self.connected_state, ConnectedState::TimerRecovery)
+                    && data.srej_retransmitted.contains(nr)
+                {
+                    return None;
+                }
+                data.iframe_resend_queue
+                    .iter()
+                    .find(|p| p.ns == *nr)
+                    .map(|p| {
+                        let mut retransmit = p.clone();
+                        retransmit.nr = data.vr;
+                        retransmit.poll = PollFinal::Clear;
+                        Action::SendIframe(retransmit)
+                    })
+            })
+            .collect();
+        if matches!(self.connected_state, ConnectedState::TimerRecovery) {
+            data.srej_retransmitted.extend(&requested);
+        }
+        data.t3.stop();
+        data.t1.start(data.t1v);
+        data.acknowledge_pending = false;
+        if packet.poll.is_set() {
+            data.rc = 0;
+            actions.push(Action::State(Box::new(Self::new(
+                ConnectedState::Connected,
+            ))));
+        }
+        actions.extend(data.flush());
+        actions
+    }
 }
 
 /// Ugly range checker.
@@ -2389,6 +2699,9 @@ fn abort_missing_peer(
     data.t1.stop();
     data.t3.stop();
     data.management.stop();
+    data.xid_phase = XidPhase::Complete;
+    data.reject_mode = RejectMode::Rej;
+    data.negotiated = None;
     data.clear_iframe_queue();
     data.obuf.clear();
     events.push(ReturnEvent::Data(Res::EOF));
@@ -2413,6 +2726,13 @@ pub fn handle(
         Event::ConnectWithXid { addr, ext } => {
             if state.is_state_disconnected() {
                 data.start_xid(addr, *ext)
+            } else {
+                vec![]
+            }
+        }
+        Event::ConnectThenXid { addr, ext } => {
+            if state.is_state_disconnected() {
+                data.start_link_then_xid(addr, *ext)
             } else {
                 vec![]
             }
@@ -2445,9 +2765,11 @@ pub fn handle(
         Event::Rnr(p) => state.rnr(data, p),
         Event::Frmr(_) => state.frmr(data),
         Event::Rej(p, command) => state.rej(data, p, *command),
-        Event::Srej(p) => state.srej(data, p),
+        Event::Srej(p, cr) => state.srej(data, p, *cr),
         Event::Xid(p, command, peer) => {
-            if state.is_state_disconnected() || data.management.running {
+            if state.is_state_connected() {
+                data.receive_connected_xid(p, *command, peer)
+            } else if state.is_state_disconnected() || data.management.running {
                 data.receive_xid(p, *command, peer)
             } else {
                 vec![]
@@ -2525,6 +2847,18 @@ pub fn handle(
                 }));
             }
             // S frames.
+            SendSrej(srej) => {
+                let Some(ref peer) = data.peer else {
+                    return abort_missing_peer(data, ret);
+                };
+                ret.push(ReturnEvent::Packet(Packet {
+                    src: data.me.clone().with_flags(crate::AddrFlags::HIGH),
+                    dst: peer.clone().into(),
+                    digipeater: vec![],
+                    modulus: data.modulus,
+                    packet_type: PacketType::Srej(srej.clone()),
+                }));
+            }
             SendRej { pf, nr } => {
                 let Some(ref peer) = data.peer else {
                     return abort_missing_peer(data, ret);
@@ -2586,11 +2920,22 @@ pub fn handle(
     for act in actions {
         // Non-statechange actions handled above.
         if let Action::State(new_state) = act {
+            if new_state.is_state_disconnected() {
+                data.management.stop();
+                data.xid_phase = XidPhase::Complete;
+                data.clear_iframe_queue();
+                data.reject_mode = RejectMode::Rej;
+                data.negotiated = None;
+            }
             return (Some(new_state), ret);
         }
     }
     (None, ret)
 }
+
+#[cfg(test)]
+#[path = "srej_tests.rs"]
+mod srej_tests;
 
 #[cfg(test)]
 mod tests {

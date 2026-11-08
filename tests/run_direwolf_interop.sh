@@ -61,4 +61,7 @@ if [[ $ready != true ]]; then
 fi
 printf 'Private audio logs: %s\n' "$audio_logs"
 cargo build --features async --example kiss_loss_proxy
+# Each test runs two real-time audio modems. Avoid scheduler-induced audio
+# loss on small CI runners; callers can override this or --test-threads.
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
 cargo test --features async --test direwolf_interop -- --ignored --nocapture "$@"

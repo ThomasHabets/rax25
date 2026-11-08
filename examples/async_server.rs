@@ -36,6 +36,10 @@ struct Opt {
     #[clap(long)]
     xid: bool,
 
+    /// Disable SREJ for accepted connections, even if the peer requests it.
+    #[clap(long)]
+    no_srej: bool,
+
     /// Maximum information bytes this endpoint can receive.
     #[clap(long = "xid-receive-size")]
     max_receive_bytes: Option<usize>,
@@ -79,7 +83,8 @@ async fn main() -> Result<()> {
     info!("Awaiting connection");
     let mut client = {
         let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?
-            .with_experiments(&opt.experiments);
+            .with_experiments(&opt.experiments)
+            .srej(!opt.no_srej);
         if opt.xid || opt.max_receive_bytes.is_some() {
             let mut config = rax25::XidConfig::default();
             if let Some(v) = opt.srt {

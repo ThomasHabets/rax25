@@ -9,7 +9,19 @@ use rax25::sync::Client;
 use rax25::{Callsign, Kiss};
 
 #[derive(Parser, Debug)]
+#[allow(clippy::struct_excessive_bools)] // Independent command-line switches.
 struct Opt {
+    /// Negotiate link parameters using XID.
+    #[clap(long)]
+    xid: bool,
+
+    /// Establish the link before XID (needed by Dire Wolf 1.7).
+    #[clap(long, requires = "xid")]
+    xid_after_connect: bool,
+
+    /// Disable negotiated SREJ (does not itself initiate XID).
+    #[clap(long)]
+    no_srej: bool,
     /// KISS serial port.
     #[clap(short = 'p', default_value = "/dev/null")]
     port: String,
@@ -45,6 +57,10 @@ fn main() -> Result<()> {
         .unwrap();
     let k = Kiss::new(&opt.port)?;
     let mut c = Client::new(Callsign::new(&opt.src)?, Box::new(k));
+    c.set_srej(!opt.no_srej);
+    if opt.xid {
+        c.set_xid_config(rax25::XidConfig::default());
+    }
 
     let d = done.clone();
     ctrlc::set_handler(move || {
@@ -74,7 +90,11 @@ fn main() -> Result<()> {
     });
 
     eprintln!("==== CONNECTING");
-    c.connect(&Callsign::new(&opt.dst)?, opt.ext)?;
+    if opt.xid_after_connect {
+        c.connect_then_xid(&Callsign::new(&opt.dst)?, Some(opt.ext))?;
+    } else {
+        c.connect(&Callsign::new(&opt.dst)?, opt.ext)?;
+    }
     eprintln!("==== Connected to {}", opt.dst);
     //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) && !c.eof() {

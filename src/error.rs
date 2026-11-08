@@ -73,6 +73,8 @@ pub enum Error {
     },
     #[error("invalid XID: {0}")]
     InvalidXid(&'static str),
+    #[error("invalid SREJ: {0}")]
+    InvalidSrej(&'static str),
     #[error("duplicate XID parameter: {0:#04x}")]
     DuplicateXidParameter(u8),
     #[error("invalid XID configuration: {0}")]

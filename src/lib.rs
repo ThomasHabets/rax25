@@ -31,7 +31,7 @@ mod fcs;
 pub mod state;
 pub mod xid;
 pub use error::{Error, Result};
-pub use state::{Experiment, NegotiatedParameters, XidConfig};
+pub use state::{Experiment, NegotiatedParameters, RejectMode, XidConfig};
 
 /// We assume that the KISS modem attaches the checksum on TX and checks &
 /// removes it on RX.
@@ -503,11 +503,46 @@ pub struct Rej {
 
 /// SREJ - Selective reject (4.3.2.4, page 21)
 ///
-/// Request retransmissions of a single iframe.
+/// Request retransmission of N(R), and optionally additional I frames.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Srej {
     poll: PollFinal,
     nr: u8,
+    additional: Vec<u8>,
+}
+
+impl Srej {
+    fn parse_additional(bytes: &[u8], extended: bool) -> Result<Vec<u8>> {
+        let mut numbers = Vec::new();
+        let mut bytes = bytes.iter().copied();
+        while let Some(byte) = bytes.next() {
+            if !extended {
+                if byte & 0x1f != 0 {
+                    return Err(Error::InvalidSrej("reserved bits"));
+                }
+                numbers.push(byte >> 5);
+            } else if byte & 1 == 0 {
+                numbers.push(byte >> 1);
+            } else {
+                let end = bytes.next().ok_or(Error::InvalidSrej("incomplete span"))?;
+                if end & 1 == 0 {
+                    return Err(Error::InvalidSrej("unpaired span marker"));
+                }
+                let mut nr = byte >> 1;
+                loop {
+                    numbers.push(nr);
+                    if nr == end >> 1 {
+                        break;
+                    }
+                    nr = (nr + 1) % 128;
+                }
+            }
+            if numbers.len() >= if extended { 128 } else { 8 } {
+                return Err(Error::InvalidSrej("too many sequence numbers"));
+            }
+        }
+        Ok(numbers)
+    }
 }
 
 /// FRMR - A deprecated error signaling (4.3.3.9, page 28)
@@ -867,7 +902,11 @@ impl Packet {
                     ret.push(CONTROL_REJ);
                     ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
-                    ret.push(CONTROL_REJ | if s.poll.is_set() { CONTROL_POLL } else { 0 });
+                    ret.push(
+                        CONTROL_REJ
+                            | if s.poll.is_set() { CONTROL_POLL } else { 0 }
+                            | ((s.nr << 5) & NR_MASK),
+                    );
                 }
             }
             PacketType::Srej(s) => {
@@ -875,8 +914,15 @@ impl Packet {
                     ret.push(CONTROL_SREJ);
                     ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
-                    ret.push(CONTROL_SREJ | if s.poll.is_set() { CONTROL_POLL } else { 0 });
+                    ret.push(
+                        CONTROL_SREJ
+                            | if s.poll.is_set() { CONTROL_POLL } else { 0 }
+                            | ((s.nr << 5) & NR_MASK),
+                    );
                 }
+                // Interoperability: Dire Wolf 1.7 does not expand range spans.
+                // Emit explicit entries, even when a span would be shorter.
+                ret.extend(s.additional.iter().map(|nr| nr << if ext { 1 } else { 5 }));
             }
             PacketType::Iframe(iframe) => {
                 if ext {
@@ -1008,7 +1054,11 @@ impl Packet {
                     CONTROL_RR => PacketType::Rr(Rr { poll, nr }),
                     CONTROL_RNR => PacketType::Rnr(Rnr { poll, nr }),
                     CONTROL_REJ => PacketType::Rej(Rej { poll, nr }),
-                    CONTROL_SREJ => PacketType::Srej(Srej { poll, nr }),
+                    CONTROL_SREJ => PacketType::Srej(Srej {
+                        poll,
+                        nr,
+                        additional: Srej::parse_additional(bytes, ext)?,
+                    }),
                     _ => {
                         return Err(Error::Impossible(format!(
                             "Impossible logic error: {control1} failed to be supervisor"
@@ -1776,7 +1826,11 @@ mod tests {
                 PacketType::Rr(Rr { poll, nr }),
                 PacketType::Rnr(Rnr { poll, nr }),
                 PacketType::Rej(Rej { nr: 0, poll }),
-                PacketType::Srej(Srej { nr: 0, poll }),
+                PacketType::Srej(Srej {
+                    nr: 0,
+                    poll,
+                    additional: vec![],
+                }),
             ];
             for packet_type in types {
                 let mut packet = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, []);

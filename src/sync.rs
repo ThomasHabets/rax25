@@ -107,6 +107,12 @@ impl Client {
         self.data.set_xid_config(config);
     }
 
+    /// Permit negotiated SREJ for subsequent connections (default true).
+    /// This does not initiate XID; false also restricts explicit XID policy.
+    pub fn set_srej(&mut self, enabled: bool) {
+        self.data.set_srej(enabled);
+    }
+
     /// Parameters negotiated by XID, or `None` for an unnegotiated link.
     #[must_use]
     pub fn negotiated_parameters(&self) -> Option<&state::NegotiatedParameters> {
@@ -122,6 +128,17 @@ impl Client {
     pub fn connect_with_xid(&mut self, addr: &Callsign, ext: Option<bool>) -> Result<()> {
         self.data.validate_xid_config()?;
         self.actions(&state::Event::ConnectWithXid {
+            addr: addr.clone(),
+            ext,
+        });
+        self.wait_connected(addr)
+    }
+
+    /// Establish the link before XID, for peers such as Dire Wolf 1.7 that
+    /// ignore pre-link XID. SREJ still requires successful negotiation.
+    pub fn connect_then_xid(&mut self, addr: &Callsign, ext: Option<bool>) -> Result<()> {
+        self.data.validate_xid_config()?;
+        self.actions(&state::Event::ConnectThenXid {
             addr: addr.clone(),
             ext,
         });
@@ -150,7 +167,7 @@ impl Client {
                 // TODO: check addresses.
                 if packet.dst.callsign() == &self.data.me && packet.src.callsign() == addr {
                     self.actions_packet(&packet);
-                    if self.state.is_state_connected() {
+                    if self.state.is_state_connected() && !self.data.confirming_xid() {
                         debug!("Connection successful");
                         return Ok(());
                     }
@@ -355,7 +372,10 @@ impl Client {
                     CommandResponse::from(packet.command_response()),
                 ));
             }
-            PacketType::Srej(p) => self.actions(&state::Event::Srej(p.clone())),
+            PacketType::Srej(p) => self.actions(&state::Event::Srej(
+                p.clone(),
+                CommandResponse::from(packet.command_response()),
+            )),
             PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => {
                 self.actions(&state::Event::Xid(
@@ -612,9 +632,25 @@ mod tests {
             ..Default::default()
         });
         initiator.connect_with_xid(&Callsign::new("M0THC-2")?, Some(false))?;
-        let mut frames: Vec<_> = sent.borrow().iter().map(Packet::serialize).collect();
+        // Replay only pre-link XID and SABM, not post-UA confirmation.
+        let mut frames: Vec<_> = sent
+            .borrow()
+            .iter()
+            .take(2)
+            .map(Packet::serialize)
+            .collect();
         // Reconnect immediately with SABM alone, before the pending offer expires.
-        frames.push(frames.last().expect("initial SABM").clone());
+        let sabm = frames
+            .iter()
+            .find(|frame| {
+                matches!(
+                    Packet::parse(frame, Some(false)).unwrap().packet_type,
+                    PacketType::Sabm(_)
+                )
+            })
+            .expect("initial SABM")
+            .clone();
+        frames.push(sabm);
         let peer = XidPeer {
             queue: frames.into(),
             ..Default::default()

@@ -44,6 +44,14 @@ struct Opt {
     #[clap(long)]
     xid: bool,
 
+    /// Establish the link before XID (needed by Dire Wolf 1.7).
+    #[clap(long, requires = "xid")]
+    xid_after_connect: bool,
+
+    /// Disable negotiated SREJ; capability alone does not initiate XID.
+    #[clap(long)]
+    no_srej: bool,
+
     /// Constrain XID negotiation to standard mod-8 mode.
     #[clap(long, requires = "xid", conflicts_with = "ext")]
     no_extended: bool,
@@ -81,21 +89,26 @@ struct Opt {
     dst: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let opt = Opt::parse();
+fn init_logging(level: LogLevel) {
     stderrlog::new()
         .module(module_path!())
         .module("rax25")
-        .verbosity(opt.v as usize)
+        .verbosity(level as usize)
         .show_module_names(true)
         .init()
         .unwrap();
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let opt = Opt::parse();
+    init_logging(opt.v);
     let port = connect_kiss_endpoint(&opt.port).await?;
     let mut stdin = tokio::io::stdin();
     let builder = {
         let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?
-            .with_experiments(&opt.experiments);
+            .with_experiments(&opt.experiments)
+            .srej(!opt.no_srej);
         if opt.ext {
             builder = builder.extended(Some(opt.ext));
         }
@@ -111,7 +124,11 @@ async fn main() -> Result<()> {
             if let Some(v) = opt.max_receive_bytes {
                 config.receive_length = v;
             }
-            builder = builder.xid(config);
+            builder = if opt.xid_after_connect {
+                builder.xid_after_connect(config)
+            } else {
+                builder.xid(config)
+            };
         }
         if let Some(capture) = opt.capture {
             builder = builder.capture(capture);

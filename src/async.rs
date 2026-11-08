@@ -161,6 +161,7 @@ impl tokio::io::AsyncWrite for PortType {
 /// A builder for setting up a connection.
 pub struct ConnectionBuilder {
     me: Callsign,
+    srej: bool,
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
     port: PortType,
@@ -169,6 +170,7 @@ pub struct ConnectionBuilder {
     mtu: Option<usize>,
     experiments: HashSet<Experiment>,
     xid: Option<XidConfig>,
+    xid_after_connect: bool,
 }
 
 impl ConnectionBuilder {
@@ -176,6 +178,7 @@ impl ConnectionBuilder {
     pub fn new(me: Callsign, port: PortType) -> Result<Self> {
         Ok(Self {
             me,
+            srej: true,
             extended: None,
             capture: None,
             t3v: None,
@@ -184,6 +187,7 @@ impl ConnectionBuilder {
             port,
             experiments: HashSet::new(),
             xid: None,
+            xid_after_connect: false,
         })
     }
 
@@ -207,6 +211,27 @@ impl ConnectionBuilder {
     #[must_use]
     pub fn xid(mut self, config: XidConfig) -> ConnectionBuilder {
         self.xid = Some(config);
+        self.xid_after_connect = false;
+        self
+    }
+
+    /// Establish the link before negotiating XID, preferring extended mode.
+    ///
+    /// Interoperability option: Dire Wolf 1.7 ignores XID until a link exists.
+    /// Unlike `xid`, this skips the pre-link exchange. SREJ remains disabled
+    /// until negotiation succeeds; failure re-establishes legacy standard mode.
+    #[must_use]
+    pub fn xid_after_connect(mut self, config: XidConfig) -> Self {
+        self.xid = Some(config);
+        self.xid_after_connect = true;
+        self
+    }
+
+    /// Permit negotiated SREJ (default true). This does not initiate XID.
+    /// False also restricts an explicitly supplied `XidConfig`.
+    #[must_use]
+    pub fn srej(mut self, enabled: bool) -> Self {
+        self.srej = enabled;
         self
     }
 
@@ -264,6 +289,7 @@ impl ConnectionBuilder {
     fn create_data(&self) -> state::Data {
         let mut data = state::Data::new(self.me.clone());
         data.experiments.clone_from(&self.experiments);
+        data.set_srej(self.srej);
         if let Some(config) = &self.xid {
             data.set_xid_config(config.clone());
         }
@@ -301,7 +327,10 @@ impl ConnectionBuilder {
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
-        Ok(Client::spawn(cli.connect(peer, xid, extended).await?))
+        Ok(Client::spawn(
+            cli.connect(peer, xid, extended, self.xid_after_connect)
+                .await?,
+        ))
     }
 
     /// Accept a single connection.
@@ -493,9 +522,9 @@ pub struct Client {
     /// None while running (or after an error is consumed); clean EOF is retained
     /// so subsequent reads and disconnect requests continue to succeed.
     task_result: std::sync::Arc<std::sync::Mutex<Option<Result<()>>>>,
-    /// Snapshot of parameters negotiated during establishment, available without
-    /// querying the task. None if the link was established without XID agreement.
-    negotiated: Option<NegotiatedParameters>,
+    /// First XID agreement, published by setup or the background task. This
+    /// also supports peers that negotiate only after link establishment.
+    negotiated: std::sync::Arc<std::sync::OnceLock<NegotiatedParameters>>,
 }
 
 impl Client {
@@ -504,9 +533,13 @@ impl Client {
         let (tx, received) = tokio::sync::mpsc::channel(128);
         let task_result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let status = task_result.clone();
-        let negotiated = driver.data.negotiated_parameters().cloned();
+        let negotiated = std::sync::Arc::new(std::sync::OnceLock::new());
+        if let Some(parameters) = driver.data.negotiated_parameters() {
+            let _ = negotiated.set(parameters.clone());
+        }
+        let agreement = negotiated.clone();
         tokio::spawn(async move {
-            let result = driver.run(rx, &tx).await;
+            let result = driver.run(rx, &tx, &agreement).await;
             *status
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
@@ -600,7 +633,7 @@ impl Client {
     /// Parameters agreed during establishment, or `None` without negotiation.
     #[must_use]
     pub fn negotiated_parameters(&self) -> Option<&NegotiatedParameters> {
-        self.negotiated.as_ref()
+        self.negotiated.get()
     }
 }
 
@@ -666,9 +699,13 @@ impl Driver {
         mut self,
         mut commands: tokio::sync::mpsc::Receiver<ClientCommand>,
         received: &tokio::sync::mpsc::Sender<Vec<u8>>,
+        negotiated: &std::sync::OnceLock<NegotiatedParameters>,
     ) -> Result<()> {
         loop {
             self.process_frames().await?;
+            if let Some(parameters) = self.data.negotiated_parameters() {
+                let _ = negotiated.set(parameters.clone());
+            }
             if !self.incoming.is_empty() {
                 let bytes = self.incoming.drain(..).collect();
                 if received.try_send(bytes).is_err() {
@@ -735,8 +772,16 @@ impl Driver {
     /// Initiate a connection.
     /// Not cancellation-safe: owns the client and can be interrupted during
     /// `actions` or `wait_event`, dropping the modem without graceful release.
-    async fn connect(mut self, peer: Callsign, xid: bool, ext: Option<bool>) -> Result<Self> {
-        let event = if xid {
+    async fn connect(
+        mut self,
+        peer: Callsign,
+        xid: bool,
+        ext: Option<bool>,
+        after_connect: bool,
+    ) -> Result<Self> {
+        let event = if after_connect {
+            Event::ConnectThenXid { addr: peer, ext }
+        } else if xid {
             Event::ConnectWithXid { addr: peer, ext }
         } else {
             Event::Connect {
@@ -748,7 +793,7 @@ impl Driver {
         loop {
             self.wait_event().await?;
             trace!("rax25: State after waiting: {}", self.state.name());
-            if self.state.is_state_connected() {
+            if self.state.is_state_connected() && !self.data.confirming_xid() {
                 return Ok(self);
             }
             if self.state.is_state_disconnected() {
@@ -780,13 +825,14 @@ impl Driver {
             self.kissport.len()
         );
         let state_name = self.state.name();
+        let confirming = self.data.confirming_xid();
         self.process_frames().await?;
 
         // Return delivered data and state transitions without waiting for I/O.
-        if !self.incoming.is_empty() {
+        if !self.incoming.is_empty() && !self.data.confirming_xid() {
             return Ok(());
         }
-        if self.state.name() != state_name {
+        if self.state.name() != state_name || confirming != self.data.confirming_xid() {
             return Ok(());
         }
 
@@ -1079,7 +1125,7 @@ mod tests {
             commands,
             received,
             task_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            negotiated: None,
+            negotiated: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(1), client.write(&[2]))
@@ -1303,59 +1349,87 @@ mod tests {
             (Some(false), "LOCAL-0", "REMOTE-0", false),
             (Some(true), "LOCAL-0", "REMOTE-0", false),
         ] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-            let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
-            let (server_port, _) = listener.accept().await?;
-            let mut client =
-                ConnectionBuilder::new(Callsign::new(local)?, PortType::Tcp(client_port))?
-                    .xid(XidConfig {
-                        management_timeout: Duration::from_millis(20),
-                        ..Default::default()
-                    })
-                    .extended(mode)
-                    .srt_default(Duration::from_millis(20));
-            let mut server =
-                ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?;
-            if hint {
-                client.enable_experiments([Experiment::LinuxExtendedHint]);
-                server.enable_experiments([Experiment::LinuxExtendedHint]);
-            }
-            for builder in [&client, &server] {
+            for (local_srej, peer_srej, after_connect) in [
+                (true, true, false),
+                (false, true, false),
+                (true, false, false),
+                (true, true, true),
+                (false, true, true),
+                (true, false, true),
+            ] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+                let (server_port, _) = listener.accept().await?;
+                let config = XidConfig {
+                    management_timeout: Duration::from_millis(20),
+                    ..Default::default()
+                };
+                let client =
+                    ConnectionBuilder::new(Callsign::new(local)?, PortType::Tcp(client_port))?
+                        .srej(local_srej)
+                        .extended(mode)
+                        .with_experiments(if hint {
+                            vec![Experiment::LinuxExtendedHint]
+                        } else {
+                            vec![]
+                        })
+                        .srt_default(Duration::from_millis(20));
+                let client = if after_connect {
+                    client.xid_after_connect(config)
+                } else {
+                    client.xid(config)
+                };
+                let server =
+                    ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?
+                        .srej(peer_srej)
+                        .with_experiments(if hint {
+                            vec![Experiment::LinuxExtendedHint]
+                        } else {
+                            vec![]
+                        });
+                let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
+                    tokio::join!(
+                        async {
+                            let mut client = client.connect(Callsign::new(peer).unwrap()).await?;
+                            client.write(b"hello").await?.await?;
+                            assert_eq!(client.read().await?, b"echo");
+                            Ok::<_, Error>(client)
+                        },
+                        async {
+                            let mut server = server.accept().await?;
+                            assert_eq!(server.read().await?, b"hello");
+                            server.write(b"echo").await?.await?;
+                            Ok::<_, Error>(server)
+                        }
+                    )
+                })
+                .await?;
+                let client = client?;
+                let server = server?;
+                assert!(client.negotiated_parameters().is_some());
+                assert!(server.negotiated_parameters().is_some());
                 assert_eq!(
-                    builder
-                        .create_data()
-                        .experiments
-                        .contains(&Experiment::LinuxExtendedHint),
-                    hint
+                    client.negotiated_parameters().unwrap().extended,
+                    mode.unwrap_or(true)
+                );
+                assert_eq!(
+                    server.negotiated_parameters().unwrap().extended,
+                    client.negotiated_parameters().unwrap().extended
+                );
+                let expected = if local_srej && peer_srej {
+                    crate::RejectMode::MultiSrej
+                } else {
+                    crate::RejectMode::Rej
+                };
+                assert_eq!(
+                    client.negotiated_parameters().unwrap().reject_mode,
+                    expected
+                );
+                assert_eq!(
+                    server.negotiated_parameters().unwrap().reject_mode,
+                    expected
                 );
             }
-            let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
-                tokio::join!(
-                    client.connect(Callsign::new(peer).unwrap()),
-                    server.accept()
-                )
-            })
-            .await?;
-            let mut client = client?;
-            let mut server = server?;
-            assert!(client.negotiated_parameters().is_some());
-            assert!(server.negotiated_parameters().is_some());
-            assert_eq!(
-                client.negotiated_parameters().unwrap().extended,
-                mode.unwrap_or(true)
-            );
-            assert_eq!(
-                server.negotiated_parameters(),
-                client.negotiated_parameters()
-            );
-            tokio::time::timeout(Duration::from_secs(2), async {
-                client.write(b"hello").await?.await?;
-                assert_eq!(server.read().await?, b"hello");
-                server.write(b"echo").await?.await?;
-                assert_eq!(client.read().await?, b"echo");
-                Ok::<(), Error>(())
-            })
-            .await??;
         }
         Ok(())
     }

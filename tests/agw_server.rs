@@ -86,11 +86,14 @@ async fn exchange(
                 .await?;
         }
         let established = client.recv().await?;
-        ensure!(if outgoing {
-            matches!(established, Packet::ConnectionEstablished { .. })
-        } else {
-            matches!(established, Packet::IncomingConnect { .. })
-        });
+        ensure!(
+            if outgoing {
+                matches!(established, Packet::ConnectionEstablished { .. })
+            } else {
+                matches!(established, Packet::IncomingConnect { .. })
+            },
+            "unexpected establishment (extended={extended}, outgoing={outgoing}, xid={xid}): {established:?}"
+        );
         let Packet::Data { src, dst, data, .. } = client.recv().await? else {
             anyhow::bail!("expected connected data");
         };
@@ -141,7 +144,7 @@ fn check_capture(capture: &std::path::Path, extended: bool, xid: bool) -> Result
         .filter(|(_, packet)| matches!(packet.packet_type(), rax25::PacketType::Xid(_)))
         .collect();
     ensure!(
-        xid_frames.len() == if xid { 2 } else { 0 },
+        xid_frames.len() == if xid { 4 } else { 0 },
         "unexpected XID exchange"
     );
     if xid {

@@ -566,10 +566,28 @@ fn assert_xid_captures(case: TestCase, client: &Path, server: &Path) -> TestResu
             if extended { 0x6f } else { 0x2f },
             "{name}: wrong setup mode"
         );
-        assert!(
-            frames[setup..].iter().all(|f| control(f) != 0xaf),
-            "{name}: XID after setup"
-        );
+        let confirmation = &frames[setup..];
+        if fallback {
+            assert!(
+                confirmation.iter().all(|f| control(f) != 0xaf),
+                "{name}: legacy fallback must not renegotiate"
+            );
+        } else {
+            // Additional post-UA confirmation keeps parameters consistent with
+            // peers such as Dire Wolf, which resets them on SABM(E).
+            assert!(
+                confirmation
+                    .iter()
+                    .any(|f| control(f) == 0xaf && is_command(f)),
+                "{name}: missing connected XID command"
+            );
+            assert!(
+                confirmation
+                    .iter()
+                    .any(|f| control(f) == 0xaf && !is_command(f)),
+                "{name}: missing connected XID response"
+            );
+        }
         for frame in frames {
             rax25::Packet::parse(frame, Some(extended))?;
         }

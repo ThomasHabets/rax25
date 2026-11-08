@@ -149,7 +149,7 @@ not extensions beyond all the supplied specifications.
 
 | Situation | Rax25 behavior and rationale |
 | --- | --- |
-| Answering an enquiry, 1998 page 106 | Sends RR/RNR as a response, not an RR command. This follows the 2017 correction and allows a polling Linux peer to receive an answer instead of another question. The implementation retains the simpler receiver-busy choice between RNR and RR rather than the full 2017 enquiry-response logic. |
+| Answering an enquiry, 1998 page 106 | Sends a response, not an RR command, following the 2017 correction. Replies with RNR when busy, SREJ for unresolved selective gaps, and RR otherwise. This answers a polling Linux peer rather than asking another question. |
 | Checking acknowledgements while the peer is busy, 1998 page 107 | Stops T3 and runs T1, following 2017. Running the idle timer alongside the outstanding-response timer would create competing enquiries. |
 | Establishing a link, 1998 page 106 | Starts the retry counter at 1, following 2017, so the initial attempt counts toward the retry limit. |
 | Receiving UA while awaiting connection, 1998 page 88 / 2017 page 89 | Stops T1, starts T3, and resets the retry counter to 0. Starting T3 follows 2017; resetting the counter is an additional choice noted in the code as matching Direwolf, so a successful connection does not retain retries from establishment. |
@@ -177,18 +177,46 @@ zero. See the comments in [src/xid.rs](src/xid.rs) for these discrepancies.
 Active XID negotiation is opt-in; responding to pre-connection commands does
 not require enabling active negotiation. Negotiation occurs before SABM(E),
 following sections 4.3.3.7 and 6.3.2. Appendix C5 instead describes sending
-XID after UA. Rax25 deliberately follows the main text so the chosen modulus
-and limits are known before connection establishment and application data.
+XID after UA. The default follows the main text. The optional link-first API
+(`xid_after_connect` / `connect_then_xid`) follows Appendix C5 and is needed
+for Dire Wolf 1.7, which ignores disconnected XID commands. Connected XID
+does not change the established modulus. XID-first connections also repeat
+negotiation after UA: this additional confirmation is an interoperability
+measure, not a specification requirement, because Dire Wolf resets parameters
+on SABM(E). Application data waits for confirmation; failure re-establishes a
+standard REJ link. Accepted connections must be driven by their application
+while the initiator completes this exchange.
 
 An unspecified mode prefers modulo-128; an explicitly selected mode constrains
 negotiation. Rejection or management retry exhaustion falls back to modulo-8
-and v2.0 defaults, including when extended mode was requested. Only half
-duplex and REJ are advertised: receiving XID does not enable unimplemented
-SREJ or segmentation. Receive size and window are directional notifications;
+and v2.0 defaults, including when extended mode was requested. Half duplex,
+REJ, single SREJ, and multi-frame SREJ are advertised, but not segmentation.
+SREJ capability defaults on and can be disabled per connection. No XID
+agreement means REJ, even for an unnegotiated extended link. Receive size and
+window are directional notifications;
 timeout and retry count are negotiated using the greater offered values.
 
 Management retransmissions have a separate timer and counter from data-link
-supervision. Established connections are not renegotiated in this implementation.
+supervision. Connected XID updates require no selectively buffered frames and
+enough space in the new transmit window for outstanding frames. They cannot
+alter the modulus or reset sequence numbers.
+
+### Selective Recovery
+
+Selective recovery stores in-window out-of-order I frames, requests missing
+sequence numbers, and delivers each payload once, in order. F=0 SREJ does not
+cumulatively acknowledge frames; F=1 acknowledges through N(R)-1. Poll replies
+repeat unresolved requests, including when an earlier request was lost.
+REJ and SREJ exceptions are not mixed. SREJ windows are capped at half the
+sequence space to distinguish future frames from old duplicates; REJ retains
+the full sequence-space-minus-one limit.
+
+Multi-frame SREJ lists are encoded using the numbering layout for the current
+modulus. Extended range spans are accepted, but generated requests always use
+explicit lists: Dire Wolf 1.7 does not expand spans. This encoding choice is
+for interoperability, not a requirement of the specification. Likewise, a
+multi-SREJ-only XID selection is accepted for Dire Wolf compatibility, despite
+the 2017 prose prohibiting both the REJ and single-SREJ bits being clear.
 
 A SABM does not indicate whether an earlier XID response reached the initiator.
 If every response was lost, a standard-mode initiator may have fallen back to
@@ -229,12 +257,9 @@ to the wire protocol.
   Section 6.7.1.2 describes T2 as optional, so its absence alone is not a
   protocol extension, but acknowledgement timing is not a complete rendering
   of all the diagrams.
-- **Recovery:** SREJ is disabled, out-of-order frame storage
-  is incomplete, and some state/event handlers are placeholders. Basic REJ
-  recovery is supported. The full enquiry-response
-  procedure and simultaneous extended connection establishment are also
-  incomplete. These gaps should not be treated as deliberate interoperability
-  policies.
+- **Recovery:** REJ and negotiated single-/multi-frame SREJ are implemented.
+  Some other state/event handlers and simultaneous extended connection
+  establishment remain incomplete. These gaps are not interoperability policy.
 - **KISS framing and FCS:** The library exchanges AX.25 packets through a
   KISS TNC over serial or TCP. It does not generate or verify an AX.25 FCS
   in those packet buffers (`USE_FCS` is false); over-the-air framing and FCS

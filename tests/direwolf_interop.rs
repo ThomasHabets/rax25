@@ -21,6 +21,9 @@ use tokio::time::{sleep, timeout};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 
+#[path = "support/srej_loss.rs"]
+mod srej_loss;
+
 fn manifest_dir() -> Result<PathBuf> {
     std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
@@ -193,7 +196,7 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
     }
     let setup = if extended { 0x6f } else { 0x2f };
     ensure!(
-        controls.first() == Some(&setup),
+        controls.iter().find(|control| **control != 0xaf) == Some(&setup),
         "expected SABM(E) for requested mode"
     );
     ensure!(
@@ -383,6 +386,136 @@ async fn connect_interop(
     Ok(client)
 }
 
+async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
+    let bell202 = Harness::bell202()?;
+    let mut harness = Harness::new(extended, 0)?;
+    let result = Box::pin(async {
+        let agw_port = free_port()?;
+        let mut kiss_port = free_port()?;
+        while kiss_port == agw_port { kiss_port = free_port()?; }
+        let config = harness.dir.join("direwolf.conf");
+        fs::write(&config, format!(
+            "ADEVICE from-bell202 to-bell202\nARATE 48000\nACHANNELS 1\nCHANNEL 0\nMYCALL M0TST-2\nMODEM 1200\nAGWPORT {agw_port}\nKISSPORT 0\nTXDELAY 20\nTXTAIL 10\nPERSIST 255\nSLOTTIME 1\nFIX_BITS 0\n"
+        ))?;
+        if srej.is_some() {
+            use std::io::Write as _;
+            // Small packets and a four-frame window make two missing frames
+            // observable without racing the real 1200-baud modem's timers.
+            writeln!(File::options().append(true).open(&config)?,
+                "PACLEN 32\nMAXFRAME 4\nEMAXFRAME 4\nFRACK 5")?;
+        }
+        // Dire Wolf 1.7 truncates long -c arguments; keep the filename short
+        // even when Tickbox's persistent target directory has a long path.
+        let binary = std::env::var_os("DIREWOLF_BIN").unwrap_or_else(|| "/usr/bin/direwolf".into());
+        let binary = PathBuf::from(binary);
+        let binary = if binary.is_relative() && binary.components().count() > 1 {
+            fs::canonicalize(binary)?
+        } else {
+            binary
+        };
+        harness.spawn("direwolf", Command::new(binary).current_dir(&harness.dir).arg("-c").arg("direwolf.conf").args(["-t", "0"]))?;
+        let mut agw = AGWServer::new(harness.connect(agw_port).await?);
+        agw.send(&Packet::RegisterCallsign(Port(1), Call::from_bytes(b"M0TST-2")?)).await?;
+        let registered = timeout(DEADLINE, agw.recv()).await.context("AGW registration timed out")??;
+        ensure!(matches!(registered, Packet::RegisterCallsignReply { success: true, .. }), "registration rejected: {registered:?}");
+        harness.spawn("bell202", Command::new(bell202).args([
+            "--audio", "--audio-input", "from-direwolf", "--audio-output", "to-direwolf",
+            "--audio-rate", "48000", "--tcp-listen", &format!("127.0.0.1:{kiss_port}"),
+        ]))?;
+        let modem = harness.connect(kiss_port).await?;
+        let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let stream = TcpStream::connect(proxy_listener.local_addr()?).await?;
+        let (proxy_stream, _) = proxy_listener.accept().await?;
+        let payloads = vec![
+            (0..=255).collect::<Vec<u8>>(),
+            b"rax25 to Dire Wolf over Bell 202 audio\r\n".to_vec(),
+            vec![0xc0, 0xdb, 0, 0xff, 0xc0, 0xdb, 0x7e],
+        ];
+        let mut agw_log = File::create(harness.dir.join("agw.log"))?;
+        let client = async {
+            let mut builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
+                .extended(Some(extended))
+                .srt_default(Duration::from_secs(5))
+                .mtu(if srej.is_some() { 32 } else { 256 })
+                .capture(harness.dir.join("rax25.pcap"));
+            if let Some(enabled) = srej {
+                // Dire Wolf 1.7 ignores XID before SABM(E), unlike rax25's
+                // original XID-first setup. Exercise the real connected MDL.
+                builder = builder.srej(enabled).xid_after_connect(rax25::XidConfig {
+                    acknowledgement_timer: Duration::from_secs(5),
+                    management_timeout: Duration::from_secs(5),
+                    receive_window_extended: 4,
+                    ..Default::default()
+                });
+            }
+            let mut client = timeout(DEADLINE, builder.connect(Callsign::new("M0TST-2")?))
+                .await.context("AX.25 connect timed out")??;
+            if let Some(enabled) = srej {
+                let negotiated = client.negotiated_parameters().context("no XID agreement")?;
+                ensure!(negotiated.reject_mode == if enabled { rax25::RejectMode::MultiSrej }
+                    else { rax25::RejectMode::Rej }, "unexpected recovery: {negotiated:?}");
+            }
+            for expected in &payloads {
+                timeout(DEADLINE, async {
+                    client.write(expected).await?.await?;
+                    let mut received = Vec::new();
+                    while received.len() < expected.len() {
+                        let bytes = client.read().await?;
+                        ensure!(!bytes.is_empty(), "unexpected AX.25 EOF");
+                        received.extend(bytes);
+                    }
+                    ensure!(received == *expected, "corrupt or extra echoed bytes");
+                    Ok::<_, anyhow::Error>(())
+                }).await.context("AX.25 echo timed out")??;
+            }
+            timeout(DEADLINE, client.disconnect()).await.context("AX.25 disconnect timed out")??;
+            Ok::<_, anyhow::Error>(())
+        };
+        let server = async {
+            timeout(Duration::from_secs(180), echo(&mut agw, &mut agw_log, &payloads))
+                .await.context("AGW echo/disconnect timed out")?
+        };
+        let exchange = async { tokio::try_join!(client, server)?; Ok::<_, anyhow::Error>(()) };
+        tokio::select! {
+            biased;
+            result = exchange => result?,
+            result = srej_loss::proxy(proxy_stream, modem, &harness.dir, extended, srej.is_some()) => {
+                result?;
+                bail!("KISS proxy ended before exchange completed");
+            }
+        }
+        verify_capture(&harness.dir.join("rax25.pcap"), extended)?;
+        if let Some(enabled) = srej { srej_loss::verify(&harness.dir, extended, enabled)?; }
+        harness.check_children()?;
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    result.with_context(|| format!("interop artifacts: {}", harness.dir.display()))
+}
+
+#[tokio::test]
+#[ignore = "requires audio dependencies; use tests/run_direwolf_interop.sh"]
+async fn direwolf_standard_srej_audio() -> Result<()> {
+    srej_interop(false, Some(true)).await
+}
+
+#[tokio::test]
+#[ignore = "requires audio dependencies; use tests/run_direwolf_interop.sh"]
+async fn direwolf_extended_srej_audio() -> Result<()> {
+    srej_interop(true, Some(true)).await
+}
+
+#[tokio::test]
+#[ignore = "requires audio dependencies; use tests/run_direwolf_interop.sh"]
+async fn direwolf_standard_rej_audio() -> Result<()> {
+    srej_interop(false, Some(false)).await
+}
+
+#[tokio::test]
+#[ignore = "requires audio dependencies; use tests/run_direwolf_interop.sh"]
+async fn direwolf_extended_rej_audio() -> Result<()> {
+    srej_interop(true, Some(false)).await
+}
+
 async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
     let bell202 = Harness::bell202()?;
     let mut harness = Harness::new(extended, drop_percent)?;
@@ -491,9 +624,8 @@ async fn direwolf_standard_audio() -> Result<()> {
 #[tokio::test]
 #[ignore = "slow bulk-transfer stress test; run tests/run_direwolf_interop.sh direwolf_lossy_file_transfer manually"]
 async fn direwolf_lossy_file_transfer() -> Result<()> {
-    // Dire Wolf defaults to SREJ with plain SABME, which this branch does not
-    // implement. Exercise REJ recovery in modulo-8 rather than silently ignoring
-    // unsupported selective-reject requests during an extended bulk transfer.
+    // Exercise bulk REJ recovery here; the dedicated SREJ tests separately
+    // negotiate and verify selective recovery in both numbering modes.
     interop(false, 10, true).await
 }
 

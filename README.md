@@ -10,7 +10,7 @@ https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 * Seem to be working well.
 * Both 8 and 128 modulus supported.
 * Basic REJ retransmission is supported.
-* SREJ untested / probably broken.
+* Negotiated single- and multi-frame SREJ, with per-connection opt-out.
 * Segmentation: not implemented.
 * The sync API is not great. Async API may also need some work
 
@@ -94,8 +94,10 @@ and AX.25 v2.0 defaults instead.
 cargo run --features async --example async_client -- --xid -p tcp://localhost:10001 -s M0QQQ-2 M0QQQ-1
 ```
 
-Both APIs answer pre-connection XID commands. They advertise half duplex and
-REJ, not SREJ or segmentation. Receive sizes and windows constrain the other
+Both APIs answer pre-connection and connected XID commands. They advertise
+half duplex, REJ, and single-/multi-frame SREJ, but not segmentation.
+SREJ activates only after successful negotiation; unnegotiated links use REJ.
+Receive sizes and windows constrain the other
 station's transmissions; acknowledgement timeout and retry count use the
 greater offered values. See [SPEC_DIFFERENCES.md](SPEC_DIFFERENCES.md) for
 the specification interpretation and remaining limitations.
@@ -107,6 +109,25 @@ limits and management retries. Both clients expose `negotiated_parameters()`.
 The examples provide `--no-extended` to constrain XID to modulo-8 and
 `--xid-receive-size` to set the advertised receive payload limit. `--srt`
 also sets the XID management retry interval.
+
+Disable SREJ per connection with `ConnectionBuilder::srej(false)`,
+`Client::set_srej(false)`, or `XidConfig { srej: false, ..Default::default() }`.
+The builder/client switch also restricts explicit XID configuration and is
+inherited by accepted connections. These are setup policies, not live mode
+switches. All connection examples, including AGW, accept `--no-srej`;
+AGW applies this policy to links created by its shared packet engine.
+Capability alone does not initiate XID. Both sync examples now accept `--xid`.
+The `reject_mode` field of `negotiated_parameters()` reports REJ, single SREJ,
+or multi-SREJ when a negotiation exists.
+
+Dire Wolf 1.7 ignores XID before link establishment. Use
+`ConnectionBuilder::xid_after_connect(config)` or
+`Client::connect_then_xid(&peer, mode)`, or add `--xid --xid-after-connect`
+to the client example. This establishes SABM(E) first, negotiates without
+changing its modulus, and falls back to a standard REJ link on failure.
+XID-first setup also reconfirms after UA because Dire Wolf resets negotiated
+parameters on SABM(E). Established async links continue negotiation in their
+background task without requiring a pending application read.
 
 ## KISS Loss Proxy
 
@@ -170,8 +191,8 @@ This slow test is excluded from pre-commit. Run it manually with
 `tests/run_direwolf_interop.sh direwolf_lossy_file_transfer`.
 GitHub Actions runs it separately after the pre-commit suite.
 The bulk case uses longer audio retry timers to accommodate modem queue airtime.
-Extended bulk transfers are not covered: Dire Wolf defaults to SREJ after a
-plain SABME, which this branch does not implement.
+The bulk test exercises modulo-8 REJ; dedicated SREJ interop tests separately
+exercise negotiated selective recovery in both sequence-numbering modes.
 
 Latency investigation (local PipeWire/ALSA setup): a no-loss standard-mode
 run measured echo round trips of 1.16 s, 1.66 s, and 4.52 s for 7-, 40-, and
@@ -245,8 +266,8 @@ See the [spec/](spec/) folder.
 * 2006 spec update: despite its name and title page, is actually from 2006.
 * 2017 spec update has [some findings by
   isomer](https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c)
-* There's ongoing work to fix the spec, with (as of 2026-11-10) 92 open spec
-  bugs in [this repo](https://github.com/packethacking/ax25spec).
+* There is [work in progress](https://github.com/packethacking/ax25spec) to fix
+  bugs and clarify.
 
 Also see:
 * [Examining Ambiguities in the Automatic Packet Reporting
