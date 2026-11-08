@@ -201,9 +201,17 @@ impl Addr {
         )
     }
 
-    /// Serialize the callsign and SSID, plus explicit bits.
+    /// Serialize the callsign, SSID, and stored address flags.
     #[must_use]
-    pub fn serialize(&self, flags: AddrFlags) -> Vec<u8> {
+    pub fn serialize(&self) -> Vec<u8> {
+        self.serialize_with_flags(self.flags)
+    }
+
+    /// Serialize with explicit flags instead of the stored address flags.
+    ///
+    /// This does not change the flags stored in this address.
+    #[must_use]
+    pub fn serialize_with_flags(&self, flags: AddrFlags) -> Vec<u8> {
         // TODO: confirm format.
         let mut ret = vec![b' ' << 1; 7];
         for (i, ch) in self.t.chars().take(6).enumerate() {
@@ -518,7 +526,7 @@ impl Packet {
                 },
         );
         ret.extend(
-            self.dst.serialize(
+            self.dst.serialize_with_flags(
                 AddrFlags::empty()
                     .with(AddrFlags::HIGH, self.command_response)
                     .with(AddrFlags::EXTENDED, self.rr_dist1),
@@ -526,7 +534,7 @@ impl Packet {
         );
         assert_ne!(self.command_response, self.command_response_la);
         ret.extend(
-            self.src.serialize(
+            self.src.serialize_with_flags(
                 AddrFlags::empty()
                     .with(AddrFlags::LAST, self.digipeater.is_empty())
                     .with(AddrFlags::HIGH, self.command_response_la)
@@ -538,7 +546,9 @@ impl Packet {
         {
             let l = self.digipeater.len();
             for (n, digi) in self.digipeater.iter().enumerate() {
-                ret.extend(digi.serialize(AddrFlags::empty().with(AddrFlags::LAST, n == l - 1)));
+                ret.extend(
+                    digi.serialize_with_flags(AddrFlags::empty().with(AddrFlags::LAST, n == l - 1)),
+                );
             }
         }
 
@@ -1163,27 +1173,27 @@ mod tests {
     #[test]
     fn addr_serial() -> Result<()> {
         // TODO: test invalid calls.
-        let a = Addr::new("M0THC")?.serialize(AddrFlags::LAST);
+        let a = Addr::new("M0THC")?.serialize_with_flags(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
-        let a = Addr::new("M0THC-0")?.serialize(AddrFlags::LAST);
+        let a = Addr::new("M0THC-0")?.serialize_with_flags(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 97]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC");
 
-        let a = Addr::new("M0THC-1")?.serialize(AddrFlags::LAST);
+        let a = Addr::new("M0THC-1")?.serialize_with_flags(AddrFlags::LAST);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 99]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-1");
 
-        let a = Addr::new("M0THC-2")?.serialize(AddrFlags::HIGH);
+        let a = Addr::new("M0THC-2")?.serialize_with_flags(AddrFlags::HIGH);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 100 + 0x80]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-2");
 
-        let a = Addr::new("M0THC-3")?.serialize(AddrFlags::EXTENDED);
+        let a = Addr::new("M0THC-3")?.serialize_with_flags(AddrFlags::EXTENDED);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 38]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-3");
 
-        let a = Addr::new("M0THC-4")?.serialize(AddrFlags::DAMA);
+        let a = Addr::new("M0THC-4")?.serialize_with_flags(AddrFlags::DAMA);
         assert_eq!(a, vec![154, 96, 168, 144, 134, 64, 72]);
         assert_eq!(Addr::parse(&a)?.call(), "M0THC-4");
         Ok(())
@@ -1192,7 +1202,7 @@ mod tests {
     #[test]
     fn addr_parse_rejects_callsign_low_bits() -> Result<()> {
         for call in ["M0THC", "ABCDEF"] {
-            let valid = Addr::new(call)?.serialize(AddrFlags::LAST);
+            let valid = Addr::new(call)?.serialize_with_flags(AddrFlags::LAST);
             assert_eq!(Addr::parse(&valid)?.call(), call);
             for index in 0..6 {
                 let mut invalid = valid.clone();
@@ -1254,13 +1264,18 @@ mod tests {
                 };
                 let addr = Addr::new_bits(&call, flags)?;
                 let expected = vec![154, 96, 168, 144, 134, 64, wire | (ssid << 1)];
-                assert_eq!(addr.serialize(flags), expected);
+                assert_eq!(addr.serialize(), expected);
                 let parsed = Addr::parse(&expected)?;
                 assert_eq!(parsed, addr);
                 assert_eq!(parsed.flags, flags);
-                assert_eq!(parsed.serialize(parsed.flags), expected);
+                assert_eq!(parsed.serialize(), expected);
                 // Explicit serialization flags override the stored flags.
-                assert_eq!(addr.serialize(AddrFlags::empty())[6], 0x60 | (ssid << 1));
+                assert_eq!(
+                    addr.serialize_with_flags(AddrFlags::empty())[6],
+                    0x60 | (ssid << 1)
+                );
+                assert_eq!(addr.flags, flags);
+                assert_eq!(addr.serialize(), expected);
             }
         }
         Ok(())

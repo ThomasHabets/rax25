@@ -98,13 +98,11 @@ mod tests {
             crate::Packet::parse(&[0; 14], Some(false)),
             Err(Error::PacketTooShort { length: 14 })
         ));
-        let mut frame = crate::Addr::new("M0AAA")
-            .unwrap()
-            .serialize(crate::AddrFlags::default());
+        let mut frame = crate::Addr::new("M0AAA").unwrap().serialize();
         frame.extend(
             crate::Addr::new("M0BBB")
                 .unwrap()
-                .serialize(crate::AddrFlags::LAST),
+                .serialize_with_flags(crate::AddrFlags::LAST),
         );
         frame.push(0);
         assert!(matches!(
