@@ -15,15 +15,15 @@
 //!
 //! ```no_run
 //! use rax25::r#async::{connect_kiss_endpoint, ConnectionBuilder};
-//! use rax25::Addr;
+//! use rax25::Callsign;
 //!
 //! #[tokio::main]
 //! async fn main() -> rax25::Result<()> {
 //!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
-//!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-1")?, port)?
+//!     let mut client = ConnectionBuilder::new(Callsign::new("M0THC-1")?, port)?
 //!         .extended(Some(true))
 //!         .capture("foo.cap".into())
-//!         .connect(Addr::new("M0THC-2")?)
+//!         .connect(Callsign::new("M0THC-2")?)
 //!         .await?;
 //!     client.write(b"Client says hello!").await?;
 //!     println!("Got: {:?}", client.read().await?);
@@ -35,12 +35,12 @@
 //!
 //! ```no_run
 //! use rax25::r#async::{connect_kiss_endpoint, ConnectionBuilder};
-//! use rax25::Addr;
+//! use rax25::Callsign;
 //!
 //! #[tokio::main]
 //! async fn main() -> rax25::Result<()> {
 //!     let port = connect_kiss_endpoint("serial:///dev/rfcomm0").await?;
-//!     let mut client = ConnectionBuilder::new(Addr::new("M0THC-2")?, port)?
+//!     let mut client = ConnectionBuilder::new(Callsign::new("M0THC-2")?, port)?
 //!         .accept()
 //!         .await?;
 //!     client.write(b"Server says hello!\n").await?;
@@ -53,7 +53,7 @@ use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
 use crate::state::{self, Event, NegotiatedParameters, ReturnEvent, XidConfig};
-use crate::{Addr, Error, Packet, PacketType, Result};
+use crate::{Callsign, Error, Packet, PacketType, Result};
 
 use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
@@ -161,7 +161,7 @@ impl tokio::io::AsyncWrite for PortType {
 ///
 /// A builder for setting up a connection.
 pub struct ConnectionBuilder {
-    me: Addr,
+    me: Callsign,
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
     port: PortType,
@@ -174,7 +174,7 @@ pub struct ConnectionBuilder {
 
 impl ConnectionBuilder {
     /// Create a new builder.
-    pub fn new(me: Addr, port: PortType) -> Result<Self> {
+    pub fn new(me: Callsign, port: PortType) -> Result<Self> {
         Ok(Self {
             me,
             extended: None,
@@ -270,7 +270,7 @@ impl ConnectionBuilder {
     }
 
     /// Initiate a connection.
-    pub async fn connect(self, peer: Addr) -> Result<Client> {
+    pub async fn connect(self, peer: Callsign) -> Result<Client> {
         if let Some(config) = &self.xid {
             config.validate()?;
         }
@@ -474,7 +474,7 @@ impl Client {
     }
 
     /// Initiate a connection.
-    async fn connect(mut self, peer: Addr, xid: bool, ext: Option<bool>) -> Result<Self> {
+    async fn connect(mut self, peer: Callsign, xid: bool, ext: Option<bool>) -> Result<Self> {
         let event = if xid {
             Event::ConnectWithXid { addr: peer, ext }
         } else {
@@ -513,12 +513,12 @@ impl Client {
         let state_name = self.state.name();
         // First process all incoming frames. This is non-blocking.
         while let Some(p) = self.kissport.pop_frame() {
-            if p.dst.call() != self.data.me.call() {
+            if p.dst.callsign() != &self.data.me {
                 trace!("rax25: Skipping packet not for {:?}", self.data.me.call());
                 continue;
             }
             if let Some(peer) = &self.data.peer
-                && peer.call() != p.src.call()
+                && peer != p.src.callsign()
             {
                 trace!(
                     "rax25: Skipping packet not from {peer:?} but {:?}",
@@ -595,10 +595,13 @@ impl Client {
     /// This function sends packets to the state machine.
     async fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
-            PacketType::Sabm(p) => self.actions(state::Event::Sabm(p.clone(), packet.src.clone())),
-            PacketType::Sabme(p) => {
-                self.actions(state::Event::Sabme(p.clone(), packet.src.clone()))
+            PacketType::Sabm(p) => {
+                self.actions(state::Event::Sabm(p.clone(), packet.src.callsign().clone()))
             }
+            PacketType::Sabme(p) => self.actions(state::Event::Sabme(
+                p.clone(),
+                packet.src.callsign().clone(),
+            )),
             PacketType::Ua(ua) => self.actions(state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
@@ -610,7 +613,7 @@ impl Client {
             PacketType::Xid(p) => self.actions(state::Event::Xid(
                 p.clone(),
                 packet.command_response(),
-                packet.src.clone(),
+                packet.src.callsign().clone(),
             )),
             PacketType::Ui(p) => {
                 self.actions(state::Event::Ui(p.clone(), packet.command_response()))
@@ -844,16 +847,15 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
             let (mut peer, _) = listener.accept().await?;
-            let builder = ConnectionBuilder::new(Addr::new("M0THC-1")?, PortType::Tcp(port))?.xid(
-                XidConfig {
+            let builder = ConnectionBuilder::new(Callsign::new("M0THC-1")?, PortType::Tcp(port))?
+                .xid(XidConfig {
                     receive_length: 0,
                     ..Default::default()
-                },
-            );
+                });
             let result = if accepting {
                 builder.accept().await
             } else {
-                builder.connect(Addr::new("M0THC-2")?).await
+                builder.connect(Callsign::new("M0THC-2")?).await
             };
             assert!(matches!(result, Err(Error::InvalidXidConfig(_))));
             let mut buf = [0; 1];
@@ -864,21 +866,26 @@ mod tests {
 
     #[tokio::test]
     async fn xid_connects_and_negotiates_both_modes() -> Result<()> {
-        for mode in [None, Some(false), Some(true)] {
+        for (mode, local, peer) in [
+            (None, "M0THC-1", "M0THC-2"),
+            (Some(false), "M0THC-1", "M0THC-2"),
+            (Some(true), "M0THC-1", "M0THC-2"),
+            (None, "LOCAL-0", "REMOTE-0"),
+        ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
             let (server_port, _) = listener.accept().await?;
-            let client = ConnectionBuilder::new(Addr::new("M0THC-1")?, PortType::Tcp(client_port))?
+            let client = ConnectionBuilder::new(Callsign::new(local)?, PortType::Tcp(client_port))?
                 .xid(XidConfig {
                     management_timeout: Duration::from_millis(20),
                     ..Default::default()
                 })
                 .extended(mode)
                 .srt_default(Duration::from_millis(20));
-            let server = ConnectionBuilder::new(Addr::new("M0THC-2")?, PortType::Tcp(server_port))?;
+            let server = ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?;
             let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
                 tokio::join!(
-                    client.connect(Addr::new("M0THC-2").unwrap()),
+                    client.connect(Callsign::new(peer).unwrap()),
                     server.accept()
                 )
             })

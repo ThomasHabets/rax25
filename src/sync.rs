@@ -13,12 +13,12 @@
 //! use std::sync::Arc;
 //!
 //! use rax25::sync::Client;
-//! use rax25::{Addr, Kiss};
+//! use rax25::{Callsign, Kiss};
 //!
 //! let done = Arc::new(AtomicBool::new(false));
 //! let kiss = Kiss::new("/dev/rfcomm0")?;
-//! let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(kiss));
-//! client.connect(&Addr::new("M0THC-2")?, false)?;
+//! let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(kiss));
+//! client.connect(&Callsign::new("M0THC-2")?, false)?;
 //! client.write("Hello\r".as_bytes())?;
 //! println!("{:?}", client.read_until(done.clone()));
 //! # rax25::Result::<()>::Ok(())
@@ -30,7 +30,7 @@
 //! use std::sync::{Arc, Mutex};
 //!
 //! use rax25::sync::Client;
-//! use rax25::{Addr, BusHub, BusKiss, Kiss};
+//! use rax25::{Callsign, BusHub, BusKiss, Kiss};
 //!
 //! let bus = Arc::new(Mutex::new(bus::Bus::<rax25::BusMessage>::new(10)));
 //! let mut bk = BusKiss::new("/dev/ttyS0", bus.clone())?;
@@ -38,7 +38,7 @@
 //!     bk.run();
 //! });
 //! let hub = BusHub::new(bus);
-//! let mut listener = Client::new(Addr::new("M0THC-1")?, Box::new(hub));
+//! let mut listener = Client::new(Callsign::new("M0THC-1")?, Box::new(hub));
 //! let mut con = listener
 //!     .accept(std::time::Instant::now() + std::time::Duration::from_secs(600))?
 //!     .expect("connection timeout");
@@ -51,7 +51,7 @@ use crate::{Error, Result};
 use log::{debug, error};
 
 use crate::state;
-use crate::{Addr, Hub, Packet, PacketType};
+use crate::{Callsign, Hub, Packet, PacketType};
 
 /// A connected mode client.
 ///
@@ -81,7 +81,7 @@ impl Drop for Client {
 impl Client {
     /// Create a new client with the given local address, using the given
     /// KISS interface for incoming and outgoing frames.
-    pub fn new(me: Addr, kiss: Box<dyn Hub>) -> Self {
+    pub fn new(me: Callsign, kiss: Box<dyn Hub>) -> Self {
         Self {
             kiss,
             eof: false,
@@ -104,7 +104,7 @@ impl Client {
 
     /// Negotiate parameters before connecting. `None` prefers extended mode;
     /// `Some` constrains the offered mode. Legacy peers fall back to standard.
-    pub fn connect_with_xid(&mut self, addr: &Addr, ext: Option<bool>) -> Result<()> {
+    pub fn connect_with_xid(&mut self, addr: &Callsign, ext: Option<bool>) -> Result<()> {
         self.data.validate_xid_config()?;
         self.actions(&state::Event::ConnectWithXid {
             addr: addr.clone(),
@@ -114,7 +114,7 @@ impl Client {
     }
 
     /// Connect to a remote node, optionally using extended (mod-128) mode.
-    pub fn connect(&mut self, addr: &Addr, ext: bool) -> Result<()> {
+    pub fn connect(&mut self, addr: &Callsign, ext: bool) -> Result<()> {
         self.data.validate_xid_config()?;
         self.actions(&state::Event::Connect {
             addr: addr.clone(),
@@ -123,7 +123,7 @@ impl Client {
         self.wait_connected(addr)
     }
 
-    fn wait_connected(&mut self, addr: &Addr) -> Result<()> {
+    fn wait_connected(&mut self, addr: &Callsign) -> Result<()> {
         loop {
             let dead = self.data.next_timer_remaining();
             let packet = self
@@ -133,7 +133,7 @@ impl Client {
                 let packet = Packet::parse(&packet, Some(self.data.ext()))?;
                 // dbg!(&packet);
                 // TODO: check addresses.
-                if packet.dst.call() == self.data.me.call() && packet.src.call() == addr.call() {
+                if packet.dst.callsign() == &self.data.me && packet.src.callsign() == addr {
                     self.actions_packet(&packet);
                     if self.state.is_state_connected() {
                         debug!("Connection successful");
@@ -177,7 +177,7 @@ impl Client {
             if let Some(packet) = packet
                 && let Ok(packet) = Packet::parse(&packet, None)
             {
-                if packet.dst.call() != self.data.me.call() {
+                if packet.dst.callsign() != &self.data.me {
                     continue;
                 }
                 match &packet.packet_type {
@@ -186,8 +186,8 @@ impl Client {
                     }
                     PacketType::Sabm(_) | PacketType::Sabme(_) => {
                         let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone());
-                        new_client.data = self.data.accepted_data(&packet.src);
-                        new_client.data.peer = Some(packet.src.clone());
+                        new_client.data = self.data.accepted_data(packet.src.callsign());
+                        new_client.data.peer = Some(packet.src.callsign().clone());
                         new_client.data.able_to_establish = true;
                         if matches!(&packet.packet_type, PacketType::Sabme(_)) {
                             new_client.data.set_version_2_2();
@@ -237,8 +237,8 @@ impl Client {
             return Ok(None);
         };
         let packet = Packet::parse(&bytes, Some(self.data.ext()))?;
-        if packet.src.call() != self.data.peer.as_ref().unwrap().call()
-            || packet.dst.call() != self.data.me.call()
+        if packet.src.callsign() != self.data.peer.as_ref().unwrap()
+            || packet.dst.callsign() != &self.data.me
         {
             Ok(None)
         } else {
@@ -299,9 +299,15 @@ impl Client {
     /// with the received packet.
     fn actions_packet(&mut self, packet: &Packet) {
         match &packet.packet_type {
-            PacketType::Sabm(p) => self.actions(&state::Event::Sabm(p.clone(), packet.src.clone())),
+            PacketType::Sabm(p) => self.actions(&state::Event::Sabm(
+                p.clone(),
+                packet.src.callsign().clone(),
+            )),
             PacketType::Sabme(p) => {
-                self.actions(&state::Event::Sabme(p.clone(), packet.src.clone()));
+                self.actions(&state::Event::Sabme(
+                    p.clone(),
+                    packet.src.callsign().clone(),
+                ));
             }
             PacketType::Ua(ua) => self.actions(&state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
@@ -315,7 +321,7 @@ impl Client {
                 self.actions(&state::Event::Xid(
                     p.clone(),
                     packet.command_response(),
-                    packet.src.clone(),
+                    packet.src.callsign().clone(),
                 ));
             }
             PacketType::Ui(p) => {
@@ -375,7 +381,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Addr, FakeKiss};
+    use crate::{Callsign, FakeKiss};
     use crate::{Iframe, PacketType, Sabm};
 
     #[derive(Clone, Default)]
@@ -432,12 +438,12 @@ mod tests {
                 ..Default::default()
             };
             let sent = peer.sent.clone();
-            let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+            let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(peer));
             client.set_xid_config(state::XidConfig {
                 management_timeout: std::time::Duration::from_millis(20),
                 ..Default::default()
             });
-            client.connect_with_xid(&Addr::new("M0THC-2")?, mode)?;
+            client.connect_with_xid(&Callsign::new("M0THC-2")?, mode)?;
             assert!(client.negotiated_parameters().is_some());
             assert_eq!(client.data.ext(), mode.unwrap_or(true));
             let sent = sent.borrow();
@@ -454,13 +460,13 @@ mod tests {
     fn xid_fake_peer_timeout_falls_back_to_standard() -> Result<()> {
         let peer = XidPeer::default();
         let sent = peer.sent.clone();
-        let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+        let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(peer));
         client.set_xid_config(state::XidConfig {
             management_timeout: std::time::Duration::from_millis(1),
             management_retries: 1,
             ..Default::default()
         });
-        client.connect_with_xid(&Addr::new("M0THC-2")?, Some(true))?;
+        client.connect_with_xid(&Callsign::new("M0THC-2")?, Some(true))?;
         assert!(!client.data.ext());
         assert!(client.negotiated_parameters().is_none());
         let sent = sent.borrow();
@@ -476,12 +482,12 @@ mod tests {
     fn invalid_xid_config_emits_no_frames() -> Result<()> {
         let peer = XidPeer::default();
         let sent = peer.sent.clone();
-        let mut client = Client::new(Addr::new("M0THC-1")?, Box::new(peer));
+        let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(peer));
         client.set_xid_config(state::XidConfig {
             receive_length: 0,
             ..Default::default()
         });
-        let remote = Addr::new("M0THC-2")?;
+        let remote = Callsign::new("M0THC-2")?;
         assert!(client.connect_with_xid(&remote, None).is_err());
         assert!(client.connect(&remote, false).is_err());
         assert!(client.accept(std::time::Instant::now()).is_err());
@@ -497,19 +503,19 @@ mod tests {
             ..Default::default()
         };
         let sent = probe.sent.clone();
-        let mut initiator = Client::new(Addr::new("M0THC-1")?, Box::new(probe));
+        let mut initiator = Client::new(Callsign::new("M0THC-1")?, Box::new(probe));
         initiator.set_xid_config(state::XidConfig {
             management_timeout: std::time::Duration::from_millis(20),
             ..Default::default()
         });
-        initiator.connect_with_xid(&Addr::new("M0THC-2")?, Some(false))?;
+        initiator.connect_with_xid(&Callsign::new("M0THC-2")?, Some(false))?;
         let frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
         let peer = XidPeer {
             queue: frames.into(),
             ..Default::default()
         };
         let responses = peer.sent.clone();
-        let mut listener = Client::new(Addr::new("M0THC-2")?, Box::new(peer));
+        let mut listener = Client::new(Callsign::new("M0THC-2")?, Box::new(peer));
         let accepted = listener
             .accept(std::time::Instant::now() + std::time::Duration::from_secs(1))?
             .expect("incoming connection");
@@ -528,13 +534,13 @@ mod tests {
             ..Default::default()
         };
         let sent = probe.sent.clone();
-        let mut initiator = Client::new(Addr::new("M0THC-1")?, Box::new(probe));
+        let mut initiator = Client::new(Callsign::new("M0THC-1")?, Box::new(probe));
         initiator.set_xid_config(state::XidConfig {
             receive_length: 8,
             management_timeout: std::time::Duration::from_millis(20),
             ..Default::default()
         });
-        initiator.connect_with_xid(&Addr::new("M0THC-2")?, Some(false))?;
+        initiator.connect_with_xid(&Callsign::new("M0THC-2")?, Some(false))?;
         let mut frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
         // Reconnect immediately with SABM alone, before the pending offer expires.
         frames.push(frames.last().expect("initial SABM").clone());
@@ -543,7 +549,7 @@ mod tests {
             ..Default::default()
         };
         let responses = peer.sent.clone();
-        let mut listener = Client::new(Addr::new("M0THC-2")?, Box::new(peer));
+        let mut listener = Client::new(Callsign::new("M0THC-2")?, Box::new(peer));
         let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let mut negotiated = listener.accept(until)?.expect("negotiated connection");
         assert!(negotiated.negotiated_parameters().is_some());
@@ -579,17 +585,17 @@ mod tests {
     #[test]
     fn client() -> Result<()> {
         let k = FakeKiss::default();
-        let mut c = Client::new(Addr::new("M0THC-1")?, Box::new(k));
+        let mut c = Client::new(Callsign::new("M0THC-1")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
-        c.connect(&Addr::new("M0THC-2")?, false)?;
+        c.connect(&Callsign::new("M0THC-2")?, false)?;
         c.write(&[1, 2, 3])?;
         let reply = c.try_read()?.unwrap();
         assert_eq!(
             reply,
             Packet {
                 // TODO: is this even the bit set we expect
-                src: Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?.set_highbit(false),
-                dst: Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?.set_highbit(true),
+                src: crate::Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?.set_highbit(false),
+                dst: crate::Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?.set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Iframe(Iframe {
@@ -607,7 +613,7 @@ mod tests {
     #[test]
     fn listen_timeout() -> Result<()> {
         let k = FakeKiss::default();
-        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        let mut c = Client::new(Callsign::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
         assert!(
             c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
@@ -621,15 +627,15 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: Addr::new("M0THC-1")?.set_highbit(false),
-                dst: Addr::new("M0THC-3")?.set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-3")?).set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),
         );
-        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        let mut c = Client::new(Callsign::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
         assert!(
             c.accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?
@@ -643,15 +649,15 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: Addr::new("M0THC-1")?.set_highbit(false),
-                dst: Addr::new("M0THC-2")?.set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),
         );
-        let mut c = Client::new(Addr::new("M0THC-2")?, Box::new(k));
+        let mut c = Client::new(Callsign::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
         let _new_conn = c
             .accept(std::time::Instant::now() + std::time::Duration::from_millis(1))?

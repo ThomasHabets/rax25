@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agw::r#async::AGWServer;
 use agw::{Call, Packet, Pid, Port};
 use anyhow::{Context, Result, bail, ensure};
-use rax25::Addr;
+use rax25::Callsign;
 use rax25::r#async::{ConnectionBuilder, PortType};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -319,12 +319,12 @@ async fn interop(extended: bool) -> Result<()> {
         ];
         let mut agw_log = File::create(harness.dir.join("agw.log"))?;
         let client = async {
-            let mut client = timeout(DEADLINE, ConnectionBuilder::new(Addr::new("M0TST-1")?, PortType::Tcp(stream))?
+            let mut client = timeout(DEADLINE, ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
                 .extended(Some(extended))
                 .srt_default(Duration::from_secs(5))
                 .mtu(256)
                 .capture(harness.dir.join("rax25.pcap"))
-                .connect(Addr::new("M0TST-2")?))
+                .connect(Callsign::new("M0TST-2")?))
                 .await.context("AX.25 connect timed out")??;
             for expected in &payloads {
                 timeout(DEADLINE, async {

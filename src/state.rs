@@ -18,8 +18,8 @@ use crate::Result;
 use log::{debug, error, warn};
 
 use crate::{
-    Addr, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test, Ua,
-    Ui, Xid,
+    Callsign, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test,
+    Ua, Ui, Xid,
 };
 
 #[path = "negotiation.rs"]
@@ -32,8 +32,8 @@ pub use negotiation::{NegotiatedParameters, XidConfig};
 /// like "connect", or "send this data".
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Connect { addr: Addr, ext: bool },
-    ConnectWithXid { addr: Addr, ext: Option<bool> },
+    Connect { addr: Callsign, ext: bool },
+    ConnectWithXid { addr: Callsign, ext: Option<bool> },
     Disconnect,
     Data(Vec<u8>),
     T1,
@@ -42,8 +42,8 @@ pub enum Event {
 
     // U frames.
     // Commands.
-    Sabm(Sabm, /* peer */ Addr),
-    Sabme(Sabme, /* peer */ Addr),
+    Sabm(Sabm, /* peer */ Callsign),
+    Sabme(Sabme, /* peer */ Callsign),
     Disc(Disc),
     // Responses.
     Dm(Dm),
@@ -52,7 +52,7 @@ pub enum Event {
     // Commands or responses.
     Ui(Ui, /* command */ bool),
     Test(Test, /* command */ bool),
-    Xid(Xid, /* command */ bool, /* peer */ Addr),
+    Xid(Xid, /* command */ bool, /* peer */ Callsign),
 
     // S frames.
     Rr(Rr, /* command */ bool),
@@ -176,15 +176,38 @@ impl std::fmt::Display for DlError {
 pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
-    SendUa { pf: bool },
-    SendRr { pf: bool, nr: u8, command: bool },
-    SendRej { pf: bool, nr: u8 },
-    SendRnr { pf: bool, nr: u8, command: bool },
-    SendDisc { pf: bool },
+    SendUa {
+        pf: bool,
+    },
+    SendRr {
+        pf: bool,
+        nr: u8,
+        command: bool,
+    },
+    SendRej {
+        pf: bool,
+        nr: u8,
+    },
+    SendRnr {
+        pf: bool,
+        nr: u8,
+        command: bool,
+    },
+    SendDisc {
+        pf: bool,
+    },
     SendIframe(Iframe),
-    SendDm { pf: bool },
-    SendSabm { pf: bool },
-    SendXid { peer: Addr, command: bool, xid: Xid },
+    SendDm {
+        pf: bool,
+    },
+    SendSabm {
+        pf: bool,
+    },
+    SendXid {
+        peer: Callsign,
+        command: bool,
+        xid: Xid,
+    },
     Deliver(Vec<u8>),
     EOF,
 }
@@ -334,13 +357,13 @@ pub struct Data {
     management_retries: u8,
     xid_extended: bool,
     xid_required_mode: Option<bool>,
-    pending_xid: VecDeque<(Addr, NegotiatedParameters, std::time::Instant)>,
+    pending_xid: VecDeque<(Callsign, NegotiatedParameters, std::time::Instant)>,
     /// My local address.
-    pub(crate) me: Addr,
+    pub(crate) me: Callsign,
 
     /// Address of the other side of the connection. Not set during
     /// Disconnected, waiting for remote end to connect.
-    pub(crate) peer: Option<Addr>,
+    pub(crate) peer: Option<Callsign>,
 
     // TODO: double check all types.
     /// True if this client initiated the connection via SABM(E).
@@ -526,7 +549,7 @@ pub enum Experiment {
 impl Data {
     /// Create new Data with the specified address being the local one.
     #[must_use]
-    pub fn new(me: Addr) -> Self {
+    pub fn new(me: Callsign) -> Self {
         Self {
             me,
             xid_config: None,
@@ -611,14 +634,14 @@ impl Data {
 
     /// Make a fresh accepted connection retaining listener negotiation state.
     #[must_use]
-    pub fn accepted_data(&mut self, peer: &Addr) -> Self {
+    pub fn accepted_data(&mut self, peer: &Callsign) -> Self {
         let mut data = Self::new(self.me.clone());
         data.xid_config.clone_from(&self.xid_config);
         self.expire_pending_xid();
         if let Some(index) = self
             .pending_xid
             .iter()
-            .position(|(addr, _, _)| addr.call() == peer.call())
+            .position(|(addr, _, _)| addr == peer)
         {
             data.pending_xid
                 .push_back(self.pending_xid.remove(index).unwrap());
@@ -668,7 +691,7 @@ impl Data {
         }
     }
 
-    fn start_xid(&mut self, peer: &Addr, extended: Option<bool>) -> Vec<Action> {
+    fn start_xid(&mut self, peer: &Callsign, extended: Option<bool>) -> Vec<Action> {
         let config = self.xid_config.get_or_insert_with(XidConfig::default);
         if config.validate().is_err() {
             return vec![Action::DlError(DlError::K)];
@@ -715,7 +738,7 @@ impl Data {
         self.pending_xid.retain(|(_, _, expiry)| *expiry > now);
     }
 
-    fn receive_xid(&mut self, packet: &Xid, command: bool, peer: &Addr) -> Vec<Action> {
+    fn receive_xid(&mut self, packet: &Xid, command: bool, peer: &Callsign) -> Vec<Action> {
         self.expire_pending_xid();
         let config = self.xid_config.clone().unwrap_or_default();
         if config.validate().is_err() {
@@ -744,8 +767,7 @@ impl Data {
                         .expect("validated timer"),
                 );
                 response.retries = Some(parameters.retries);
-                self.pending_xid
-                    .retain(|(addr, _, _)| addr.call() != peer.call());
+                self.pending_xid.retain(|(addr, _, _)| addr != peer);
                 if self.pending_xid.len() == 16 {
                     self.pending_xid.pop_front();
                 }
@@ -769,10 +791,7 @@ impl Data {
         }
         if !self.management.running
             || !packet.poll
-            || self
-                .peer
-                .as_ref()
-                .is_none_or(|addr| addr.call() != peer.call())
+            || self.peer.as_ref().is_none_or(|addr| addr != peer)
         {
             return vec![];
         }
@@ -1213,7 +1232,7 @@ pub trait State {
 
     /// User initiates a new connection.
     #[must_use]
-    fn connect(&self, _data: &mut Data, _addr: &Addr, _ext: bool) -> Vec<Action> {
+    fn connect(&self, _data: &mut Data, _addr: &Callsign, _ext: bool) -> Vec<Action> {
         eprintln!("TODO: unexpected DLConnect");
         vec![]
     }
@@ -1301,14 +1320,14 @@ pub trait State {
 
     /// SABM received from peer.
     #[must_use]
-    fn sabm(&self, _data: &mut Data, _src: &Addr, _packet: &Sabm) -> Vec<Action> {
+    fn sabm(&self, _data: &mut Data, _src: &Callsign, _packet: &Sabm) -> Vec<Action> {
         eprintln!("TODO: unexpected SABM");
         vec![]
     }
 
     /// SABME received from peer.
     #[must_use]
-    fn sabme(&self, _data: &mut Data, _src: &Addr, _packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, _data: &mut Data, _src: &Callsign, _packet: &Sabme) -> Vec<Action> {
         eprintln!("TODO: unexpected SABME");
         vec![]
     }
@@ -1364,7 +1383,7 @@ impl Disconnected {
     // Page 85.
     #[must_use]
     #[allow(clippy::unused_self)]
-    fn sabm_and_sabme(&self, data: &mut Data, src: Addr, pf: bool) -> Vec<Action> {
+    fn sabm_and_sabme(&self, data: &mut Data, src: Callsign, pf: bool) -> Vec<Action> {
         debug!("rax25: DL-Connect indication from {:?}", src.call());
         if !data.able_to_establish {
             return vec![Action::SendDm { pf }];
@@ -1382,7 +1401,7 @@ impl Disconnected {
         if let Some(index) = data
             .pending_xid
             .iter()
-            .position(|(peer, p, _)| peer.call() == src.call() && p.extended == data.ext())
+            .position(|(peer, p, _)| peer == &src && p.extended == data.ext())
         {
             let (_, parameters, _) = data.pending_xid.remove(index).unwrap();
             data.apply_negotiated(parameters);
@@ -1414,7 +1433,7 @@ impl State for Disconnected {
     }
 
     // Page 85.
-    fn connect(&self, data: &mut Data, addr: &Addr, ext: bool) -> Vec<Action> {
+    fn connect(&self, data: &mut Data, addr: &Callsign, ext: bool) -> Vec<Action> {
         if data.xid_config.is_some() {
             return data.start_xid(addr, Some(ext));
         }
@@ -1465,13 +1484,13 @@ impl State for Disconnected {
     }
 
     // Page 85.
-    fn sabm(&self, data: &mut Data, src: &Addr, sabm: &Sabm) -> Vec<Action> {
+    fn sabm(&self, data: &mut Data, src: &Callsign, sabm: &Sabm) -> Vec<Action> {
         data.set_version_2();
         self.sabm_and_sabme(data, src.clone(), sabm.poll)
     }
 
     // Page 85.
-    fn sabme(&self, data: &mut Data, src: &Addr, packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, data: &mut Data, src: &Callsign, packet: &Sabme) -> Vec<Action> {
         data.set_version_2_2();
         self.sabm_and_sabme(data, src.clone(), packet.poll)
     }
@@ -1602,12 +1621,12 @@ impl State for AwaitingConnection {
     }
 
     // Page 86.
-    fn sabm(&self, _data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+    fn sabm(&self, _data: &mut Data, _src: &Callsign, packet: &Sabm) -> Vec<Action> {
         vec![Action::SendUa { pf: packet.poll }]
     }
 
     // Page 88.
-    fn sabme(&self, _data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, _data: &mut Data, _src: &Callsign, packet: &Sabme) -> Vec<Action> {
         // TODO: This is supposed to transition to "awaiting connect 2.2".
         vec![Action::SendDm { pf: packet.poll }]
     }
@@ -1894,7 +1913,7 @@ impl State for Connected {
     //
     // src is ignored, because it's presumed to already have been checked, in
     // this state.
-    fn sabm(&self, data: &mut Data, _src: &Addr, packet: &Sabm) -> Vec<Action> {
+    fn sabm(&self, data: &mut Data, _src: &Callsign, packet: &Sabm) -> Vec<Action> {
         data.set_version_2();
         self.sabm_or_sabme(data, packet.poll)
     }
@@ -1903,7 +1922,7 @@ impl State for Connected {
     //
     // src is ignored, because it's presumed to already have been checked, in
     // this state.
-    fn sabme(&self, data: &mut Data, _src: &Addr, packet: &Sabme) -> Vec<Action> {
+    fn sabme(&self, data: &mut Data, _src: &Callsign, packet: &Sabme) -> Vec<Action> {
         data.set_version_2_2();
         self.sabm_or_sabme(data, packet.poll)
     }
@@ -2338,32 +2357,32 @@ pub fn handle(
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             // U frames.
             SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(false),
-                dst: data.peer.clone().unwrap().clone().set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).set_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(false),
-                dst: data.peer.clone().unwrap().clone().set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).set_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(true),
-                dst: data.peer.clone().unwrap().clone().set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).set_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
             SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(true),
-                dst: data.peer.clone().unwrap().clone().set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).set_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
@@ -2371,31 +2390,31 @@ pub fn handle(
             })),
             // S frames.
             SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(true),
-                dst: data.peer.clone().unwrap().clone().set_highbit(false),
+                src: crate::Addr::from(data.me.clone()).set_highbit(true),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(false),
                 // TODO: REJ can be commands, in status probes.
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(!*command),
-                dst: data.peer.clone().unwrap().clone().set_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).set_highbit(!*command),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(!*command),
-                dst: data.peer.clone().unwrap().clone().set_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).set_highbit(!*command),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
             // I frame.
             SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone().set_highbit(false),
-                dst: data.peer.clone().unwrap().clone().set_highbit(true),
+                src: crate::Addr::from(data.me.clone()).set_highbit(false),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).set_highbit(true),
                 // 4.3.1 seems to say that all I frames are commands.
                 //
                 // TODO: confirm this.
@@ -2423,8 +2442,8 @@ mod tests {
 
     #[test]
     fn xid_requires_final_and_selected_mode() -> Result<()> {
-        let mut data = Data::new(Addr::new("LOCAL")?);
-        let peer = Addr::new("REMOTE")?;
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        let peer = Callsign::new("REMOTE")?;
         let config = XidConfig::default();
         data.set_xid_config(config.clone());
         data.start_xid(&peer, Some(true));
@@ -2456,14 +2475,14 @@ mod tests {
 
     #[test]
     fn xid_proposals_are_bounded_expire_and_do_not_lock_peer() -> Result<()> {
-        let mut data = Data::new(Addr::new("LOCAL")?);
+        let mut data = Data::new(Callsign::new("LOCAL")?);
         data.able_to_establish = true;
         let packet = Xid {
             poll: true,
             parameters: Some(XidConfig::default().offer(false)),
         };
         for index in 0..17 {
-            let peer = Addr::new(&format!("P{index:02}"))?;
+            let peer = Callsign::new(&format!("P{index:02}"))?;
             assert!(!data.receive_xid(&packet, true, &peer).is_empty());
         }
         assert_eq!(data.pending_xid.len(), 16);
@@ -2479,8 +2498,8 @@ mod tests {
 
     #[test]
     fn crossed_xid_commands_leave_outstanding_exchange_active() -> Result<()> {
-        let mut data = Data::new(Addr::new("LOCAL")?);
-        let peer = Addr::new("REMOTE")?;
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        let peer = Callsign::new("REMOTE")?;
         data.start_xid(&peer, None);
         let packet = Xid {
             poll: true,
@@ -2498,7 +2517,7 @@ mod tests {
 
     #[test]
     fn rej_retires_acknowledged_frames_and_resends_remaining() -> Result<()> {
-        let mut data = Data::new(Addr::new("LOCAL")?);
+        let mut data = Data::new(Callsign::new("LOCAL")?);
         data.vs = 2;
         for ns in 0..2 {
             data.iframe_resend_queue.push_back(Iframe {
@@ -2546,7 +2565,7 @@ mod tests {
 
     #[test]
     fn disconnected_outgoing_timeout() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
+        let mut data = Data::new(Callsign::new("M0THC-1")?);
         let con = Disconnected::new();
 
         // First attempt.
@@ -2555,17 +2574,17 @@ mod tests {
             &con,
             &mut data,
             &Event::Connect {
-                addr: Addr::new("M0THC-2")?,
+                addr: Callsign::new("M0THC-2")?,
                 ext: false,
             },
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "AwaitingConnection");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+        assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?.set_highbit(false),
-                dst: Addr::new("M0THC-2")?.set_highbit(true),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2582,11 +2601,11 @@ mod tests {
                 break;
             }
             assert!(c2.is_none());
-            assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+            assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
             assert_all(
                 &[ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?.set_highbit(false),
-                    dst: Addr::new("M0THC-2")?.set_highbit(true),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(false),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(true),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2600,22 +2619,22 @@ mod tests {
 
     #[test]
     fn disconnected_incoming() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
+        let mut data = Data::new(Callsign::new("M0THC-1")?);
         data.able_to_establish = true; // TODO: implement some sort of listen()
         let con = Disconnected::new();
 
         let (con, events) = handle(
             &con,
             &mut data,
-            &Event::Sabm(Sabm { poll: true }, Addr::new("M0THC-2")?),
+            &Event::Sabm(Sabm { poll: true }, Callsign::new("M0THC-2")?),
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "Connected");
-        assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
+        assert_eq!(data.peer, Some(Callsign::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?.set_highbit(true),
-                dst: Addr::new("M0THC-2")?.set_highbit(false),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: true }),
@@ -2628,8 +2647,8 @@ mod tests {
 
     #[test]
     fn connected() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
-        data.peer = Some(Addr::new("M0THC-2")?);
+        let mut data = Data::new(Callsign::new("M0THC-1")?);
+        data.peer = Some(Callsign::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
 
         eprintln!("Receive data packet");
@@ -2652,8 +2671,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?.set_highbit(true),
-                    dst: Addr::new("M0THC-2")?.set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
@@ -2681,8 +2700,8 @@ mod tests {
         assert!(c2.is_none());
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?.set_highbit(true),
-                dst: Addr::new("M0THC-2")?.set_highbit(false),
+                src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
+                dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
@@ -2711,8 +2730,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![11, 22, 33])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?.set_highbit(true),
-                    dst: Addr::new("M0THC-2")?.set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
@@ -2726,8 +2745,8 @@ mod tests {
 
     #[test]
     fn disconnect() -> Result<()> {
-        let mut data = Data::new(Addr::new("M0THC-1")?);
-        data.peer = Some(Addr::new("M0THC-2")?);
+        let mut data = Data::new(Callsign::new("M0THC-1")?);
+        data.peer = Some(Callsign::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
         let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
         assert_eq!(c2.unwrap().name(), "Disconnected");
@@ -2735,8 +2754,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::EOF),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?.set_highbit(true),
-                    dst: Addr::new("M0THC-2")?.set_highbit(false),
+                    src: crate::Addr::from(Callsign::new("M0THC-1")?).set_highbit(true),
+                    dst: crate::Addr::from(Callsign::new("M0THC-2")?).set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Ua(Ua { poll: true }),

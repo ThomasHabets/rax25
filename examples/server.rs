@@ -8,7 +8,7 @@ use clap::Parser;
 use log::debug;
 
 use rax25::sync::Client;
-use rax25::{Addr, BusHub, BusKiss};
+use rax25::{BusHub, BusKiss, Callsign};
 
 #[derive(Parser, Debug)]
 struct Opt {
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         bk.run();
     });
     let k = BusHub::new(bus);
-    let mut listener = Client::new(Addr::new(&opt.src)?, Box::new(k));
+    let mut listener = Client::new(Callsign::new(&opt.src)?, Box::new(k));
 
     let d = done.clone();
     ctrlc::set_handler(move || {

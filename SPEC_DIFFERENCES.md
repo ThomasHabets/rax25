@@ -91,6 +91,10 @@ indicate extended sequence numbers. This helps tools such as `axlisten` decode
 packets without observing connection establishment. The negotiated connection
 mode remains authoritative when it is available: `Packet::parse` accepts an
 explicit mode, and only infers the mode from this bit when passed `None`.
+Connection endpoints use flag-free `Callsign` identities; packet headers use
+`Addr` values that retain wire flags. This API distinction does not change
+the address encoding, and an explicit zero SSID identifies the same station
+as an omitted SSID.
 
 See [packet parsing and serialization](src/lib.rs) and [connection handling](src/async.rs).
 

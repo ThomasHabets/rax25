@@ -11,8 +11,6 @@
 //! * SREJ untested / mostly broken.
 //! * The sync API is not great.
 //! * The Async API works well as long as you only need one connection active.
-//! * The parser needs some work, as Addr duplicates information part of Packet
-//!   too.
 //!
 //! ## Interoperability tested regularly
 //!
@@ -152,7 +150,62 @@ impl std::ops::BitOrAssign for AddrFlags {
     }
 }
 
-/// AX.25 address.
+/// Station identity: a validated callsign and SSID, without frame flags.
+///
+/// Callsigns are uppercase, and an explicit SSID of zero is omitted, so
+/// `M0THC` and `m0thc-0` identify the same station.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Callsign(String);
+
+impl Callsign {
+    /// Parse and canonicalize a station identity.
+    pub fn new(s: &str) -> Result<Self> {
+        let s = s.to_uppercase();
+        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
+            .expect("can't happen: Regex compile fail");
+        if !re.is_match(&s) {
+            return Err(Error::InvalidCallsign(s));
+        }
+        Ok(Self(s.strip_suffix("-0").unwrap_or(&s).to_string()))
+    }
+
+    /// Canonical callsign and SSID as text.
+    #[must_use]
+    pub fn call(&self) -> &str {
+        &self.0
+    }
+
+    /// Attach frame-specific flags to this station identity.
+    #[must_use]
+    pub fn with_flags(self, flags: AddrFlags) -> Addr {
+        Addr {
+            callsign: self,
+            flags,
+        }
+    }
+}
+
+impl std::fmt::Display for Callsign {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.call())
+    }
+}
+
+impl std::str::FromStr for Callsign {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::new(s)
+    }
+}
+
+impl From<Callsign> for Addr {
+    fn from(callsign: Callsign) -> Self {
+        callsign.with_flags(AddrFlags::empty())
+    }
+}
+
+/// AX.25 wire address: a station identity and frame-specific flags.
 ///
 /// The encoding for an AX.25 address includes some extra bits, so they're
 /// included here. That way they can be serialized and parsed fully in and
@@ -165,23 +218,14 @@ impl std::ops::BitOrAssign for AddrFlags {
 /// * 2017: 3.12 on page 18 onwards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
-    t: String,
+    callsign: Callsign,
     flags: AddrFlags,
 }
 
 impl Addr {
     /// Create a new Addr from string. The extra bits are all clear.
     pub fn new(s: &str) -> Result<Self> {
-        let s = s.to_uppercase();
-        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
-            .expect("can't happen: Regex compile fail");
-        if !re.is_match(&s) {
-            return Err(Error::InvalidCallsign(s));
-        }
-        Ok(Self {
-            t: s,
-            flags: AddrFlags::empty(),
-        })
+        Ok(Callsign::new(s)?.into())
     }
 
     /// Set the command/response or repeated bit.
@@ -212,7 +256,13 @@ impl Addr {
     /// Get just the callsign & SSID as a string, not the extra bits.
     #[must_use]
     pub fn call(&self) -> &str {
-        &self.t
+        self.callsign.call()
+    }
+
+    /// Station identity, excluding all frame-specific flags.
+    #[must_use]
+    pub fn callsign(&self) -> &Callsign {
+        &self.callsign
     }
 
     /// Parse the callsign and the extra bits from the packet format.
@@ -257,14 +307,14 @@ impl Addr {
     #[must_use]
     pub fn serialize_with_flags(&self, flags: AddrFlags) -> Vec<u8> {
         let mut ret = vec![b' ' << 1; 7];
-        for (i, ch) in self.t.chars().take(6).enumerate() {
+        for (i, ch) in self.call().chars().take(6).enumerate() {
             if ch == '-' {
                 break;
             }
             ret[i] = (ch as u8) << 1;
         }
         let ssid = {
-            let s: Vec<_> = self.t.split('-').collect();
+            let s: Vec<_> = self.call().split('-').collect();
             if s.len() == 1 {
                 0
             } else {
@@ -533,15 +583,15 @@ impl Packet {
     /// Construct an XID command or response, with an optional information field.
     #[must_use]
     pub fn xid(
-        src: Addr,
-        dst: Addr,
+        src: impl Into<Addr>,
+        dst: impl Into<Addr>,
         command: bool,
         poll: bool,
         parameters: Option<xid::XidParameters>,
     ) -> Self {
         Self {
-            src: src.set_highbit(!command),
-            dst: dst.set_highbit(command),
+            src: src.into().set_highbit(!command),
+            dst: dst.into().set_highbit(command),
             digipeater: vec![],
             modulus: Modulus::Standard,
             packet_type: PacketType::Xid(Xid { poll, parameters }),
@@ -551,10 +601,10 @@ impl Packet {
     /// Construct a UI frame.
     // TODO: allow setting all the other fields.
     #[must_use]
-    pub fn ui<T: Into<Vec<u8>>>(src: Addr, dst: Addr, payload: T) -> Self {
+    pub fn ui<T: Into<Vec<u8>>>(src: impl Into<Addr>, dst: impl Into<Addr>, payload: T) -> Self {
         Self {
-            src: src.set_highbit(true),
-            dst: dst.set_highbit(false),
+            src: src.into().set_highbit(true),
+            dst: dst.into().set_highbit(false),
             digipeater: vec![],
             modulus: Modulus::Standard,
             packet_type: PacketType::Ui(Ui {
@@ -1186,6 +1236,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn callsign_identity_is_canonical_and_hashable() -> Result<()> {
+        let call = Callsign::new("m0thc-0")?;
+        assert_eq!(call, Callsign::new("M0THC")?);
+        assert_eq!(call.call(), "M0THC");
+        assert_eq!(call.to_string(), "M0THC");
+        assert_eq!("m0thc-0".parse::<Callsign>()?, call);
+        assert_ne!(call, Callsign::new("M0THC-1")?);
+        let identities = std::collections::HashSet::from([
+            call,
+            Callsign::new("M0THC")?,
+            Callsign::new("M0THC-1")?,
+        ]);
+        assert_eq!(identities.len(), 2);
+        for invalid in ["", "AB", "ABCDEFG", "M0THC-16", "M0THC-00", "M0THC!"] {
+            assert!(matches!(
+                Callsign::new(invalid),
+                Err(Error::InvalidCallsign(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wire_addresses_keep_flags_separate_from_identity() -> Result<()> {
+        let call = Callsign::new("M0THC-0")?;
+        let plain = Addr::from(call.clone());
+        let flags = AddrFlags::HIGH | AddrFlags::LAST | AddrFlags::EXTENDED | AddrFlags::DAMA;
+        let flagged = call.clone().with_flags(flags);
+        assert_eq!(plain.callsign(), &call);
+        assert_eq!(flagged.callsign(), &call);
+        assert_ne!(plain, flagged);
+        assert_eq!(plain.flags, AddrFlags::empty());
+        let parsed = Addr::parse(&flagged.serialize())?;
+        assert_eq!(parsed, flagged);
+        assert_eq!(parsed.callsign(), &call);
+        assert_eq!(Addr::new("M0THC-0")?, Addr::new("M0THC")?);
+        Ok(())
+    }
+
+    #[test]
     fn parse_with_digipeat() -> Result<()> {
         let bytes = &[
             130, 160, 150, 96, 96, 104, 96, 154, 96, 168, 144, 134, 64, 234, 174, 146, 136, 138,
@@ -1200,11 +1290,11 @@ mod tests {
             packet.digipeater,
             [
                 Addr {
-                    t: "WIDE1-1".to_string(),
+                    callsign: Callsign::new("WIDE1-1")?,
                     flags: AddrFlags::empty(),
                 },
                 Addr {
-                    t: "WIDE2-1".to_string(),
+                    callsign: Callsign::new("WIDE2-1")?,
                     flags: AddrFlags::LAST,
                 },
             ]

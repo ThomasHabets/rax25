@@ -24,6 +24,13 @@ Callers can match error variants and inspect wrapped causes through
 `std::error::Error::source`. The examples use `anyhow` for application-level
 error reporting; it is not a library dependency.
 
+Connection APIs use `Callsign` for station identity (callsign plus SSID).
+`Callsign::new("m0qqq-0")` canonicalizes to `M0QQQ`; equality and hashing
+ignore textual case and an explicit zero SSID. Wire addresses use `Addr`,
+which combines a `Callsign` with frame-specific `AddrFlags`.
+Use `callsign.with_flags(flags)` or `Addr::from(callsign)` to build one,
+and `addr.callsign()` to access its identity without flags.
+
 Address construction and serialization use named `AddrFlags` instead of
 positional boolean arguments. For example,
 `Addr::new_bits("M0QQQ-1", AddrFlags::LAST | AddrFlags::HIGH)` sets the final

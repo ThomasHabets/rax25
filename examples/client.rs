@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use rax25::sync::Client;
-use rax25::{Addr, Kiss};
+use rax25::{Callsign, Kiss};
 
 #[derive(Parser, Debug)]
 struct Opt {
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         .init()
         .unwrap();
     let k = Kiss::new(&opt.port)?;
-    let mut c = Client::new(Addr::new(&opt.src)?, Box::new(k));
+    let mut c = Client::new(Callsign::new(&opt.src)?, Box::new(k));
 
     let d = done.clone();
     ctrlc::set_handler(move || {
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
     });
 
     eprintln!("==== CONNECTING");
-    c.connect(&Addr::new(&opt.dst)?, opt.ext)?;
+    c.connect(&Callsign::new(&opt.dst)?, opt.ext)?;
     eprintln!("==== Connected to {}", opt.dst);
     //c.write("echo hello world".as_bytes())?;
     while !done.load(Ordering::SeqCst) && !c.eof() {

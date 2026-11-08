@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use rax25::{
-    Addr, Packet, PacketType, Xid, r#async::connect_kiss_endpoint, escape, parse_duration,
+    Addr, Callsign, Packet, PacketType, Xid, r#async::connect_kiss_endpoint, escape, parse_duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -39,7 +39,7 @@ fn positive_duration(value: &str) -> Result<Duration> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
-    let (src, dst) = (Addr::new(&opt.src)?, Addr::new(&opt.dst)?);
+    let (src, dst) = (Callsign::new(&opt.src)?, Callsign::new(&opt.dst)?);
     let mut port = tokio::time::timeout(opt.timeout, connect_kiss_endpoint(&opt.port))
         .await
         .context("KISS connection timed out")??;
@@ -87,7 +87,7 @@ impl Decoder {
     }
 }
 
-fn response(frame: &[u8], local: &Addr, peer: &Addr) -> Result<Option<Xid>> {
+fn response(frame: &[u8], local: &Callsign, peer: &Callsign) -> Result<Option<Xid>> {
     let Some((&command, raw)) = frame.split_first() else {
         return Ok(None);
     };
@@ -97,8 +97,8 @@ fn response(frame: &[u8], local: &Addr, peer: &Addr) -> Result<Option<Xid>> {
     let (Ok(dst), Ok(src)) = (Addr::parse(&raw[..7]), Addr::parse(&raw[7..14])) else {
         return Ok(None);
     };
-    if dst.call() != local.call().trim_end_matches("-0")
-        || src.call() != peer.call().trim_end_matches("-0")
+    if dst.callsign() != local
+        || src.callsign() != peer
         || raw[6] & 0x81 != 0 // Destination is not final, and C=0 for responses.
         || raw[13] & 0x80 == 0
     {
@@ -134,8 +134,8 @@ fn response(frame: &[u8], local: &Addr, peer: &Addr) -> Result<Option<Xid>> {
 
 async fn probe<T: AsyncRead + AsyncWrite + Unpin>(
     port: &mut T,
-    local: &Addr,
-    peer: &Addr,
+    local: &Callsign,
+    peer: &Callsign,
     timeout: Duration,
     retries: u32,
 ) -> Result<Xid> {
@@ -187,7 +187,7 @@ fn flags(value: Option<u32>, width: usize, names: &[(u32, &str)]) -> String {
     )
 }
 
-fn report(peer: &Addr, xid: &Xid) -> String {
+fn report(peer: &Callsign, xid: &Xid) -> String {
     let Some(p) = &xid.parameters else {
         return format!(
             "{} advertised XID: no information field (no parameters supplied)",
@@ -235,8 +235,11 @@ mod tests {
     use rax25::xid::XidParameters;
     use tokio::io::{DuplexStream, duplex};
 
-    fn addresses() -> (Addr, Addr) {
-        (Addr::new("LOCAL-1").unwrap(), Addr::new("PEER-2").unwrap())
+    fn addresses() -> (Callsign, Callsign) {
+        (
+            Callsign::new("LOCAL-1").unwrap(),
+            Callsign::new("PEER-2").unwrap(),
+        )
     }
     async fn query(server: &mut DuplexStream) {
         let (local, peer) = addresses();
@@ -292,7 +295,7 @@ mod tests {
         let task = tokio::spawn(async move {
             query(&mut server).await;
             let (local, peer) = addresses();
-            let other = Addr::new("OTHER").unwrap();
+            let other = Callsign::new("OTHER").unwrap();
             let mut wire = vec![9, FEND, FEND, 0, FESC, 7, FEND, 0, FESC, FEND];
             for packet in [
                 Packet::xid(other.clone(), local.clone(), false, true, None),

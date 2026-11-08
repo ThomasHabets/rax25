@@ -6,7 +6,7 @@ use log::info;
 use tokio::io::AsyncReadExt;
 
 use rax25::{
-    Addr,
+    Callsign,
     r#async::{ConnectionBuilder, connect_kiss_endpoint},
     parse_duration,
 };
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
     let port = connect_kiss_endpoint(&opt.port).await?;
     let mut stdin = tokio::io::stdin();
     let builder = {
-        let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
+        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?;
         if opt.ext {
             builder = builder.extended(Some(opt.ext));
         }
@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
     };
 
     let st = std::time::Instant::now();
-    let mut client = builder.connect(Addr::new(&opt.dst)?).await?;
+    let mut client = builder.connect(Callsign::new(&opt.dst)?).await?;
     info!("Connected after {:?}", st.elapsed());
     let mut sigint = {
         use tokio::signal::unix::{SignalKind, signal};

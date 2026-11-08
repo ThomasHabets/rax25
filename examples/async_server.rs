@@ -3,7 +3,7 @@ use clap::Parser;
 use log::info;
 
 use rax25::{
-    Addr,
+    Callsign,
     r#async::{ConnectionBuilder, connect_kiss_endpoint},
     parse_duration,
 };
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     let port = connect_kiss_endpoint(&opt.port).await?;
     info!("Awaiting connection");
     let mut client = {
-        let mut builder = ConnectionBuilder::new(Addr::new(&opt.src)?, port)?;
+        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?;
         if opt.xid || opt.max_receive_bytes.is_some() {
             let mut config = rax25::XidConfig::default();
             if let Some(v) = opt.srt {

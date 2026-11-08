@@ -178,8 +178,8 @@ async fn main() -> anyhow::Result<()> {
     // Test code to see that we can write to modem.
     if false {
         let packet = rax25::Packet::ui(
-            rax25::Addr::new("M0THC-1")?,
-            rax25::Addr::new("M0THC-2")?,
+            rax25::Callsign::new("M0THC-1")?,
+            rax25::Callsign::new("M0THC-2")?,
             b"hello world in the world",
         );
         let serial = rax25::escape(&packet.serialize(false));
