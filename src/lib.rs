@@ -34,6 +34,13 @@ pub mod xid;
 pub use error::{Error, Result};
 pub use state::{Experiment, NegotiatedParameters, XidConfig};
 
+/// We assume that the KISS modem attaches the checksum on TX and checks &
+/// removes it on RX.
+///
+/// In general it's better if the modem does this, as even for regular Bell 202
+/// it'll have some access to soft bits for doing smarter correction. And rax25
+/// would work with a smarter RF interface that uses something better than a
+/// regular old FCS.
 const USE_FCS: bool = false;
 
 #[cfg(feature = "async")]
@@ -65,18 +72,47 @@ pub fn parse_duration(arg: &str) -> Result<std::time::Duration> {
 }
 
 /// Extra AX.25 address flags, independent of their wire encoding.
+///
+/// The AX.25 encoding of an address doesn't need 8 bits per callsign character,
+/// and uses the extra bits to encode extra information. The semantic value of
+/// some of these fields depends on in what context they are used.
+///
+/// Spec:
+/// * 1984: 2.2.13 on page 5 onwards.
+/// * 1998: 3.12 on page 9 onwards.
+/// * 2006: 3.12 on page 17 onwards.
+/// * 2017: 3.12 on page 18 onwards.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct AddrFlags(u8);
 
 impl AddrFlags {
-    /// This is the last address in the address field.
+    /// This is the last address in the address field. It's set for the source
+    /// address if there are no digipeaters, or on the last digipeater if there
+    /// are digipeaters.
     pub const LAST: Self = Self(1);
     /// Command/response for source/destination, or repeated for a digipeater.
     pub const HIGH: Self = Self(2);
     /// Extended sequencing; encoded by clearing reserved wire bit 6.
+    ///
+    /// This bit is reserved, but used by the now deprecated Linux stack in the
+    /// source address field to signify mod-128 extended sequencing.
+    ///
+    /// Reserved bits are set to 1, so enabling `EXTENDED` makes the bit in the
+    /// packet 0.
+    ///
+    /// Rax25 sets this bit appropriately in order to help the `axlisten`
+    /// command parse the packet correctly, but internally tracks the connection
+    /// meaning the remote end does not need to follow this convention.
     pub const EXTENDED: Self = Self(4);
     /// DAMA; encoded by clearing reserved wire bit 5.
+    ///
+    /// This bit is reserved, but used by the Linux stack in the source
+    /// address's SSID octet to indicate Demand Assigned Multiple Access
+    /// (DAMA). It is active-low: clear indicates DAMA, set indicates normal
+    /// operation. DAMA uses a master to control when slaves may transmit.
+    /// Rax25 parses and serializes this flag but does not implement DAMA
+    /// polling or channel access.
     pub const DAMA: Self = Self(8);
 
     /// No extra flags (both reserved wire bits are set).
@@ -122,7 +158,11 @@ impl std::ops::BitOrAssign for AddrFlags {
 /// included here. That way they can be serialized and parsed fully in and
 /// out of the struct.
 ///
-/// This may not be the best idea, so is worth revisiting.
+/// Spec:
+/// * 1984: 2.2.13 on page 5 onwards.
+/// * 1998: 3.12 on page 9 onwards.
+/// * 2006: 3.12 on page 17 onwards.
+/// * 2017: 3.12 on page 18 onwards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Addr {
     t: String,
@@ -152,6 +192,10 @@ impl Addr {
     }
 
     /// Set lowbit.
+    ///
+    /// This bit is used in the spec to signify the last address in a list of
+    /// addresses. I.e. the source address for no-digipeater packets, or the
+    /// last digipeater if packet has digipeaters.
     #[must_use]
     pub fn set_lowbit(mut self, v: bool) -> Self {
         self.flags = self.flags.with(AddrFlags::LAST, v);
@@ -212,7 +256,6 @@ impl Addr {
     /// This does not change the flags stored in this address.
     #[must_use]
     pub fn serialize_with_flags(&self, flags: AddrFlags) -> Vec<u8> {
-        // TODO: confirm format.
         let mut ret = vec![b' ' << 1; 7];
         for (i, ch) in self.t.chars().take(6).enumerate() {
             if ch == '-' {
