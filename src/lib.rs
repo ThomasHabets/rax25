@@ -357,6 +357,64 @@ pub struct Packet {
     packet_type: PacketType,
 }
 
+/// Command or response role for a v2.x frame.
+///
+/// Raw source and destination C bits remain independently available on
+/// packets, including legacy equal-bit encodings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandResponse {
+    Command,
+    Response,
+}
+
+impl CommandResponse {
+    /// Whether this frame is a command.
+    #[must_use]
+    pub fn is_command(self) -> bool {
+        self == Self::Command
+    }
+
+    /// Whether this frame is a response.
+    #[must_use]
+    pub fn is_response(self) -> bool {
+        self == Self::Response
+    }
+}
+
+impl From<bool> for CommandResponse {
+    /// Interpret a destination C bit using v2.x command/response encoding.
+    fn from(command: bool) -> Self {
+        if command {
+            Self::Command
+        } else {
+            Self::Response
+        }
+    }
+}
+
+/// Value of the poll/final bit.
+///
+/// A set bit means Poll in a command and Final in a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollFinal {
+    Clear,
+    Set,
+}
+
+impl PollFinal {
+    /// Whether the poll/final bit is set.
+    #[must_use]
+    pub fn is_set(self) -> bool {
+        self == Self::Set
+    }
+}
+
+impl From<bool> for PollFinal {
+    fn from(set: bool) -> Self {
+        if set { Self::Set } else { Self::Clear }
+    }
+}
+
 /// All packet types.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PacketType {
@@ -379,13 +437,13 @@ pub enum PacketType {
 /// SABM - Set Asynchronous Balanced Mode (4.3.3.1, page 23)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sabm {
-    poll: bool,
+    poll: PollFinal,
 }
 
 /// SAMBE - Set Asynchronous Balanced Mode Extended (4.3.3.2, page 23)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sabme {
-    poll: bool,
+    poll: PollFinal,
 }
 
 /// RR - Receiver Ready (4.3.2.1, page 21)
@@ -393,7 +451,7 @@ pub struct Sabme {
 /// Basically an ACK.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Rr {
-    poll: bool,
+    poll: PollFinal,
     nr: u8,
 }
 
@@ -403,7 +461,7 @@ pub struct Rr {
 /// be equally eager to retransmit?
 #[derive(Debug, PartialEq, Clone)]
 pub struct Rej {
-    poll: bool,
+    poll: PollFinal,
     nr: u8,
 }
 
@@ -412,7 +470,7 @@ pub struct Rej {
 /// Request retransmissions of a single iframe.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Srej {
-    poll: bool,
+    poll: PollFinal,
     nr: u8,
 }
 
@@ -422,7 +480,7 @@ pub struct Srej {
 /// it does specify what to do when receiving one.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Frmr {
-    poll: bool,
+    poll: PollFinal,
 }
 
 /// Test - Test frame
@@ -438,7 +496,7 @@ pub struct Frmr {
 /// The intended use of the poll flag here is unclear.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Test {
-    poll: bool,
+    poll: PollFinal,
     payload: Vec<u8>,
 }
 
@@ -448,7 +506,7 @@ pub struct Test {
 /// max IFRAME size ("MTU"), and lots of other stuff.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Xid {
-    pub poll: bool,
+    pub poll: PollFinal,
     pub parameters: Option<crate::xid::XidParameters>,
 }
 
@@ -458,7 +516,7 @@ pub struct Xid {
 /// The TCP version of this would be a closed receiver window.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Rnr {
-    poll: bool,
+    poll: PollFinal,
     nr: u8,
 }
 
@@ -473,7 +531,7 @@ pub struct Rnr {
 /// not acknowledging if you heard "let's go" or "close down".
 #[derive(Debug, PartialEq, Clone)]
 pub struct Ua {
-    poll: bool,
+    poll: PollFinal,
 }
 
 /// IFRAME - Information Frame (4.3.1, page 19)
@@ -485,7 +543,7 @@ pub struct Ua {
 pub struct Iframe {
     pub nr: u8,
     pub ns: u8,
-    pub poll: bool,
+    pub poll: PollFinal,
     pub pid: u8,
     pub payload: Vec<u8>,
 }
@@ -501,7 +559,7 @@ pub struct Iframe {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ui {
     pub pid: u8,
-    pub push: bool,
+    pub push: PollFinal,
     pub payload: Vec<u8>,
 }
 
@@ -515,7 +573,7 @@ pub struct Ui {
 /// Basically a TCP RST.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dm {
-    poll: bool,
+    poll: PollFinal,
 }
 
 /// DISC - Disconnect
@@ -526,7 +584,7 @@ pub struct Dm {
 /// silly. Replying with DISC would make more sense, but hey ho.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Disc {
-    poll: bool,
+    poll: PollFinal,
 }
 
 // Unnumbered frames. Ending in 11.
@@ -588,9 +646,9 @@ impl Packet {
     }
 
     /// Set both address C bits for a v2.x command or response.
-    pub fn set_command_response(&mut self, command: bool) {
-        self.dst.flags = self.dst.flags.with(AddrFlags::HIGH, command);
-        self.src.flags = self.src.flags.with(AddrFlags::HIGH, !command);
+    pub fn set_command_response(&mut self, command: CommandResponse) {
+        self.dst.flags = self.dst.flags.with(AddrFlags::HIGH, command.is_command());
+        self.src.flags = self.src.flags.with(AddrFlags::HIGH, command.is_response());
     }
 
     fn sequence_modulus(src: &Addr, ext: Option<bool>) -> Modulus {
@@ -602,17 +660,26 @@ impl Packet {
     }
 
     /// Construct an XID command or response, with an optional information field.
+    ///
+    /// ```
+    /// use rax25::{Callsign, CommandResponse, Packet, PollFinal};
+    /// let query = Packet::xid(
+    ///     Callsign::new("LOCAL")?, Callsign::new("REMOTE")?,
+    ///     CommandResponse::Command, PollFinal::Set, None,
+    /// );
+    /// # Ok::<(), rax25::Error>(())
+    /// ```
     #[must_use]
     pub fn xid(
         src: impl Into<Addr>,
         dst: impl Into<Addr>,
-        command: bool,
-        poll: bool,
+        command: CommandResponse,
+        poll: PollFinal,
         parameters: Option<xid::XidParameters>,
     ) -> Self {
         Self {
-            src: src.into().with_highbit(!command),
-            dst: dst.into().with_highbit(command),
+            src: src.into().with_highbit(command.is_response()),
+            dst: dst.into().with_highbit(command.is_command()),
             digipeater: vec![],
             modulus: Modulus::Standard,
             packet_type: PacketType::Xid(Xid { poll, parameters }),
@@ -630,7 +697,7 @@ impl Packet {
             modulus: Modulus::Standard,
             packet_type: PacketType::Ui(Ui {
                 pid: 0xf0,
-                push: false,
+                push: PollFinal::Clear,
                 payload: payload.into(),
             }),
         }
@@ -695,32 +762,40 @@ impl Packet {
             // U frames. Control always one byte.
             PacketType::Sabm(s) => {
                 if ext {
-                    ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 });
+                    ret.push(CONTROL_SABME | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 } else {
-                    ret.push(CONTROL_SABM | if s.poll { CONTROL_POLL } else { 0 });
+                    ret.push(CONTROL_SABM | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 }
             }
-            PacketType::Sabme(s) => ret.push(CONTROL_SABME | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Ua(s) => ret.push(CONTROL_UA | if s.poll { CONTROL_POLL } else { 0 }),
-            PacketType::Disc(disc) => {
-                ret.push(CONTROL_DISC | if disc.poll { CONTROL_POLL } else { 0 });
+            PacketType::Sabme(s) => {
+                ret.push(CONTROL_SABME | if s.poll.is_set() { CONTROL_POLL } else { 0 });
             }
-            PacketType::Dm(s) => ret.push(CONTROL_DM | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Ua(s) => {
+                ret.push(CONTROL_UA | if s.poll.is_set() { CONTROL_POLL } else { 0 });
+            }
+            PacketType::Disc(disc) => {
+                ret.push(CONTROL_DISC | if disc.poll.is_set() { CONTROL_POLL } else { 0 });
+            }
+            PacketType::Dm(s) => {
+                ret.push(CONTROL_DM | if s.poll.is_set() { CONTROL_POLL } else { 0 });
+            }
             // TODO: FRMR data too.
-            PacketType::Frmr(s) => ret.push(CONTROL_FRMR | if s.poll { CONTROL_POLL } else { 0 }),
+            PacketType::Frmr(s) => {
+                ret.push(CONTROL_FRMR | if s.poll.is_set() { CONTROL_POLL } else { 0 });
+            }
             PacketType::Ui(s) => {
-                ret.push(CONTROL_UI | if s.push { CONTROL_POLL } else { 0 });
+                ret.push(CONTROL_UI | if s.push.is_set() { CONTROL_POLL } else { 0 });
                 ret.push(s.pid);
                 ret.extend(&s.payload);
             }
             PacketType::Xid(s) => {
-                ret.push(CONTROL_XID | if s.poll { CONTROL_POLL } else { 0 });
+                ret.push(CONTROL_XID | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 if let Some(parameters) = &s.parameters {
                     ret.extend(parameters.serialize());
                 }
             }
             PacketType::Test(s) => {
-                ret.push(CONTROL_TEST | if s.poll { CONTROL_POLL } else { 0 });
+                ret.push(CONTROL_TEST | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 ret.extend(&s.payload);
             }
 
@@ -728,11 +803,11 @@ impl Packet {
             PacketType::Rr(s) => {
                 if ext {
                     ret.push(CONTROL_RR);
-                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
                     ret.push(
                         CONTROL_RR
-                            | if s.poll { CONTROL_POLL } else { 0 }
+                            | if s.poll.is_set() { CONTROL_POLL } else { 0 }
                             | ((s.nr << 5) & NR_MASK),
                     );
                 }
@@ -740,11 +815,11 @@ impl Packet {
             PacketType::Rnr(s) => {
                 if ext {
                     ret.push(CONTROL_RNR);
-                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
                     ret.push(
                         CONTROL_RNR
-                            | if s.poll { CONTROL_POLL } else { 0 }
+                            | if s.poll.is_set() { CONTROL_POLL } else { 0 }
                             | ((s.nr << 5) & NR_MASK),
                     );
                 }
@@ -752,27 +827,31 @@ impl Packet {
             PacketType::Rej(s) => {
                 if ext {
                     ret.push(CONTROL_REJ);
-                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
-                    ret.push(CONTROL_REJ | if s.poll { CONTROL_POLL } else { 0 });
+                    ret.push(CONTROL_REJ | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 }
             }
             PacketType::Srej(s) => {
                 if ext {
                     ret.push(CONTROL_SREJ);
-                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll));
+                    ret.push((s.nr << 1) & 0xFE | u8::from(s.poll.is_set()));
                 } else {
-                    ret.push(CONTROL_SREJ | if s.poll { CONTROL_POLL } else { 0 });
+                    ret.push(CONTROL_SREJ | if s.poll.is_set() { CONTROL_POLL } else { 0 });
                 }
             }
             PacketType::Iframe(iframe) => {
                 if ext {
                     ret.push(CONTROL_IFRAME | ((iframe.ns << 1) & 0xFE));
-                    ret.push((iframe.nr << 1) & 0xFE | u8::from(iframe.poll));
+                    ret.push((iframe.nr << 1) & 0xFE | u8::from(iframe.poll.is_set()));
                 } else {
                     ret.push(
                         CONTROL_IFRAME
-                            | if iframe.poll { CONTROL_POLL } else { 0 }
+                            | if iframe.poll.is_set() {
+                                CONTROL_POLL
+                            } else {
+                                0
+                            }
                             | ((iframe.nr << 5) & 0b1110_0000)
                             | ((iframe.ns << 1) & 0b0000_1110),
                     );
@@ -861,6 +940,7 @@ impl Packet {
                 )
             }
         };
+        let poll = PollFinal::from(poll);
         Ok(Packet {
             src: src.clone(),
             dst: dst.clone(),
@@ -959,7 +1039,7 @@ impl FakeKiss {
                 nr: 0,
                 pid: 0xF0,
                 ns: 0,
-                poll: true, // TODO: poll or no?
+                poll: PollFinal::Set, // TODO: poll or no?
                 payload,
             }),
         }
@@ -972,7 +1052,9 @@ impl FakeKiss {
             dst: dst.with_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![],
-            packet_type: PacketType::Ua(Ua { poll: true }),
+            packet_type: PacketType::Ua(Ua {
+                poll: PollFinal::Set,
+            }),
         }
     }
 }
@@ -1270,6 +1352,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn frame_role_and_poll_final_bit_conversions() {
+        for bit in [false, true] {
+            let role = CommandResponse::from(bit);
+            assert_eq!(role.is_command(), bit);
+            assert_eq!(role.is_response(), !bit);
+            assert_eq!(PollFinal::from(bit).is_set(), bit);
+        }
+    }
+
+    #[test]
     fn callsign_identity_is_canonical_and_hashable() -> Result<()> {
         let call = Callsign::new("m0thc-0")?;
         assert_eq!(call, Callsign::new("M0THC")?);
@@ -1475,20 +1567,25 @@ mod tests {
 
     #[test]
     fn packet_serialization_uses_stored_mode() -> Result<()> {
-        for extended in [false, true] {
+        for (extended, poll) in [
+            (false, PollFinal::Clear),
+            (false, PollFinal::Set),
+            (true, PollFinal::Clear),
+            (true, PollFinal::Set),
+        ] {
             let (nr, ns) = if extended { (101, 109) } else { (5, 6) };
             let types = [
                 PacketType::Iframe(Iframe {
                     nr,
                     ns,
-                    poll: true,
+                    poll,
                     pid: NO_L3,
                     payload: b"hello".to_vec(),
                 }),
-                PacketType::Rr(Rr { nr, poll: true }),
-                PacketType::Rnr(Rnr { nr, poll: true }),
-                PacketType::Rej(Rej { nr: 0, poll: true }),
-                PacketType::Srej(Srej { nr: 0, poll: true }),
+                PacketType::Rr(Rr { poll, nr }),
+                PacketType::Rnr(Rnr { poll, nr }),
+                PacketType::Rej(Rej { nr: 0, poll }),
+                PacketType::Srej(Srej { nr: 0, poll }),
             ];
             for packet_type in types {
                 let mut packet = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, []);
@@ -1543,7 +1640,7 @@ mod tests {
             b"hello",
         );
         for command in [true, false, true] {
-            packet.set_command_response(command);
+            packet.set_command_response(CommandResponse::from(command));
             assert_eq!(packet.command_response(), command);
             assert_eq!(packet.command_response_src(), !command);
             assert_eq!(packet.dst.flags, flags.with(AddrFlags::HIGH, command));
@@ -1600,7 +1697,9 @@ mod tests {
                 dst: dst.clone().with_highbit(true),
                 modulus: Modulus::Standard,
                 digipeater: vec![],
-                packet_type: PacketType::Sabm(Sabm { poll: true })
+                packet_type: PacketType::Sabm(Sabm {
+                    poll: PollFinal::Set
+                })
             }
             .serialize(),
             vec![
@@ -1615,7 +1714,9 @@ mod tests {
                 modulus: Modulus::Standard,
                 src: src.with_highbit(false),
                 dst: dst.with_highbit(true),
-                packet_type: PacketType::Sabm(Sabm { poll: false })
+                packet_type: PacketType::Sabm(Sabm {
+                    poll: PollFinal::Clear
+                })
             }
             .serialize(),
             vec![
@@ -1639,7 +1740,7 @@ mod tests {
             ],
             packet_type: PacketType::Ui(Ui {
                 pid: 0xF0,
-                push: false,
+                push: PollFinal::Clear,
                 payload: "yo".into(),
             }),
         };

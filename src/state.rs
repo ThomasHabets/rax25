@@ -18,8 +18,8 @@ use crate::Result;
 use log::{debug, error, warn};
 
 use crate::{
-    Callsign, Disc, Dm, Frmr, Iframe, Packet, PacketType, Rej, Rnr, Rr, Sabm, Sabme, Srej, Test,
-    Ua, Ui, Xid,
+    Callsign, CommandResponse, Disc, Dm, Frmr, Iframe, Packet, PacketType, PollFinal, Rej, Rnr, Rr,
+    Sabm, Sabme, Srej, Test, Ua, Ui, Xid,
 };
 
 #[path = "negotiation.rs"]
@@ -32,8 +32,14 @@ pub use negotiation::{NegotiatedParameters, XidConfig};
 /// like "connect", or "send this data".
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Connect { addr: Callsign, ext: bool },
-    ConnectWithXid { addr: Callsign, ext: Option<bool> },
+    Connect {
+        addr: Callsign,
+        ext: bool,
+    },
+    ConnectWithXid {
+        addr: Callsign,
+        ext: Option<bool>,
+    },
     Disconnect,
     Data(Vec<u8>),
     T1,
@@ -50,18 +56,22 @@ pub enum Event {
     Ua(Ua),
     Frmr(Frmr),
     // Commands or responses.
-    Ui(Ui, /* command */ bool),
-    Test(Test, /* command */ bool),
-    Xid(Xid, /* command */ bool, /* peer */ Callsign),
+    Ui(Ui, /* command */ CommandResponse),
+    Test(Test, /* command */ CommandResponse),
+    Xid(
+        Xid,
+        /* command */ CommandResponse,
+        /* peer */ Callsign,
+    ),
 
     // S frames.
-    Rr(Rr, /* command */ bool),
+    Rr(Rr, /* command */ CommandResponse),
     Rnr(Rnr),
-    Rej(Rej, /* command */ bool),
+    Rej(Rej, /* command */ CommandResponse),
     Srej(Srej),
 
     // I frames.
-    Iframe(Iframe, /* command */ bool),
+    Iframe(Iframe, /* command */ CommandResponse),
 }
 
 /// Return events, that the state machine wants to tell the world.
@@ -183,35 +193,35 @@ pub enum Action {
     State(Box<dyn State>),
     DlError(DlError),
     SendUa {
-        pf: bool,
+        pf: PollFinal,
     },
     SendRr {
-        pf: bool,
+        pf: PollFinal,
         nr: u8,
-        command: bool,
+        command: CommandResponse,
     },
     SendRej {
-        pf: bool,
+        pf: PollFinal,
         nr: u8,
     },
     SendRnr {
-        pf: bool,
+        pf: PollFinal,
         nr: u8,
-        command: bool,
+        command: CommandResponse,
     },
     SendDisc {
-        pf: bool,
+        pf: PollFinal,
     },
     SendIframe(Iframe),
     SendDm {
-        pf: bool,
+        pf: PollFinal,
     },
     SendSabm {
-        pf: bool,
+        pf: PollFinal,
     },
     SendXid {
         peer: Callsign,
-        command: bool,
+        command: CommandResponse,
         xid: Xid,
     },
     Deliver(Vec<u8>),
@@ -693,9 +703,9 @@ impl Data {
     fn xid_command(&self) -> Action {
         Action::SendXid {
             peer: self.peer.clone().expect("XID requires a peer"),
-            command: true,
+            command: CommandResponse::Command,
             xid: Xid {
-                poll: true,
+                poll: PollFinal::Set,
                 parameters: Some(
                     self.xid_config
                         .as_ref()
@@ -753,14 +763,19 @@ impl Data {
         self.pending_xid.retain(|(_, _, expiry)| *expiry > now);
     }
 
-    fn receive_xid(&mut self, packet: &Xid, command: bool, peer: &Callsign) -> Vec<Action> {
+    fn receive_xid(
+        &mut self,
+        packet: &Xid,
+        command: CommandResponse,
+        peer: &Callsign,
+    ) -> Vec<Action> {
         self.expire_pending_xid();
         let config = self.xid_config.clone().unwrap_or_default();
         if config.validate().is_err() {
             return vec![];
         }
-        if command {
-            if !packet.poll {
+        if command.is_command() {
+            if !packet.poll.is_set() {
                 return vec![];
             }
             let mut response = config.offer(true);
@@ -797,7 +812,7 @@ impl Data {
             }
             return vec![Action::SendXid {
                 peer: peer.clone(),
-                command: false,
+                command: CommandResponse::Response,
                 xid: Xid {
                     poll: packet.poll,
                     parameters: Some(response),
@@ -805,7 +820,7 @@ impl Data {
             }];
         }
         if !self.management.running
-            || !packet.poll
+            || !packet.poll.is_set()
             || self.peer.as_ref().is_none_or(|addr| addr != peer)
         {
             return vec![];
@@ -879,8 +894,8 @@ impl Data {
     ///
     /// Page 108.
     #[must_use]
-    fn ui_check(&self, command: bool, len: usize) -> Vec<Action> {
-        if !command {
+    fn ui_check(&self, command: CommandResponse, len: usize) -> Vec<Action> {
+        if command.is_response() {
             // 1998 Spec bug: error Q says this is also for UI frames with Poll set.
             //
             // But 4.3.3.6 says command+poll is just fine, and should just trigger
@@ -917,14 +932,16 @@ impl Data {
     ///
     /// Page 108, and 6.1.2 and 6.2 on pages 35-36.
     #[must_use]
-    fn check_need_for_response(&mut self, command: bool, pf: bool) -> Vec<Action> {
+    fn check_need_for_response(&mut self, command: CommandResponse, pf: PollFinal) -> Vec<Action> {
         match (command, pf) {
             // A command with poll set demands a response with fin set.
-            (true, true) => vec![self.enquiry_response(true)],
+            (CommandResponse::Command, PollFinal::Set) => {
+                vec![self.enquiry_response(PollFinal::Set)]
+            }
 
             // I believe that this means the state is currently Connected,
             // and therefore we're not waiting for a response.
-            (false, true) => vec![Action::DlError(DlError::A)],
+            (CommandResponse::Response, PollFinal::Set) => vec![Action::DlError(DlError::A)],
 
             // If it's not a command, or a command but no response required,
             // then no response needed.
@@ -948,11 +965,11 @@ impl Data {
     ///
     /// Repeats until Linux kernel gives up and sends DM, closing the connection.
     ///
-    /// In the parts currently implemented, `pf` is always set to `true`.
+    /// In the parts currently implemented, `pf` is always `PollFinal::Set`.
     ///
     /// Page 106.
     #[must_use]
-    fn enquiry_response(&mut self, pf: bool) -> Action {
+    fn enquiry_response(&mut self, pf: PollFinal) -> Action {
         self.acknowledge_pending = false;
         // TODO: 2017 spec has a bit more complex diagram here. Some of it is
         // correct, but other stuff I'm not so sure of.
@@ -964,14 +981,14 @@ impl Data {
             Action::SendRnr {
                 pf,
                 nr: self.vr,
-                command: false,
+                command: CommandResponse::Response,
             }
         } else {
             // 1998 spec says commmand, which is wrong.
             Action::SendRr {
                 pf,
                 nr: self.vr,
-                command: false,
+                command: CommandResponse::Response,
             }
         }
     }
@@ -1036,15 +1053,15 @@ impl Data {
         self.t1.start(self.t1v); // TODO: what timer value?
         if self.own_receiver_busy {
             Action::SendRnr {
-                pf: true,
+                pf: PollFinal::Set,
                 nr: self.vr,
-                command: true,
+                command: CommandResponse::Command,
             }
         } else {
             Action::SendRr {
-                pf: true,
+                pf: PollFinal::Set,
                 nr: self.vr,
-                command: true,
+                command: CommandResponse::Command,
             }
         }
     }
@@ -1150,7 +1167,7 @@ impl Data {
         self.t1.restart(self.srt); // TODO: srt or t1v?
 
         // SendSabm actually sends SABME if modulus is 128.
-        Action::SendSabm { pf: true }
+        Action::SendSabm { pf: PollFinal::Set }
     }
 
     /// Set values for extended sequence number connection.
@@ -1219,7 +1236,7 @@ impl Data {
             let i = Iframe {
                 ns,
                 nr: self.vr,
-                poll: false,
+                poll: PollFinal::Clear,
                 pid: 0xF0,
                 payload,
             };
@@ -1284,28 +1301,28 @@ pub trait State {
 
     /// RR received from peer.
     #[must_use]
-    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: bool) -> Vec<Action> {
+    fn rr(&self, _data: &mut Data, _packet: &Rr, _command: CommandResponse) -> Vec<Action> {
         eprintln!("TODO: unexpected RR");
         vec![]
     }
 
     /// REJ received from peer.
     #[must_use]
-    fn rej(&self, _data: &mut Data, _packet: &Rej, _command: bool) -> Vec<Action> {
+    fn rej(&self, _data: &mut Data, _packet: &Rej, _command: CommandResponse) -> Vec<Action> {
         eprintln!("TODO: unexpected REJ");
         vec![]
     }
 
     /// XID received from peer.
     #[must_use]
-    fn xid(&self, _data: &mut Data, _packet: &Xid, _cr: bool) -> Vec<Action> {
+    fn xid(&self, _data: &mut Data, _packet: &Xid, _cr: CommandResponse) -> Vec<Action> {
         eprintln!("TODO: unexpected XID");
         vec![]
     }
 
     /// TEST received from peer.
     #[must_use]
-    fn test(&self, _data: &mut Data, _packet: &Test, _cr: bool) -> Vec<Action> {
+    fn test(&self, _data: &mut Data, _packet: &Test, _cr: CommandResponse) -> Vec<Action> {
         eprintln!("TODO: unexpected TEST");
         vec![]
     }
@@ -1349,14 +1366,14 @@ pub trait State {
 
     /// IFRAME received from peer.
     #[must_use]
-    fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: bool) -> Vec<Action> {
+    fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: CommandResponse) -> Vec<Action> {
         eprintln!("TODO; unexpected iframe");
         vec![]
     }
 
     /// UI received from peer.
     #[must_use]
-    fn ui(&self, _data: &mut Data, _cr: bool, _packet: &Ui) -> Vec<Action> {
+    fn ui(&self, _data: &mut Data, _cr: CommandResponse, _packet: &Ui) -> Vec<Action> {
         vec![]
     }
 
@@ -1398,7 +1415,7 @@ impl Disconnected {
     // Page 85.
     #[must_use]
     #[allow(clippy::unused_self)]
-    fn sabm_and_sabme(&self, data: &mut Data, src: Callsign, pf: bool) -> Vec<Action> {
+    fn sabm_and_sabme(&self, data: &mut Data, src: Callsign, pf: PollFinal) -> Vec<Action> {
         debug!("rax25: DL-Connect indication from {:?}", src.call());
         if !data.able_to_establish {
             return vec![Action::SendDm { pf }];
@@ -1490,10 +1507,10 @@ impl State for Disconnected {
     }
 
     // Page 84.
-    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
+    fn ui(&self, data: &mut Data, cr: CommandResponse, packet: &Ui) -> Vec<Action> {
         let mut ret = data.ui_check(cr, packet.payload.len());
-        if packet.push {
-            ret.push(Action::SendDm { pf: true });
+        if packet.push.is_set() {
+            ret.push(Action::SendDm { pf: PollFinal::Set });
         }
         ret
     }
@@ -1547,7 +1564,7 @@ impl State for AwaitingXid {
     }
 
     fn dm(&self, data: &mut Data, packet: &Dm) -> Vec<Action> {
-        if packet.poll {
+        if packet.poll.is_set() {
             data.finish_xid(None)
         } else {
             vec![]
@@ -1586,14 +1603,14 @@ impl State for AwaitingConnection {
             data.rc += 1;
             data.select_t1_value();
             data.t1.start(data.srt);
-            vec![Action::SendSabm { pf: true }]
+            vec![Action::SendSabm { pf: PollFinal::Set }]
         }
     }
 
     // Page 88.
     fn ua(&self, data: &mut Data, packet: &Ua) -> Vec<Action> {
         let f = packet.poll;
-        if !f {
+        if !f.is_set() {
             return vec![Action::DlError(DlError::D)];
         }
         if data.layer3_initiated {
@@ -1652,7 +1669,7 @@ impl State for AwaitingConnection {
         // same function again?
         data.t1.stop(); // Because we're heading into Disconnected.
         vec![
-            Action::SendDisc { pf: true },
+            Action::SendDisc { pf: PollFinal::Set },
             Action::State(Box::new(Disconnected::new())),
         ]
     }
@@ -1676,7 +1693,7 @@ impl State for AwaitingRelease {
 
     // Page 91.
     fn dm(&self, data: &mut Data, p: &Dm) -> Vec<Action> {
-        if !p.poll {
+        if !p.poll.is_set() {
             return vec![];
         }
         debug!("rax25: DL-DISCONNECT Confirm");
@@ -1692,7 +1709,7 @@ impl State for AwaitingRelease {
     //
     // Page 90.
     fn ua(&self, data: &mut Data, p: &Ua) -> Vec<Action> {
-        if !p.poll {
+        if !p.poll.is_set() {
             return vec![Action::DlError(DlError::D)];
         }
         debug!("rax25: DL-DISCONNECT confirm");
@@ -1716,7 +1733,7 @@ impl State for AwaitingRelease {
         data.rc += 1;
         data.select_t1_value();
         data.t1.start(data.t1v);
-        vec![Action::SendDisc { pf: true }]
+        vec![Action::SendDisc { pf: PollFinal::Set }]
     }
 
     // Page 89.
@@ -1726,7 +1743,9 @@ impl State for AwaitingRelease {
         debug!("rax25: DL-DISCONNECT confirm");
         // 1998&2017 bug: Doesn't specify pf.
         vec![
-            Action::SendDm { pf: false },
+            Action::SendDm {
+                pf: PollFinal::Clear,
+            },
             Action::State(Box::new(Disconnected::new())),
         ]
     }
@@ -1753,7 +1772,7 @@ impl Connected {
     // Page 95
     #[must_use]
     #[allow(clippy::unused_self)]
-    fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+    fn rr_connected(&self, data: &mut Data, packet: &Rr, cr: CommandResponse) -> Vec<Action> {
         data.peer_receiver_busy = false;
         let mut act = data.check_need_for_response(cr, packet.poll);
         if in_range(data.va, packet.nr, data.vs, data.modulus) {
@@ -1776,7 +1795,7 @@ impl Connected {
     // Page 99.
     #[must_use]
     #[allow(clippy::unused_self)]
-    fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+    fn rr_timer_recovery(&self, data: &mut Data, packet: &Rr, cr: CommandResponse) -> Vec<Action> {
         data.peer_receiver_busy = false;
         let mut act = Vec::new();
         let retransmit_path = if data.experiments.contains(&Experiment::ResendOnRrCommand) {
@@ -1791,7 +1810,7 @@ impl Connected {
             // More at https://github.com/packethacking/ax25spec/issues/8.
             data.t1.running
         } else {
-            !cr && packet.poll
+            cr.is_response() && packet.poll.is_set()
         };
         if retransmit_path {
             data.t1.stop();
@@ -1823,8 +1842,8 @@ impl Connected {
             }
         }
         // 2017 spec bug on page 95: no 'no' path from this if.
-        if cr && packet.poll {
-            act.push(data.enquiry_response(true));
+        if cr.is_command() && packet.poll.is_set() {
+            act.push(data.enquiry_response(PollFinal::Set));
         }
         if in_range(data.va, packet.nr, data.vs, data.modulus) {
             act.extend(data.update_ack(packet.nr));
@@ -1849,7 +1868,7 @@ impl Connected {
     }
 
     // Page 93 and page 99.
-    fn sabm_or_sabme(&self, data: &mut Data, poll: bool) -> Vec<Action> {
+    fn sabm_or_sabme(&self, data: &mut Data, poll: PollFinal) -> Vec<Action> {
         data.clear_exception_conditions();
         if data.vs != data.va {
             data.iframe_queue.clear();
@@ -1900,7 +1919,7 @@ impl State for Connected {
         data.t1.start(data.srt); // TODO: with what timer?
         data.t3.stop();
         vec![
-            Action::SendDisc { pf: true },
+            Action::SendDisc { pf: PollFinal::Set },
             Action::State(Box::new(AwaitingRelease::new())),
         ]
     }
@@ -1983,8 +2002,13 @@ impl State for Connected {
     //
     // TODO; implement segment reassembly.
     #[allow(clippy::too_many_lines)]
-    fn iframe(&self, data: &mut Data, p: &Iframe, command_response: bool) -> Vec<Action> {
-        if !command_response {
+    fn iframe(
+        &self,
+        data: &mut Data,
+        p: &Iframe,
+        command_response: CommandResponse,
+    ) -> Vec<Action> {
+        if command_response.is_response() {
             // 2017 spec page 93 says to DlError::O if the iframe *is* a
             // command. That's not even remotely correct, since O means packet
             // too big.
@@ -2037,11 +2061,11 @@ impl State for Connected {
         if data.own_receiver_busy {
             // discord (implicit)
             debug!("rax25: Discarding iframe because busy and being polled");
-            if p.poll {
+            if p.poll.is_set() {
                 actions.push(Action::SendRnr {
-                    pf: true,
+                    pf: PollFinal::Set,
                     nr: data.vr,
-                    command: false,
+                    command: CommandResponse::Response,
                 });
                 data.acknowledge_pending = false;
             }
@@ -2065,11 +2089,11 @@ impl State for Connected {
                 // Deliver
                 data.vr = (data.vr + 1) % data.modulus.as_u8();
             }
-            if p.poll {
+            if p.poll.is_set() {
                 actions.push(Action::SendRr {
-                    pf: true,
+                    pf: PollFinal::Set,
                     nr: data.vr,
-                    command: false,
+                    command: CommandResponse::Response,
                 });
                 data.acknowledge_pending = false;
                 return actions;
@@ -2083,11 +2107,11 @@ impl State for Connected {
         debug!("Iframe not in order got={} want={}", p.ns, data.vr);
         if data.reject_exception {
             // discard frame (implicit)
-            if p.poll {
+            if p.poll.is_set() {
                 actions.push(Action::SendRr {
-                    pf: true,
+                    pf: PollFinal::Set,
                     nr: data.vr,
-                    command: false,
+                    command: CommandResponse::Response,
                 });
                 data.acknowledge_pending = false;
             }
@@ -2156,7 +2180,9 @@ impl State for Connected {
             }),
             // 1998 spec (page 99) doesn't say if it should be true or false.
             // 2017 spec adds that pf should be false.
-            Action::SendDm { pf: false },
+            Action::SendDm {
+                pf: PollFinal::Clear,
+            },
             Action::State(Box::new(Disconnected::new())),
         ]
     }
@@ -2200,15 +2226,15 @@ impl State for Connected {
     }
 
     // Page 94 & 100.
-    fn ui(&self, data: &mut Data, cr: bool, packet: &Ui) -> Vec<Action> {
+    fn ui(&self, data: &mut Data, cr: CommandResponse, packet: &Ui) -> Vec<Action> {
         let mut act = data.ui_check(cr, packet.payload.len());
-        if packet.push {
-            act.push(data.enquiry_response(true));
+        if packet.push.is_set() {
+            act.push(data.enquiry_response(PollFinal::Set));
         }
         act
     }
 
-    fn rr(&self, data: &mut Data, packet: &Rr, cr: bool) -> Vec<Action> {
+    fn rr(&self, data: &mut Data, packet: &Rr, cr: CommandResponse) -> Vec<Action> {
         match self.connected_state {
             ConnectedState::Connected => self.rr_connected(data, packet, cr),
             ConnectedState::TimerRecovery => self.rr_timer_recovery(data, packet, cr),
@@ -2218,15 +2244,15 @@ impl State for Connected {
     // 6.4.7: acknowledge through N(R), then go back and resend the remainder.
     //
     // 1998: Page 96 (Connected) and 100 (TimerRecovery).
-    fn rej(&self, data: &mut Data, packet: &Rej, command: bool) -> Vec<Action> {
+    fn rej(&self, data: &mut Data, packet: &Rej, command: CommandResponse) -> Vec<Action> {
         data.peer_receiver_busy = false;
         if !in_range(data.va, packet.nr, data.vs, data.modulus) {
             let mut actions = data.nr_error_recovery();
             actions.push(Action::State(Box::new(AwaitingConnection::new())));
             return actions;
         }
-        let mut actions = if command && packet.poll {
-            vec![data.enquiry_response(true)]
+        let mut actions = if command.is_command() && packet.poll.is_set() {
+            vec![data.enquiry_response(PollFinal::Set)]
         } else {
             vec![]
         };
@@ -2246,7 +2272,9 @@ impl State for Connected {
             data.t3.stop();
             data.t1.start(data.t1v);
         }
-        if matches!(self.connected_state, ConnectedState::TimerRecovery) && !command && packet.poll
+        if matches!(self.connected_state, ConnectedState::TimerRecovery)
+            && command.is_response()
+            && packet.poll.is_set()
         {
             actions.push(Action::State(Box::new(Self::new(
                 ConnectedState::Connected,
@@ -2413,15 +2441,17 @@ pub fn handle(
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone())
+                    .with_highbit(command.is_command()),
                 digipeater: vec![],
                 modulus: data.modulus,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
-                dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
+                src: crate::Addr::from(data.me.clone()).with_highbit(command.is_response()),
+                dst: crate::Addr::from(data.peer.clone().unwrap().clone())
+                    .with_highbit(command.is_command()),
                 digipeater: vec![],
                 modulus: data.modulus,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
@@ -2479,7 +2509,13 @@ mod tests {
                     ext: extended,
                 },
             );
-            let (state, _) = handle(&*state.unwrap(), &mut data, &Event::Ua(Ua { poll: true }));
+            let (state, _) = handle(
+                &*state.unwrap(),
+                &mut data,
+                &Event::Ua(Ua {
+                    poll: PollFinal::Set,
+                }),
+            );
             let connected = state.unwrap();
             let (_, frames) = handle(&*connected, &mut data, &Event::Data(b"hello".to_vec()));
             let (_, poll) = handle(&*connected, &mut data, &Event::T3);
@@ -2525,10 +2561,10 @@ mod tests {
         assert!(
             data.receive_xid(
                 &Xid {
-                    poll: false,
+                    poll: PollFinal::Clear,
                     parameters: Some(config.offer(true))
                 },
-                false,
+                CommandResponse::Response,
                 &peer
             )
             .is_empty()
@@ -2536,10 +2572,10 @@ mod tests {
         assert!(data.management.running);
         data.receive_xid(
             &Xid {
-                poll: true,
+                poll: PollFinal::Set,
                 parameters: Some(config.offer(false)),
             },
-            false,
+            CommandResponse::Response,
             &peer,
         );
         assert!(!data.management.running);
@@ -2553,12 +2589,16 @@ mod tests {
         let mut data = Data::new(Callsign::new("LOCAL")?);
         data.able_to_establish = true;
         let packet = Xid {
-            poll: true,
+            poll: PollFinal::Set,
             parameters: Some(XidConfig::default().offer(false)),
         };
         for index in 0..17 {
             let peer = Callsign::new(&format!("P{index:02}"))?;
-            assert!(!data.receive_xid(&packet, true, &peer).is_empty());
+            assert!(
+                !data
+                    .receive_xid(&packet, CommandResponse::Command, &peer)
+                    .is_empty()
+            );
         }
         assert_eq!(data.pending_xid.len(), 16);
         assert!(data.peer.is_none());
@@ -2577,13 +2617,17 @@ mod tests {
         let peer = Callsign::new("REMOTE")?;
         data.start_xid(&peer, None);
         let packet = Xid {
-            poll: true,
+            poll: PollFinal::Set,
             parameters: Some(XidConfig::default().offer(true)),
         };
-        assert!(!data.receive_xid(&packet, true, &peer).is_empty());
+        assert!(
+            !data
+                .receive_xid(&packet, CommandResponse::Command, &peer)
+                .is_empty()
+        );
         assert!(data.management.running);
         assert!(data.negotiated.is_none());
-        data.receive_xid(&packet, false, &peer);
+        data.receive_xid(&packet, CommandResponse::Response, &peer);
         assert!(!data.management.running);
         assert!(data.ext());
         assert!(data.negotiated.is_some());
@@ -2598,13 +2642,20 @@ mod tests {
             data.iframe_resend_queue.push_back(Iframe {
                 ns,
                 nr: 0,
-                poll: false,
+                poll: PollFinal::Clear,
                 pid: 0xf0,
                 payload: vec![ns],
             });
         }
         let connected = Connected::new(ConnectedState::Connected);
-        let actions = connected.rej(&mut data, &Rej { poll: false, nr: 1 }, false);
+        let actions = connected.rej(
+            &mut data,
+            &Rej {
+                poll: PollFinal::Clear,
+                nr: 1,
+            },
+            CommandResponse::Response,
+        );
         assert_eq!(data.va, 1);
         assert_eq!(data.iframe_resend_queue.len(), 1);
         assert!(
@@ -2662,7 +2713,9 @@ mod tests {
                 dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
-                packet_type: PacketType::Sabm(Sabm { poll: true }),
+                packet_type: PacketType::Sabm(Sabm {
+                    poll: PollFinal::Set,
+                }),
             })],
             &events,
             "connect",
@@ -2683,7 +2736,9 @@ mod tests {
                     dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
-                    packet_type: PacketType::Sabm(Sabm { poll: true }),
+                    packet_type: PacketType::Sabm(Sabm {
+                        poll: PollFinal::Set,
+                    }),
                 })],
                 &events,
                 "connect",
@@ -2701,7 +2756,12 @@ mod tests {
         let (con, events) = handle(
             &con,
             &mut data,
-            &Event::Sabm(Sabm { poll: true }, Callsign::new("M0THC-2")?),
+            &Event::Sabm(
+                Sabm {
+                    poll: PollFinal::Set,
+                },
+                Callsign::new("M0THC-2")?,
+            ),
         );
         let con = con.unwrap();
         assert_eq!(con.name(), "Connected");
@@ -2712,7 +2772,9 @@ mod tests {
                 dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
-                packet_type: PacketType::Ua(Ua { poll: true }),
+                packet_type: PacketType::Ua(Ua {
+                    poll: PollFinal::Set,
+                }),
             })],
             &events,
             "connect",
@@ -2734,11 +2796,11 @@ mod tests {
                 Iframe {
                     nr: 0,
                     ns: 0,
-                    poll: true, // TODO: poll or no?
+                    poll: PollFinal::Set, // TODO: poll or no?
                     pid: 0xF0,
                     payload: vec![1, 2, 3],
                 },
-                true,
+                CommandResponse::Command,
             ),
         );
         assert!(c2.is_none());
@@ -2750,7 +2812,10 @@ mod tests {
                     dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
-                    packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
+                    packet_type: PacketType::Rr(Rr {
+                        poll: PollFinal::Set,
+                        nr: 1,
+                    }),
                 }),
             ],
             &events,
@@ -2765,11 +2830,11 @@ mod tests {
                 Iframe {
                     nr: 0,
                     ns: 0,
-                    poll: true, // TODO: poll or no?
+                    poll: PollFinal::Set, // TODO: poll or no?
                     pid: 0xF0,
                     payload: vec![1, 2, 3],
                 },
-                true,
+                CommandResponse::Command,
             ),
         );
         assert!(c2.is_none());
@@ -2779,7 +2844,10 @@ mod tests {
                 dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
-                packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
+                packet_type: PacketType::Rej(Rej {
+                    poll: PollFinal::Set,
+                    nr: 1,
+                }),
             })],
             &events,
             "iframe",
@@ -2793,11 +2861,11 @@ mod tests {
                 Iframe {
                     nr: 0,
                     ns: 1,
-                    poll: true, // TODO: poll or no?
+                    poll: PollFinal::Set, // TODO: poll or no?
                     pid: 0xF0,
                     payload: vec![11, 22, 33],
                 },
-                true,
+                CommandResponse::Command,
             ),
         );
         assert!(c2.is_none());
@@ -2809,7 +2877,10 @@ mod tests {
                     dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
-                    packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
+                    packet_type: PacketType::Rr(Rr {
+                        poll: PollFinal::Set,
+                        nr: 2,
+                    }),
                 }),
             ],
             &events,
@@ -2823,7 +2894,13 @@ mod tests {
         let mut data = Data::new(Callsign::new("M0THC-1")?);
         data.peer = Some(Callsign::new("M0THC-2")?);
         let con = Connected::new(ConnectedState::Connected);
-        let (c2, events) = handle(&con, &mut data, &Event::Disc(Disc { poll: true }));
+        let (c2, events) = handle(
+            &con,
+            &mut data,
+            &Event::Disc(Disc {
+                poll: PollFinal::Set,
+            }),
+        );
         assert_eq!(c2.unwrap().name(), "Disconnected");
         assert_all(
             &[
@@ -2833,7 +2910,9 @@ mod tests {
                     dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
-                    packet_type: PacketType::Ua(Ua { poll: true }),
+                    packet_type: PacketType::Ua(Ua {
+                        poll: PollFinal::Set,
+                    }),
                 }),
             ],
             &events,

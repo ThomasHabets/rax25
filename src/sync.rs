@@ -51,7 +51,7 @@ use crate::{Error, Result};
 use log::{debug, error};
 
 use crate::state;
-use crate::{Callsign, Hub, Packet, PacketType};
+use crate::{Callsign, CommandResponse, Hub, Packet, PacketType};
 
 /// A connected mode client.
 ///
@@ -319,30 +319,42 @@ impl Client {
             PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(&state::Event::Rnr(p.clone())),
             PacketType::Rej(p) => {
-                self.actions(&state::Event::Rej(p.clone(), packet.command_response()));
+                self.actions(&state::Event::Rej(
+                    p.clone(),
+                    CommandResponse::from(packet.command_response()),
+                ));
             }
             PacketType::Srej(p) => self.actions(&state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => {
                 self.actions(&state::Event::Xid(
                     p.clone(),
-                    packet.command_response(),
+                    CommandResponse::from(packet.command_response()),
                     packet.src.callsign().clone(),
                 ));
             }
             PacketType::Ui(p) => {
-                self.actions(&state::Event::Ui(p.clone(), packet.command_response()));
+                self.actions(&state::Event::Ui(
+                    p.clone(),
+                    CommandResponse::from(packet.command_response()),
+                ));
             }
             PacketType::Test(p) => {
-                self.actions(&state::Event::Test(p.clone(), packet.command_response()));
+                self.actions(&state::Event::Test(
+                    p.clone(),
+                    CommandResponse::from(packet.command_response()),
+                ));
             }
             PacketType::Dm(p) => self.actions(&state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
-                self.actions(&state::Event::Rr(rr.clone(), packet.command_response()));
+                self.actions(&state::Event::Rr(
+                    rr.clone(),
+                    CommandResponse::from(packet.command_response()),
+                ));
             }
             PacketType::Iframe(iframe) => self.actions(&state::Event::Iframe(
                 iframe.clone(),
-                packet.command_response(),
+                CommandResponse::from(packet.command_response()),
             )),
         }
     }
@@ -389,7 +401,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Callsign, FakeKiss};
+    use crate::{Callsign, FakeKiss, PollFinal};
     use crate::{Iframe, PacketType, Sabm};
 
     #[derive(Clone, Default)]
@@ -407,15 +419,15 @@ mod tests {
                 PacketType::Xid(xid) if packet.command_response() && self.respond => {
                     Some(PacketType::Xid(xid.clone()))
                 }
-                PacketType::Sabm(_) | PacketType::Sabme(_) => {
-                    Some(PacketType::Ua(crate::Ua { poll: true }))
-                }
+                PacketType::Sabm(_) | PacketType::Sabme(_) => Some(PacketType::Ua(crate::Ua {
+                    poll: PollFinal::Set,
+                })),
                 _ => None,
             };
             if let Some(packet_type) = reply {
                 let mut reply = packet;
                 std::mem::swap(&mut reply.src, &mut reply.dst);
-                reply.set_command_response(false);
+                reply.set_command_response(CommandResponse::Response);
                 reply.packet_type = packet_type;
                 self.queue.push_back(reply.serialize());
             }
@@ -622,7 +634,7 @@ mod tests {
                 packet_type: PacketType::Iframe(Iframe {
                     nr: 0,
                     ns: 0,
-                    poll: true,
+                    poll: PollFinal::Set,
                     pid: 240,
                     payload: vec![3, 2, 1],
                 },),
@@ -652,7 +664,9 @@ mod tests {
                 dst: crate::Addr::from(Callsign::new("M0THC-3")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
-                packet_type: PacketType::Sabm(Sabm { poll: true }),
+                packet_type: PacketType::Sabm(Sabm {
+                    poll: PollFinal::Set,
+                }),
             }
             .serialize(),
         );
@@ -674,7 +688,9 @@ mod tests {
                 dst: crate::Addr::from(Callsign::new("M0THC-2")?).with_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
-                packet_type: PacketType::Sabm(Sabm { poll: true }),
+                packet_type: PacketType::Sabm(Sabm {
+                    poll: PollFinal::Set,
+                }),
             }
             .serialize(),
         );

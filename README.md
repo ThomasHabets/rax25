@@ -35,6 +35,12 @@ and `addr.callsign()` to access its identity without flags.
 state sets it for outgoing frames; use `packet.with_extended(true)` when
 constructing extended-mode packets directly.
 
+Frame roles use `CommandResponse::{Command, Response}` and poll/final bits
+use `PollFinal::{Clear, Set}`. For example, an XID query is constructed with
+`Packet::xid(local, peer, CommandResponse::Command, PollFinal::Set, None)`.
+The same types are used by frame fields and state-machine events/actions;
+raw address C-bit accessors remain available for legacy encodings.
+
 The Linux source-address extended-mode hint is enabled by default. Disable
 it with `.linux_extended_hint(false)` on the async connection builder or
 `client.set_linux_extended_hint(false)` on a sync client. For raw packets,

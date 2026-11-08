@@ -319,7 +319,7 @@ fn numeric_parameter(bytes: &mut Vec<u8>, id: u8, value: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Addr, Packet, PacketType};
+    use crate::{Addr, CommandResponse, Packet, PacketType, PollFinal};
 
     // Independently derived from Fig. 4.5's bit numbers and verified against
     // Dire Wolf masks (which represent bitfields as BE integers):
@@ -365,8 +365,8 @@ mod tests {
     #[test]
     fn packet_round_trips() {
         for parameters in [None, Some(fixture_parameters())] {
-            for command in [false, true] {
-                for poll in [false, true] {
+            for command in [CommandResponse::Response, CommandResponse::Command] {
+                for poll in [PollFinal::Clear, PollFinal::Set] {
                     let packet = Packet::xid(
                         Addr::new("N0CALL").unwrap(),
                         Addr::new("N1CALL").unwrap(),
@@ -377,9 +377,9 @@ mod tests {
                     for ext in [false, true] {
                         let bytes = packet.clone().with_extended(ext).serialize();
                         assert_eq!(bytes[13] & 0x40 == 0, ext);
-                        assert_eq!(bytes[14], if poll { 0xbf } else { 0xaf });
-                        assert_eq!(bytes[6] & 0x80 != 0, command);
-                        assert_eq!(bytes[13] & 0x80 != 0, !command);
+                        assert_eq!(bytes[14], if poll.is_set() { 0xbf } else { 0xaf });
+                        assert_eq!(bytes[6] & 0x80 != 0, command.is_command());
+                        assert_eq!(bytes[13] & 0x80 != 0, command.is_response());
                         assert_eq!(
                             Packet::parse(&bytes, Some(ext)).unwrap().packet_type(),
                             &PacketType::Xid(crate::Xid {
@@ -515,8 +515,8 @@ mod tests {
         let packet = Packet::xid(
             Addr::new("N0CALL").unwrap(),
             Addr::new("N1CALL").unwrap(),
-            true,
-            true,
+            CommandResponse::Command,
+            PollFinal::Set,
             Some(fixture_parameters()),
         );
         let bytes = packet.serialize();

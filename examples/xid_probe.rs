@@ -4,7 +4,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use rax25::{
-    Addr, Callsign, Packet, PacketType, Xid, r#async::connect_kiss_endpoint, escape, parse_duration,
+    Addr, Callsign, CommandResponse, Packet, PacketType, PollFinal, Xid,
+    r#async::connect_kiss_endpoint, escape, parse_duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -125,7 +126,7 @@ fn response(frame: &[u8], local: &Callsign, peer: &Callsign) -> Result<Option<Xi
         return Ok(None);
     };
     match packet.packet_type() {
-        PacketType::Xid(xid) if xid.poll => Ok(Some(xid.clone())),
+        PacketType::Xid(xid) if xid.poll.is_set() => Ok(Some(xid.clone())),
         PacketType::Dm(_) => bail!("peer returned DM (disconnected mode)"),
         PacketType::Frmr(_) => bail!("peer returned FRMR (frame reject)"),
         _ => Ok(None),
@@ -140,7 +141,16 @@ async fn probe<T: AsyncRead + AsyncWrite + Unpin>(
     retries: u32,
 ) -> Result<Xid> {
     anyhow::ensure!(!timeout.is_zero(), "timeout must be nonzero");
-    let query = escape(&Packet::xid(local.clone(), peer.clone(), true, true, None).serialize());
+    let query = escape(
+        &Packet::xid(
+            local.clone(),
+            peer.clone(),
+            CommandResponse::Command,
+            PollFinal::Set,
+            None,
+        )
+        .serialize(),
+    );
     let mut decoder = Decoder::default();
     for attempt in 0..=retries {
         let result = tokio::time::timeout(timeout, async {
@@ -242,14 +252,23 @@ mod tests {
     }
     async fn query(server: &mut DuplexStream) {
         let (local, peer) = addresses();
-        let expected = escape(&Packet::xid(local, peer, true, true, None).serialize());
+        let expected = escape(
+            &Packet::xid(local, peer, CommandResponse::Command, PollFinal::Set, None).serialize(),
+        );
         let mut actual = vec![0; expected.len()];
         server.read_exact(&mut actual).await.unwrap();
         assert_eq!(actual, expected); // Only an information-free XID, never SABM.
     }
     fn reply(parameters: Option<XidParameters>) -> Vec<u8> {
         let (local, peer) = addresses();
-        Packet::xid(peer, local, false, true, parameters).serialize()
+        Packet::xid(
+            peer,
+            local,
+            CommandResponse::Response,
+            PollFinal::Set,
+            parameters,
+        )
+        .serialize()
     }
 
     async fn run(client: &mut DuplexStream, milliseconds: u64, retries: u32) -> Result<Xid> {
@@ -273,7 +292,7 @@ mod tests {
         assert_eq!(opt.retries, 3);
         let (_, peer) = addresses();
         let mut xid = Xid {
-            poll: true,
+            poll: PollFinal::Set,
             parameters: None,
         };
         assert!(report(&peer, &xid).contains("no information field"));
@@ -297,10 +316,34 @@ mod tests {
             let other = Callsign::new("OTHER").unwrap();
             let mut wire = vec![9, FEND, FEND, 0, FESC, 7, FEND, 0, FESC, FEND];
             for packet in [
-                Packet::xid(other.clone(), local.clone(), false, true, None),
-                Packet::xid(peer.clone(), other, false, true, None),
-                Packet::xid(peer.clone(), local.clone(), true, true, None),
-                Packet::xid(peer.clone(), local.clone(), false, false, None),
+                Packet::xid(
+                    other.clone(),
+                    local.clone(),
+                    CommandResponse::Response,
+                    PollFinal::Set,
+                    None,
+                ),
+                Packet::xid(
+                    peer.clone(),
+                    other,
+                    CommandResponse::Response,
+                    PollFinal::Set,
+                    None,
+                ),
+                Packet::xid(
+                    peer.clone(),
+                    local.clone(),
+                    CommandResponse::Command,
+                    PollFinal::Set,
+                    None,
+                ),
+                Packet::xid(
+                    peer.clone(),
+                    local.clone(),
+                    CommandResponse::Response,
+                    PollFinal::Clear,
+                    None,
+                ),
             ] {
                 wire.extend_from_slice(&escape(&packet.serialize())[1..]);
             }
@@ -379,7 +422,14 @@ mod tests {
         assert_eq!(decoder.push(0), None);
         assert_eq!(decoder.push(FEND), Some(vec![0]));
         let (local, peer) = addresses();
-        let raw = Packet::xid(peer.clone(), local.clone(), false, true, None).serialize();
+        let raw = Packet::xid(
+            peer.clone(),
+            local.clone(),
+            CommandResponse::Response,
+            PollFinal::Set,
+            None,
+        )
+        .serialize();
         for length in 0..raw.len() {
             assert!(
                 response(&[&[0], &raw[..length]].concat(), &local, &peer)
