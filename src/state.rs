@@ -2747,7 +2747,7 @@ mod tests {
             parameters: Some(XidConfig::default().offer(false)),
         };
         for index in 0..17 {
-            let peer = Callsign::new(&format!("P{index:02}"))?;
+            let peer = Callsign::new(format!("P{index:02}"))?;
             assert!(
                 !data
                     .receive_xid(&packet, CommandResponse::Command, &peer)

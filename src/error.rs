@@ -207,7 +207,6 @@ mod tests {
     fn public_errors_are_send_sync_and_signatures_are_typed() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Error>();
-        let _: fn(&str) -> Result<crate::Addr> = crate::Addr::new;
         let _: fn(&str) -> Result<std::time::Duration> = crate::parse_duration;
         let _: fn(std::path::PathBuf) -> Result<crate::pcap::PcapWriter> =
             crate::pcap::PcapWriter::create;

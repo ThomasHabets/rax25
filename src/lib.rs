@@ -159,8 +159,10 @@ pub struct Callsign(String);
 
 impl Callsign {
     /// Parse and canonicalize a station identity.
-    pub fn new(s: &str) -> Result<Self> {
-        let s = s.to_uppercase();
+    pub fn new(s: impl Into<String>) -> Result<Self> {
+        let mut s = s.into();
+        s.make_ascii_uppercase();
+
         let (call, valid_ssid) = match s.split_once('-') {
             Some((call, ssid)) => (
                 call,
@@ -174,7 +176,10 @@ impl Callsign {
         {
             return Err(Error::InvalidCallsign(s));
         }
-        Ok(Self(s.strip_suffix("-0").unwrap_or(&s).to_string()))
+        if let Some(trimmed) = s.strip_suffix("-0") {
+            s.truncate(trimmed.len());
+        }
+        Ok(Self(s))
     }
 
     /// Canonical callsign and SSID as text.
@@ -232,7 +237,7 @@ pub struct Addr {
 
 impl Addr {
     /// Create a new Addr from string. The extra bits are all clear.
-    pub fn new(s: &str) -> Result<Self> {
+    pub fn new(s: impl Into<String>) -> Result<Self> {
         Ok(Callsign::new(s)?.into())
     }
 
@@ -255,7 +260,7 @@ impl Addr {
     }
 
     /// Create a new Addr from string and the extra bits.
-    pub fn new_bits(s: &str, flags: AddrFlags) -> Result<Self> {
+    pub fn new_bits(s: impl Into<String>, flags: AddrFlags) -> Result<Self> {
         let mut a = Self::new(s)?;
         a.flags = flags;
         Ok(a)
@@ -294,7 +299,7 @@ impl Addr {
             }
         };
         Self::new_bits(
-            &call,
+            call,
             AddrFlags::empty()
                 .with(AddrFlags::LAST, bytes[6] & 1 != 0)
                 .with(AddrFlags::HIGH, bytes[6] & 0x80 != 0)
@@ -1489,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn callsign_validation_boundaries() -> Result<()> {
+    fn callsign_validation_boundaries() {
         for length in 0..=8 {
             let call = "A".repeat(length);
             assert_eq!(Callsign::new(&call).is_ok(), (3..=6).contains(&length));
@@ -1499,15 +1504,13 @@ mod tests {
             assert_eq!(Callsign::new(&call).is_ok(), byte.is_ascii_alphanumeric());
         }
         for invalid in [
-            "ABC-", "ABC--1", "ABC-+1", "ABC-1-0", "ABC- 1", "ABC-1\n", "AB\u{e9}",
+            "ABC-", "ABC--1", "ABC-+1", "ABC-1-0", "ABC- 1", "ABC-1\n", "AB\u{e9}", "a\u{df}",
         ] {
             assert!(matches!(
                 Callsign::new(invalid),
                 Err(Error::InvalidCallsign(_))
             ));
         }
-        assert_eq!(Callsign::new("a\u{df}")?.call(), "ASS");
-        Ok(())
     }
 
     #[test]
