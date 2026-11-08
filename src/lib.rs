@@ -161,9 +161,17 @@ impl Callsign {
     /// Parse and canonicalize a station identity.
     pub fn new(s: &str) -> Result<Self> {
         let s = s.to_uppercase();
-        let re = regex::Regex::new(r"^[A-Z0-9]{3,6}(?:-(?:[0-9]|1[0-5]))?$")
-            .expect("can't happen: Regex compile fail");
-        if !re.is_match(&s) {
+        let (call, valid_ssid) = match s.split_once('-') {
+            Some((call, ssid)) => (
+                call,
+                matches!(ssid.as_bytes(), [b'0'..=b'9'] | [b'1', b'0'..=b'5']),
+            ),
+            None => (s.as_str(), true),
+        };
+        if !(3..=6).contains(&call.len())
+            || !call.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            || !valid_ssid
+        {
             return Err(Error::InvalidCallsign(s));
         }
         Ok(Self(s.strip_suffix("-0").unwrap_or(&s).to_string()))
@@ -1359,6 +1367,45 @@ mod tests {
             assert_eq!(role.is_response(), !bit);
             assert_eq!(PollFinal::from(bit).is_set(), bit);
         }
+    }
+
+    #[test]
+    fn callsign_validation_boundaries() -> Result<()> {
+        for length in 0..=8 {
+            let call = "A".repeat(length);
+            assert_eq!(Callsign::new(&call).is_ok(), (3..=6).contains(&length));
+        }
+        for byte in 0..=127_u8 {
+            let call = format!("A{}0", char::from(byte));
+            assert_eq!(Callsign::new(&call).is_ok(), byte.is_ascii_alphanumeric());
+        }
+        for invalid in [
+            "ABC-", "ABC--1", "ABC-+1", "ABC-1-0", "ABC- 1", "ABC-1\n", "AB\u{e9}",
+        ] {
+            assert!(matches!(
+                Callsign::new(invalid),
+                Err(Error::InvalidCallsign(_))
+            ));
+        }
+        assert_eq!(Callsign::new("a\u{df}")?.call(), "ASS");
+        Ok(())
+    }
+
+    #[test]
+    fn callsign_ssid_validation() -> Result<()> {
+        for ssid in 0..=255 {
+            let call = format!("ABC-{ssid}");
+            let parsed = Callsign::new(&call);
+            if ssid <= 15 {
+                let parsed = parsed?;
+                assert_eq!(parsed.call(), if ssid == 0 { "ABC" } else { &call });
+            } else {
+                assert!(matches!(parsed, Err(Error::InvalidCallsign(value)) if value == call));
+            }
+            let padded = format!("ABC-{ssid:02}");
+            assert_eq!(Callsign::new(&padded).is_ok(), (10..=15).contains(&ssid));
+        }
+        Ok(())
     }
 
     #[test]
