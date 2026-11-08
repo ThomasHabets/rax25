@@ -375,7 +375,8 @@ mod tests {
                         parameters.clone(),
                     );
                     for ext in [false, true] {
-                        let bytes = packet.serialize(ext);
+                        let bytes = packet.clone().with_extended(ext).serialize();
+                        assert_eq!(bytes[13] & 0x40 == 0, ext);
                         assert_eq!(bytes[14], if poll { 0xbf } else { 0xaf });
                         assert_eq!(bytes[6] & 0x80 != 0, command);
                         assert_eq!(bytes[13] & 0x80 != 0, !command);
@@ -518,7 +519,7 @@ mod tests {
             true,
             Some(fixture_parameters()),
         );
-        let bytes = packet.serialize(false);
+        let bytes = packet.serialize();
         for length in 16..bytes.len() {
             assert!(Packet::parse(&bytes[..length], Some(false)).is_err());
         }

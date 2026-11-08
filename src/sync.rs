@@ -370,7 +370,7 @@ impl Client {
                 state::ReturnEvent::Packet(_) => {}
             }
 
-            if let Some(frame) = act.serialize(self.data.ext()) {
+            if let Some(frame) = act.serialize() {
                 self.kiss.send(&frame).unwrap();
             }
         }
@@ -409,7 +409,7 @@ mod tests {
                 std::mem::swap(&mut reply.src, &mut reply.dst);
                 reply.set_command_response(false);
                 reply.packet_type = packet_type;
-                self.queue.push_back(reply.serialize(false));
+                self.queue.push_back(reply.serialize());
             }
             Ok(())
         }
@@ -509,7 +509,7 @@ mod tests {
             ..Default::default()
         });
         initiator.connect_with_xid(&Callsign::new("M0THC-2")?, Some(false))?;
-        let frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
+        let frames: Vec<_> = sent.borrow().iter().map(Packet::serialize).collect();
         let peer = XidPeer {
             queue: frames.into(),
             ..Default::default()
@@ -541,7 +541,7 @@ mod tests {
             ..Default::default()
         });
         initiator.connect_with_xid(&Callsign::new("M0THC-2")?, Some(false))?;
-        let mut frames: Vec<_> = sent.borrow().iter().map(|p| p.serialize(false)).collect();
+        let mut frames: Vec<_> = sent.borrow().iter().map(Packet::serialize).collect();
         // Reconnect immediately with SABM alone, before the pending offer expires.
         frames.push(frames.last().expect("initial SABM").clone());
         let peer = XidPeer {
@@ -633,7 +633,7 @@ mod tests {
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
-            .serialize(false),
+            .serialize(),
         );
         let mut c = Client::new(Callsign::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);
@@ -655,7 +655,7 @@ mod tests {
                 modulus: state::Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
-            .serialize(false),
+            .serialize(),
         );
         let mut c = Client::new(Callsign::new("M0THC-2")?, Box::new(k));
         c.data.srt_default = std::time::Duration::from_millis(1);

@@ -140,8 +140,7 @@ async fn probe<T: AsyncRead + AsyncWrite + Unpin>(
     retries: u32,
 ) -> Result<Xid> {
     anyhow::ensure!(!timeout.is_zero(), "timeout must be nonzero");
-    let query =
-        escape(&Packet::xid(local.clone(), peer.clone(), true, true, None).serialize(false));
+    let query = escape(&Packet::xid(local.clone(), peer.clone(), true, true, None).serialize());
     let mut decoder = Decoder::default();
     for attempt in 0..=retries {
         let result = tokio::time::timeout(timeout, async {
@@ -243,14 +242,14 @@ mod tests {
     }
     async fn query(server: &mut DuplexStream) {
         let (local, peer) = addresses();
-        let expected = escape(&Packet::xid(local, peer, true, true, None).serialize(false));
+        let expected = escape(&Packet::xid(local, peer, true, true, None).serialize());
         let mut actual = vec![0; expected.len()];
         server.read_exact(&mut actual).await.unwrap();
         assert_eq!(actual, expected); // Only an information-free XID, never SABM.
     }
     fn reply(parameters: Option<XidParameters>) -> Vec<u8> {
         let (local, peer) = addresses();
-        Packet::xid(peer, local, false, true, parameters).serialize(false)
+        Packet::xid(peer, local, false, true, parameters).serialize()
     }
 
     async fn run(client: &mut DuplexStream, milliseconds: u64, retries: u32) -> Result<Xid> {
@@ -303,7 +302,7 @@ mod tests {
                 Packet::xid(peer.clone(), local.clone(), true, true, None),
                 Packet::xid(peer.clone(), local.clone(), false, false, None),
             ] {
-                wire.extend_from_slice(&escape(&packet.serialize(false))[1..]);
+                wire.extend_from_slice(&escape(&packet.serialize())[1..]);
             }
             let mut nondata = escape(&reply(None));
             nondata[1] = 1;
@@ -380,7 +379,7 @@ mod tests {
         assert_eq!(decoder.push(0), None);
         assert_eq!(decoder.push(FEND), Some(vec![0]));
         let (local, peer) = addresses();
-        let raw = Packet::xid(peer.clone(), local.clone(), false, true, None).serialize(false);
+        let raw = Packet::xid(peer.clone(), local.clone(), false, true, None).serialize();
         for length in 0..raw.len() {
             assert!(
                 response(&[&[0], &raw[..length]].concat(), &local, &peer)

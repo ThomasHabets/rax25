@@ -82,9 +82,9 @@ impl ReturnEvent {
     /// TODO: Not very clean. Only packets can serialize. Other return events
     /// return None.
     #[must_use]
-    pub fn serialize(&self, ext: bool) -> Option<Vec<u8>> {
+    pub fn serialize(&self) -> Option<Vec<u8>> {
         match self {
-            ReturnEvent::Packet(p) => Some(p.serialize(ext)),
+            ReturnEvent::Packet(p) => Some(p.serialize()),
             ReturnEvent::DlError(e) => {
                 eprintln!("TODO: DLERROR: {e}");
                 None
@@ -2361,7 +2361,7 @@ pub fn handle(
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2369,7 +2369,7 @@ pub fn handle(
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(true),
                 // Always command per 4.3.3.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2377,7 +2377,7 @@ pub fn handle(
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
             SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
@@ -2385,7 +2385,7 @@ pub fn handle(
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // Always response per 4.3.3.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Dm(Dm { poll: *pf }),
             })),
             // S frames.
@@ -2394,21 +2394,21 @@ pub fn handle(
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(false),
                 // TODO: REJ can be commands, in status probes.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
                 src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
                 src: crate::Addr::from(data.me.clone()).with_highbit(!*command),
                 dst: crate::Addr::from(data.peer.clone().unwrap().clone()).with_highbit(*command),
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
             // I frame.
@@ -2419,7 +2419,7 @@ pub fn handle(
                 //
                 // TODO: confirm this.
                 digipeater: vec![],
-                modulus: Modulus::Standard,
+                modulus: data.modulus,
                 packet_type: PacketType::Iframe(iframe.clone()),
             })),
             // TODO: can we avoid the copy?
@@ -2439,6 +2439,46 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_packets_carry_connection_mode() -> Result<()> {
+        for extended in [false, true] {
+            let mut data = Data::new(Callsign::new("LOCAL")?);
+            let (state, setup) = handle(
+                &*new(),
+                &mut data,
+                &Event::Connect {
+                    addr: Callsign::new("REMOTE")?,
+                    ext: extended,
+                },
+            );
+            let (state, _) = handle(&*state.unwrap(), &mut data, &Event::Ua(Ua { poll: true }));
+            let connected = state.unwrap();
+            let (_, frames) = handle(&*connected, &mut data, &Event::Data(b"hello".to_vec()));
+            let (_, poll) = handle(&*connected, &mut data, &Event::T3);
+            let (_, disconnect) = handle(&*connected, &mut data, &Event::Disconnect);
+            for events in [setup, frames, poll, disconnect] {
+                let packets: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| {
+                        if let ReturnEvent::Packet(packet) = event {
+                            Some(packet)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(packets.len(), 1);
+                for packet in packets {
+                    assert_eq!(packet.modulus.is_extended(), extended);
+                    let bytes = packet.serialize();
+                    assert_eq!(bytes[13] & 0x40 == 0, extended);
+                    assert_eq!(Packet::parse(&bytes, None)?.modulus, packet.modulus);
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn xid_requires_final_and_selected_mode() -> Result<()> {

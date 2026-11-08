@@ -552,6 +552,18 @@ const TYPE_MASK: u8 = 0b0000_0011;
 const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    /// Select the sequencing mode for control-field encoding and the
+    /// nonstandard source-address extended-mode hint.
+    #[must_use]
+    pub fn with_extended(mut self, extended: bool) -> Self {
+        self.modulus = if extended {
+            Modulus::Extended
+        } else {
+            Modulus::Standard
+        };
+        self
+    }
+
     /// Destination C bit: true for a v2.x command, false for a response.
     /// Legacy frames may have equal source and destination C bits.
     #[must_use]
@@ -619,10 +631,11 @@ impl Packet {
     pub fn packet_type(&self) -> &PacketType {
         &self.packet_type
     }
-    /// Serialize a packet, either as standard mod-8, or extended mod-128.
+    /// Serialize using this packet's sequencing mode.
     #[must_use]
     #[allow(clippy::too_many_lines)]
-    pub fn serialize(&self, ext: bool) -> Vec<u8> {
+    pub fn serialize(&self) -> Vec<u8> {
+        let ext = self.modulus.is_extended();
         let mut ret = Vec::with_capacity(
             14 + 2
                 + if let PacketType::Iframe(s) = &self.packet_type {
@@ -953,13 +966,16 @@ impl Hub for FakeKiss {
         match &packet.packet_type {
             PacketType::Sabm(_) | PacketType::Sabme(_) | PacketType::Disc(_) => {
                 self.queue.push_back(
-                    Self::make_ua(packet.dst.clone(), packet.src.clone()).serialize(self.ext),
+                    Self::make_ua(packet.dst.clone(), packet.src.clone())
+                        .with_extended(self.ext)
+                        .serialize(),
                 );
             }
             PacketType::Iframe(_) => {
                 self.queue.push_back(
                     Self::make_iframe(packet.dst.clone(), packet.src.clone(), vec![3, 2, 1])
-                        .serialize(self.ext),
+                        .with_extended(self.ext)
+                        .serialize(),
                 );
             }
             _ => {
@@ -1440,6 +1456,59 @@ mod tests {
     }
 
     #[test]
+    fn packet_serialization_uses_stored_mode() -> Result<()> {
+        for extended in [false, true] {
+            let (nr, ns) = if extended { (101, 109) } else { (5, 6) };
+            let types = [
+                PacketType::Iframe(Iframe {
+                    nr,
+                    ns,
+                    poll: true,
+                    pid: NO_L3,
+                    payload: b"hello".to_vec(),
+                }),
+                PacketType::Rr(Rr { nr, poll: true }),
+                PacketType::Rnr(Rnr { nr, poll: true }),
+                PacketType::Rej(Rej { nr: 0, poll: true }),
+                PacketType::Srej(Srej { nr: 0, poll: true }),
+            ];
+            for packet_type in types {
+                let mut packet = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, []);
+                packet.packet_type = packet_type;
+                packet = packet.with_extended(extended);
+                let bytes = packet.serialize();
+                assert_eq!(bytes[13] & 0x40 == 0, extended);
+                let control_length = if extended { 2 } else { 1 };
+                let payload_length = if matches!(packet.packet_type, PacketType::Iframe(_)) {
+                    1 + b"hello".len()
+                } else {
+                    0
+                };
+                assert_eq!(bytes.len(), 14 + control_length + payload_length);
+                assert_eq!(Packet::parse(&bytes, None)?.packet_type, packet.packet_type);
+                assert_eq!(
+                    Packet::parse(&bytes, Some(extended))?.modulus,
+                    packet.modulus
+                );
+                let mut conflicting_hint = bytes.clone();
+                conflicting_hint[13] ^= 0x40;
+                let parsed = Packet::parse(&conflicting_hint, Some(extended))?;
+                assert_eq!(parsed.modulus, packet.modulus);
+                assert_eq!(parsed.src.flags.contains(AddrFlags::EXTENDED), !extended);
+                assert_eq!(parsed.serialize(), bytes);
+                assert_eq!(
+                    packet
+                        .with_extended(!extended)
+                        .with_extended(extended)
+                        .serialize(),
+                    bytes
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn packet_command_response_setter_preserves_other_flags() -> Result<()> {
         let flags = AddrFlags::LAST | AddrFlags::EXTENDED | AddrFlags::DAMA;
         let mut packet = Packet::ui(
@@ -1453,7 +1522,7 @@ mod tests {
             assert_eq!(packet.command_response_src(), !command);
             assert_eq!(packet.dst.flags, flags.with(AddrFlags::HIGH, command));
             assert_eq!(packet.src.flags, flags.with(AddrFlags::HIGH, !command));
-            let bytes = packet.serialize(false);
+            let bytes = packet.serialize();
             assert_eq!(bytes[6] & 0x80 != 0, command);
             assert_eq!(bytes[13] & 0x80 != 0, !command);
         }
@@ -1465,14 +1534,14 @@ mod tests {
         let packet = Packet::ui(Addr::new("M0AAA")?, Addr::new("M0BBB")?, b"hello");
         for destination_c in [false, true] {
             for source_c in [false, true] {
-                let mut bytes = packet.serialize(false);
+                let mut bytes = packet.serialize();
                 bytes[6] = (bytes[6] & 0x7f) | (u8::from(destination_c) << 7);
                 bytes[13] = (bytes[13] & 0x7f) | (u8::from(source_c) << 7);
 
                 let parsed = Packet::parse(&bytes, None)?;
                 assert_eq!(parsed.command_response(), destination_c);
                 assert_eq!(parsed.command_response_src(), source_c);
-                assert_eq!(parsed.serialize(false), bytes);
+                assert_eq!(parsed.serialize(), bytes);
             }
         }
         Ok(())
@@ -1483,13 +1552,13 @@ mod tests {
         let mut packet = Packet::ui(Addr::new("M0AAA")?, Addr::new("M0BBB")?, b"hello");
         for extended in [false, true, false] {
             packet.dst.flags = packet.dst.flags.with(AddrFlags::EXTENDED, extended);
-            let bytes = packet.serialize(false);
+            let bytes = packet.serialize();
             assert_eq!(bytes[6] & 0x40 == 0, extended);
 
             let parsed = Packet::parse(&bytes, None)?;
             assert_eq!(parsed.dst.flags.contains(AddrFlags::EXTENDED), extended);
             assert_eq!(parsed.modulus, Modulus::Standard);
-            assert_eq!(parsed.serialize(false), bytes);
+            assert_eq!(parsed.serialize(), bytes);
         }
         Ok(())
     }
@@ -1506,7 +1575,7 @@ mod tests {
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
             }
-            .serialize(false),
+            .serialize(),
             vec![
                 154, 96, 168, 144, 134, 64, 228, // dst
                 154, 96, 168, 144, 134, 64, 99, // src
@@ -1521,7 +1590,7 @@ mod tests {
                 dst: dst.with_highbit(true),
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
-            .serialize(false),
+            .serialize(),
             vec![
                 154, 96, 168, 144, 134, 64, 228, 154, 96, 168, 144, 134, 64, 99, 47
             ], // , 238, 196]
@@ -1547,7 +1616,7 @@ mod tests {
                 payload: "yo".into(),
             }),
         };
-        let got = packet.serialize(false);
+        let got = packet.serialize();
         assert_eq!(
             got,
             vec![

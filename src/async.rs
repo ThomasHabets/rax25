@@ -379,7 +379,7 @@ impl KissPort {
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext), pcap));
     }
     async fn write(&mut self, packet: &Packet) -> Result<()> {
-        let bytes = packet.serialize(self.ext);
+        let bytes = packet.serialize();
         let frame = crate::escape(&bytes);
         self.port.write_all(&frame).await?;
         self.port.flush().await?;
@@ -433,11 +433,8 @@ fn kisser_read(
                     // perfect is, since we may want to both preserve the extra
                     // bits in the address fields *and* use them to signify
                     // extended mode.
-                    trace!(
-                        "BYTES: {:?}",
-                        Packet::parse(&packet.serialize(ext.unwrap_or(false)), ext)
-                    );
-                    assert_eq!(&packet.serialize(ext.unwrap_or(false)), &pb);
+                    trace!("BYTES: {:?}", Packet::parse(&packet.serialize(), ext));
+                    assert_eq!(&packet.serialize(), &pb);
                 }
                 if let Some(f) = &mut pcap
                     && let Err(e) = f.write(&pb)
@@ -748,7 +745,7 @@ impl Client {
                     self.kissport.ext = self.data.ext();
                     self.kissport.write(p).await?;
                     if let Some(f) = &mut self.pcap {
-                        f.write(&p.serialize(self.data.ext()))?;
+                        f.write(&p.serialize())?;
                     }
                 }
             }

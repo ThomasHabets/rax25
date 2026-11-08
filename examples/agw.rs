@@ -182,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
             rax25::Callsign::new("M0THC-2")?,
             b"hello world in the world",
         );
-        let serial = rax25::escape(&packet.serialize(false));
+        let serial = rax25::escape(&packet.serialize());
         port.write_all(&serial).await?;
         port.flush().await?;
     }

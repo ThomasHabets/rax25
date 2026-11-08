@@ -31,6 +31,10 @@ which combines a `Callsign` with frame-specific `AddrFlags`.
 Use `callsign.with_flags(flags)` or `Addr::from(callsign)` to build one,
 and `addr.callsign()` to access its identity without flags.
 
+`Packet::serialize()` uses the packet's stored sequencing mode. Connection
+state sets it for outgoing frames; use `packet.with_extended(true)` when
+constructing extended-mode packets directly.
+
 Address construction and serialization use named `AddrFlags` instead of
 positional boolean arguments. For example,
 `Addr::new_bits("M0QQQ-1", AddrFlags::LAST | AddrFlags::HIGH)` sets the final
