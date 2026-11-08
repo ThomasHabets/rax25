@@ -2,6 +2,8 @@
 # Private audio session: never change the desktop's default sinks or sources.
 set -euo pipefail
 
+RUSTRADIO_VERSION="0.20.2"
+
 if [[ ${RAX25_PRIVATE_AUDIO:-} != 1 ]]; then
     exec dbus-run-session -- env RAX25_PRIVATE_AUDIO=1 bash "$0" "$@"
 fi
@@ -11,8 +13,11 @@ repo_dir=$PWD
 target_dir=${CARGO_TARGET_DIR:-"$repo_dir/target"}
 if [[ $target_dir != /* ]]; then target_dir="$repo_dir/$target_dir"; fi
 if [[ -z ${BELL202_BIN:-} ]]; then
-    modem_root="$target_dir/direwolf_interop/rustradio-0.20.2"
-    cargo install rustradio --version '=0.20.2' --registry crates-io --locked \
+    modem_root="$target_dir/direwolf_interop/rustradio-${RUSTRADIO_VERSION}"
+    cargo install rustradio \
+        --version "=${RUSTRADIO_VERSION}" \
+        --registry crates-io \
+        --locked \
         --example bell202 --features audio --root "$modem_root" \
         --target-dir "$modem_root/build"
     export BELL202_BIN="$modem_root/bin/bell202"
