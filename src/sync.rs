@@ -307,30 +307,30 @@ impl Client {
             PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(&state::Event::Rnr(p.clone())),
             PacketType::Rej(p) => {
-                self.actions(&state::Event::Rej(p.clone(), packet.command_response));
+                self.actions(&state::Event::Rej(p.clone(), packet.command_response()));
             }
             PacketType::Srej(p) => self.actions(&state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => {
                 self.actions(&state::Event::Xid(
                     p.clone(),
-                    packet.command_response,
+                    packet.command_response(),
                     packet.src.clone(),
                 ));
             }
             PacketType::Ui(p) => {
-                self.actions(&state::Event::Ui(p.clone(), packet.command_response));
+                self.actions(&state::Event::Ui(p.clone(), packet.command_response()));
             }
             PacketType::Test(p) => {
-                self.actions(&state::Event::Test(p.clone(), packet.command_response));
+                self.actions(&state::Event::Test(p.clone(), packet.command_response()));
             }
             PacketType::Dm(p) => self.actions(&state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
-                self.actions(&state::Event::Rr(rr.clone(), packet.command_response));
+                self.actions(&state::Event::Rr(rr.clone(), packet.command_response()));
             }
             PacketType::Iframe(iframe) => self.actions(&state::Event::Iframe(
                 iframe.clone(),
-                packet.command_response,
+                packet.command_response(),
             )),
         }
     }
@@ -390,7 +390,7 @@ mod tests {
             let packet = Packet::parse(frame, Some(false))?;
             self.sent.borrow_mut().push(packet.clone());
             let reply = match &packet.packet_type {
-                PacketType::Xid(xid) if packet.command_response && self.respond => {
+                PacketType::Xid(xid) if packet.command_response() && self.respond => {
                     Some(PacketType::Xid(xid.clone()))
                 }
                 PacketType::Sabm(_) | PacketType::Sabme(_) => {
@@ -401,8 +401,7 @@ mod tests {
             if let Some(packet_type) = reply {
                 let mut reply = packet;
                 std::mem::swap(&mut reply.src, &mut reply.dst);
-                reply.command_response = false;
-                reply.command_response_la = true;
+                reply.set_command_response(false);
                 reply.packet_type = packet_type;
                 self.queue.push_back(reply.serialize(false));
             }
@@ -517,7 +516,7 @@ mod tests {
         assert!(accepted.negotiated_parameters().is_some());
         let responses = responses.borrow();
         assert!(matches!(responses[0].packet_type, PacketType::Xid(_)));
-        assert!(!responses[0].command_response);
+        assert!(!responses[0].command_response());
         assert!(matches!(responses[1].packet_type, PacketType::Ua(_)));
         Ok(())
     }
@@ -589,12 +588,10 @@ mod tests {
             reply,
             Packet {
                 // TODO: is this even the bit set we expect
-                src: Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?,
-                dst: Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?,
+                src: Addr::new_bits("M0THC-2", crate::AddrFlags::LAST)?.set_highbit(false),
+                dst: Addr::new_bits("M0THC-1", crate::AddrFlags::HIGH)?.set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
-                command_response: true,
-                command_response_la: false,
                 packet_type: PacketType::Iframe(Iframe {
                     nr: 0,
                     ns: 0,
@@ -624,12 +621,10 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: Addr::new("M0THC-1")?,
-                dst: Addr::new("M0THC-3")?,
+                src: Addr::new("M0THC-1")?.set_highbit(false),
+                dst: Addr::new("M0THC-3")?.set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
-                command_response: true,
-                command_response_la: false,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),
@@ -648,12 +643,10 @@ mod tests {
         let mut k = FakeKiss::default();
         k.queue.push_back(
             Packet {
-                src: Addr::new("M0THC-1")?,
-                dst: Addr::new("M0THC-2")?,
+                src: Addr::new("M0THC-1")?.set_highbit(false),
+                dst: Addr::new("M0THC-2")?.set_highbit(true),
                 digipeater: vec![],
                 modulus: state::Modulus::Standard,
-                command_response: true,
-                command_response_la: false,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),

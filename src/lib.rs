@@ -303,8 +303,6 @@ pub struct Packet {
     /// Effective sequencing mode, which may override the nonstandard
     /// `AddrFlags::EXTENDED` wire hint retained in the source address.
     modulus: Modulus,
-    command_response: bool,
-    command_response_la: bool,
     #[allow(clippy::struct_field_names)]
     packet_type: PacketType,
 }
@@ -504,6 +502,26 @@ const TYPE_MASK: u8 = 0b0000_0011;
 const NO_L3: u8 = 0xF0;
 
 impl Packet {
+    /// Destination C bit: true for a v2.x command, false for a response.
+    /// Legacy frames may have equal source and destination C bits.
+    #[must_use]
+    pub fn command_response(&self) -> bool {
+        self.dst.flags.contains(AddrFlags::HIGH)
+    }
+
+    /// Source C bit: true for a v2.x response, false for a command.
+    /// Legacy frames may have equal source and destination C bits.
+    #[must_use]
+    pub fn command_response_la(&self) -> bool {
+        self.src.flags.contains(AddrFlags::HIGH)
+    }
+
+    /// Set both address C bits for a v2.x command or response.
+    pub fn set_command_response(&mut self, command: bool) {
+        self.dst.flags = self.dst.flags.with(AddrFlags::HIGH, command);
+        self.src.flags = self.src.flags.with(AddrFlags::HIGH, !command);
+    }
+
     fn sequence_modulus(src: &Addr, ext: Option<bool>) -> Modulus {
         if ext.unwrap_or_else(|| src.flags.contains(AddrFlags::EXTENDED)) {
             Modulus::Extended
@@ -522,12 +540,10 @@ impl Packet {
         parameters: Option<xid::XidParameters>,
     ) -> Self {
         Self {
-            src,
-            dst,
+            src: src.set_highbit(!command),
+            dst: dst.set_highbit(command),
             digipeater: vec![],
             modulus: Modulus::Standard,
-            command_response: command,
-            command_response_la: !command,
             packet_type: PacketType::Xid(Xid { poll, parameters }),
         }
     }
@@ -537,12 +553,10 @@ impl Packet {
     #[must_use]
     pub fn ui<T: Into<Vec<u8>>>(src: Addr, dst: Addr, payload: T) -> Self {
         Self {
-            src,
-            dst,
+            src: src.set_highbit(true),
+            dst: dst.set_highbit(false),
             digipeater: vec![],
             modulus: Modulus::Standard,
-            command_response: false,
-            command_response_la: true,
             packet_type: PacketType::Ui(Ui {
                 pid: 0xf0,
                 push: false,
@@ -570,19 +584,18 @@ impl Packet {
         ret.extend(
             self.dst.serialize_with_flags(
                 AddrFlags::empty()
-                    .with(AddrFlags::HIGH, self.command_response)
+                    .with(AddrFlags::HIGH, self.command_response())
                     .with(
                         AddrFlags::EXTENDED,
                         self.dst.flags.contains(AddrFlags::EXTENDED),
                     ),
             ),
         );
-        assert_ne!(self.command_response, self.command_response_la);
         ret.extend(
             self.src.serialize_with_flags(
                 AddrFlags::empty()
                     .with(AddrFlags::LAST, self.digipeater.is_empty())
-                    .with(AddrFlags::HIGH, self.command_response_la)
+                    .with(AddrFlags::HIGH, self.command_response_la())
                     // Setting this bit for extseq seems to be a de facto standard.
                     .with(AddrFlags::EXTENDED, self.modulus.is_extended()),
             ),
@@ -770,8 +783,6 @@ impl Packet {
         Ok(Packet {
             src: src.clone(),
             dst: dst.clone(),
-            command_response: dst.flags.contains(AddrFlags::HIGH),
-            command_response_la: src.flags.contains(AddrFlags::HIGH),
             modulus,
             digipeater,
             packet_type: match control1 & TYPE_MASK {
@@ -859,10 +870,8 @@ impl FakeKiss {
     #[must_use]
     fn make_iframe(src: Addr, dst: Addr, payload: Vec<u8>) -> Packet {
         Packet {
-            src,
-            dst,
-            command_response: true,
-            command_response_la: false,
+            src: src.set_highbit(false),
+            dst: dst.set_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Iframe(Iframe {
@@ -878,10 +887,8 @@ impl FakeKiss {
     #[must_use]
     fn make_ua(src: Addr, dst: Addr) -> Packet {
         Packet {
-            src,
-            dst,
-            command_response: true,
-            command_response_la: false,
+            src: src.set_highbit(false),
+            dst: dst.set_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
@@ -1343,6 +1350,45 @@ mod tests {
     }
 
     #[test]
+    fn packet_command_response_setter_preserves_other_flags() -> Result<()> {
+        let flags = AddrFlags::LAST | AddrFlags::EXTENDED | AddrFlags::DAMA;
+        let mut packet = Packet::ui(
+            Addr::new_bits("M0AAA", flags)?,
+            Addr::new_bits("M0BBB", flags)?,
+            b"hello",
+        );
+        for command in [true, false, true] {
+            packet.set_command_response(command);
+            assert_eq!(packet.command_response(), command);
+            assert_eq!(packet.command_response_la(), !command);
+            assert_eq!(packet.dst.flags, flags.with(AddrFlags::HIGH, command));
+            assert_eq!(packet.src.flags, flags.with(AddrFlags::HIGH, !command));
+            let bytes = packet.serialize(false);
+            assert_eq!(bytes[6] & 0x80 != 0, command);
+            assert_eq!(bytes[13] & 0x80 != 0, !command);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn packet_command_response_bits_round_trip_independently() -> Result<()> {
+        let packet = Packet::ui(Addr::new("M0AAA")?, Addr::new("M0BBB")?, b"hello");
+        for destination_c in [false, true] {
+            for source_c in [false, true] {
+                let mut bytes = packet.serialize(false);
+                bytes[6] = (bytes[6] & 0x7f) | (u8::from(destination_c) << 7);
+                bytes[13] = (bytes[13] & 0x7f) | (u8::from(source_c) << 7);
+
+                let parsed = Packet::parse(&bytes, None)?;
+                assert_eq!(parsed.command_response(), destination_c);
+                assert_eq!(parsed.command_response_la(), source_c);
+                assert_eq!(parsed.serialize(false), bytes);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn packet_destination_reserved_bit_uses_address_flags() -> Result<()> {
         let mut packet = Packet::ui(Addr::new("M0AAA")?, Addr::new("M0BBB")?, b"hello");
         for extended in [false, true, false] {
@@ -1364,10 +1410,8 @@ mod tests {
         let dst = Addr::new("M0THC-2")?;
         assert_eq!(
             Packet {
-                src: src.clone(),
-                dst: dst.clone(),
-                command_response: true,
-                command_response_la: false,
+                src: src.clone().set_highbit(false),
+                dst: dst.clone().set_highbit(true),
                 modulus: Modulus::Standard,
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
@@ -1381,12 +1425,10 @@ mod tests {
         );
         assert_eq!(
             Packet {
-                command_response: true,
-                command_response_la: false,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
-                src,
-                dst,
+                src: src.set_highbit(false),
+                dst: dst.set_highbit(true),
                 packet_type: PacketType::Sabm(Sabm { poll: false })
             }
             .serialize(false),
@@ -1402,10 +1444,8 @@ mod tests {
         let src = Addr::new("M0THC-1")?;
         let dst = Addr::new("M0THC-2")?.set_highbit(true);
         let packet = Packet {
-            src: src.clone(),
-            dst: dst.clone(),
-            command_response: true,
-            command_response_la: false,
+            src: src.clone().set_highbit(false),
+            dst: dst.clone().set_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![
                 Addr::new("WIDE1-1")?,

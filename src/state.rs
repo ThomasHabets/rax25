@@ -2338,83 +2338,67 @@ pub fn handle(
             DlError(code) => ret.push(ReturnEvent::DlError(*code)),
             // U frames.
             SendSabm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(false),
+                dst: data.peer.clone().unwrap().clone().set_highbit(true),
                 // Always command per 4.3.3.
-                command_response: true,
-                command_response_la: false,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: *pf }),
             })),
             SendDisc { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(false),
+                dst: data.peer.clone().unwrap().clone().set_highbit(true),
                 // Always command per 4.3.3.
-                command_response: true,
-                command_response_la: false,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Disc(Disc { poll: *pf }),
             })),
             SendUa { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(true),
+                dst: data.peer.clone().unwrap().clone().set_highbit(false),
                 // Always response per 4.3.3.
-                command_response: false,
-                command_response_la: true,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: *pf }),
             })),
             SendDm { pf } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(true),
+                dst: data.peer.clone().unwrap().clone().set_highbit(false),
                 // Always response per 4.3.3.
-                command_response: false,
-                command_response_la: true,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Dm(Dm { poll: *pf }),
             })),
             // S frames.
             SendRej { pf, nr } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(true),
+                dst: data.peer.clone().unwrap().clone().set_highbit(false),
                 // TODO: REJ can be commands, in status probes.
-                command_response: false,
-                command_response_la: true,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: *pf, nr: *nr }),
             })),
             SendRr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
-                command_response: *command,
-                command_response_la: !*command,
+                src: data.me.clone().set_highbit(!*command),
+                dst: data.peer.clone().unwrap().clone().set_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rr(Rr { poll: *pf, nr: *nr }),
             })),
             SendRnr { pf, nr, command } => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
-                command_response: *command,
-                command_response_la: !*command,
+                src: data.me.clone().set_highbit(!*command),
+                dst: data.peer.clone().unwrap().clone().set_highbit(*command),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rnr(Rnr { poll: *pf, nr: *nr }),
             })),
             // I frame.
             SendIframe(iframe) => ret.push(ReturnEvent::Packet(Packet {
-                src: data.me.clone(),
-                dst: data.peer.clone().unwrap().clone(),
+                src: data.me.clone().set_highbit(false),
+                dst: data.peer.clone().unwrap().clone().set_highbit(true),
                 // 4.3.1 seems to say that all I frames are commands.
                 //
                 // TODO: confirm this.
-                command_response: true,
-                command_response_la: false,
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Iframe(iframe.clone()),
@@ -2580,10 +2564,8 @@ mod tests {
         assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?,
-                dst: Addr::new("M0THC-2")?,
-                command_response: true,
-                command_response_la: false,
+                src: Addr::new("M0THC-1")?.set_highbit(false),
+                dst: Addr::new("M0THC-2")?.set_highbit(true),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2603,10 +2585,8 @@ mod tests {
             assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
             assert_all(
                 &[ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?,
-                    dst: Addr::new("M0THC-2")?,
-                    command_response: true,
-                    command_response_la: false,
+                    src: Addr::new("M0THC-1")?.set_highbit(false),
+                    dst: Addr::new("M0THC-2")?.set_highbit(true),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Sabm(Sabm { poll: true }),
@@ -2634,10 +2614,8 @@ mod tests {
         assert_eq!(data.peer, Some(Addr::new("M0THC-2")?));
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?,
-                dst: Addr::new("M0THC-2")?,
-                command_response: false,
-                command_response_la: true,
+                src: Addr::new("M0THC-1")?.set_highbit(true),
+                dst: Addr::new("M0THC-2")?.set_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Ua(Ua { poll: true }),
@@ -2674,10 +2652,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![1, 2, 3])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?,
-                    dst: Addr::new("M0THC-2")?,
-                    command_response: false,
-                    command_response_la: true,
+                    src: Addr::new("M0THC-1")?.set_highbit(true),
+                    dst: Addr::new("M0THC-2")?.set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 1 }),
@@ -2705,10 +2681,8 @@ mod tests {
         assert!(c2.is_none());
         assert_all(
             &[ReturnEvent::Packet(Packet {
-                src: Addr::new("M0THC-1")?,
-                dst: Addr::new("M0THC-2")?,
-                command_response: false,
-                command_response_la: true,
+                src: Addr::new("M0THC-1")?.set_highbit(true),
+                dst: Addr::new("M0THC-2")?.set_highbit(false),
                 digipeater: vec![],
                 modulus: Modulus::Standard,
                 packet_type: PacketType::Rej(Rej { poll: true, nr: 1 }),
@@ -2737,10 +2711,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::Some(vec![11, 22, 33])),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?,
-                    dst: Addr::new("M0THC-2")?,
-                    command_response: false,
-                    command_response_la: true,
+                    src: Addr::new("M0THC-1")?.set_highbit(true),
+                    dst: Addr::new("M0THC-2")?.set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Rr(Rr { poll: true, nr: 2 }),
@@ -2763,10 +2735,8 @@ mod tests {
             &[
                 ReturnEvent::Data(Res::EOF),
                 ReturnEvent::Packet(Packet {
-                    src: Addr::new("M0THC-1")?,
-                    dst: Addr::new("M0THC-2")?,
-                    command_response: false,
-                    command_response_la: true,
+                    src: Addr::new("M0THC-1")?.set_highbit(true),
+                    dst: Addr::new("M0THC-2")?.set_highbit(false),
                     digipeater: vec![],
                     modulus: Modulus::Standard,
                     packet_type: PacketType::Ua(Ua { poll: true }),

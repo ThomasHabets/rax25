@@ -603,26 +603,28 @@ impl Client {
             PacketType::Disc(p) => self.actions(state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(state::Event::Rnr(p.clone())),
             PacketType::Rej(p) => {
-                self.actions(state::Event::Rej(p.clone(), packet.command_response))
+                self.actions(state::Event::Rej(p.clone(), packet.command_response()))
             }
             PacketType::Srej(p) => self.actions(state::Event::Srej(p.clone())),
             PacketType::Frmr(p) => self.actions(state::Event::Frmr(p.clone())),
             PacketType::Xid(p) => self.actions(state::Event::Xid(
                 p.clone(),
-                packet.command_response,
+                packet.command_response(),
                 packet.src.clone(),
             )),
-            PacketType::Ui(p) => self.actions(state::Event::Ui(p.clone(), packet.command_response)),
+            PacketType::Ui(p) => {
+                self.actions(state::Event::Ui(p.clone(), packet.command_response()))
+            }
             PacketType::Test(p) => {
-                self.actions(state::Event::Test(p.clone(), packet.command_response))
+                self.actions(state::Event::Test(p.clone(), packet.command_response()))
             }
             PacketType::Dm(p) => self.actions(state::Event::Dm(p.clone())),
             PacketType::Rr(rr) => {
-                self.actions(state::Event::Rr(rr.clone(), packet.command_response))
+                self.actions(state::Event::Rr(rr.clone(), packet.command_response()))
             }
             PacketType::Iframe(iframe) => self.actions(state::Event::Iframe(
                 iframe.clone(),
-                packet.command_response,
+                packet.command_response(),
             )),
         }
         .await
