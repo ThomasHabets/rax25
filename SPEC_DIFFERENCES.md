@@ -93,6 +93,12 @@ mode remains authoritative when it is available: `Packet::parse` accepts an
 explicit mode, and only infers the mode from this bit when passed `None`.
 Outgoing packets carry their effective sequencing mode; serialization derives
 both the control-field format and the Linux address hint from that same mode.
+The hint is enabled by default for compatibility, but applications can disable
+it with the async builder's `linux_extended_hint(false)`, the sync client's
+`set_linux_extended_hint(false)`, or `Packet::serialize_with_linux_extended_hint(false)`.
+Disabling it leaves the source reserved bit set to one and does not change
+control-field encoding, destination bits, or receive parsing. Such peers must
+use the known connection mode rather than infer it from this hint.
 Connection endpoints use flag-free `Callsign` identities; packet headers use
 `Addr` values that retain wire flags. This API distinction does not change
 the address encoding, and an explicit zero SSID identifies the same station

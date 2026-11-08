@@ -83,8 +83,14 @@ impl ReturnEvent {
     /// return None.
     #[must_use]
     pub fn serialize(&self) -> Option<Vec<u8>> {
+        self.serialize_with_linux_extended_hint(true)
+    }
+
+    /// Serialize a packet event with optional Linux extended-mode signalling.
+    #[must_use]
+    pub fn serialize_with_linux_extended_hint(&self, enabled: bool) -> Option<Vec<u8>> {
         match self {
-            ReturnEvent::Packet(p) => Some(p.serialize()),
+            ReturnEvent::Packet(p) => Some(p.serialize_with_linux_extended_hint(enabled)),
             ReturnEvent::DlError(e) => {
                 eprintln!("TODO: DLERROR: {e}");
                 None
@@ -351,6 +357,7 @@ impl Modulus {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)] // Keep state variables aligned with the AX.25 specification.
 pub struct Data {
+    pub(crate) linux_extended_hint: bool,
     xid_config: Option<XidConfig>,
     negotiated: Option<NegotiatedParameters>,
     management: Timer,
@@ -552,6 +559,7 @@ impl Data {
     pub fn new(me: Callsign) -> Self {
         Self {
             me,
+            linux_extended_hint: true,
             xid_config: None,
             negotiated: None,
             management: Timer::default(),
@@ -589,6 +597,12 @@ impl Data {
             able_to_establish: false,
             experiments: HashSet::new(),
         }
+    }
+
+    /// Enable the outgoing Linux source-address extended-mode hint (default true).
+    /// This does not change the sequencing mode or receive parsing.
+    pub fn set_linux_extended_hint(&mut self, enabled: bool) {
+        self.linux_extended_hint = enabled;
     }
 
     /// Set default T1 timer / smoothed roundtrip.
@@ -636,6 +650,7 @@ impl Data {
     #[must_use]
     pub fn accepted_data(&mut self, peer: &Callsign) -> Self {
         let mut data = Self::new(self.me.clone());
+        data.linux_extended_hint = self.linux_extended_hint;
         data.xid_config.clone_from(&self.xid_config);
         self.expire_pending_xid();
         if let Some(index) = self
@@ -2441,6 +2456,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accepted_connection_inherits_linux_hint_policy() -> Result<()> {
+        let mut listener = Data::new(Callsign::new("LOCAL")?);
+        let peer = Callsign::new("REMOTE")?;
+        assert!(listener.linux_extended_hint);
+        for enabled in [false, true] {
+            listener.set_linux_extended_hint(enabled);
+            assert_eq!(listener.accepted_data(&peer).linux_extended_hint, enabled);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn outgoing_packets_carry_connection_mode() -> Result<()> {
         for extended in [false, true] {
             let mut data = Data::new(Callsign::new("LOCAL")?);
@@ -2474,6 +2501,14 @@ mod tests {
                     let bytes = packet.serialize();
                     assert_eq!(bytes[13] & 0x40 == 0, extended);
                     assert_eq!(Packet::parse(&bytes, None)?.modulus, packet.modulus);
+                    let event = ReturnEvent::Packet(packet.clone());
+                    assert_eq!(event.serialize(), Some(bytes.clone()));
+                    let mut without_hint = bytes;
+                    without_hint[13] |= 0x40;
+                    assert_eq!(
+                        event.serialize_with_linux_extended_hint(false),
+                        Some(without_hint)
+                    );
                 }
             }
         }

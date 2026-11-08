@@ -162,6 +162,7 @@ impl tokio::io::AsyncWrite for PortType {
 /// A builder for setting up a connection.
 pub struct ConnectionBuilder {
     me: Callsign,
+    linux_extended_hint: bool,
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
     port: PortType,
@@ -177,6 +178,7 @@ impl ConnectionBuilder {
     pub fn new(me: Callsign, port: PortType) -> Result<Self> {
         Ok(Self {
             me,
+            linux_extended_hint: true,
             extended: None,
             capture: None,
             t3v: None,
@@ -201,6 +203,16 @@ impl ConnectionBuilder {
     #[must_use]
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
+        self
+    }
+
+    /// Enable the outgoing Linux extended-mode address hint (default true).
+    ///
+    /// Disabling it leaves the reserved source-address bit set to one without
+    /// changing modulo-128 control fields or receive parsing.
+    #[must_use]
+    pub fn linux_extended_hint(mut self, enabled: bool) -> Self {
+        self.linux_extended_hint = enabled;
         self
     }
 
@@ -251,6 +263,7 @@ impl ConnectionBuilder {
     #[must_use]
     fn create_data(&self) -> state::Data {
         let mut data = state::Data::new(self.me.clone());
+        data.set_linux_extended_hint(self.linux_extended_hint);
         if let Some(config) = &self.xid {
             data.set_xid_config(config.clone());
         }
@@ -378,8 +391,8 @@ impl KissPort {
         self.incoming_frames
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext), pcap));
     }
-    async fn write(&mut self, packet: &Packet) -> Result<()> {
-        let bytes = packet.serialize();
+    async fn write(&mut self, packet: &Packet, linux_extended_hint: bool) -> Result<()> {
+        let bytes = packet.serialize_with_linux_extended_hint(linux_extended_hint);
         let frame = crate::escape(&bytes);
         self.port.write_all(&frame).await?;
         self.port.flush().await?;
@@ -743,9 +756,13 @@ impl Client {
                 ReturnEvent::Packet(p) => {
                     // TODO: we should probably only flip this on SABME, right?
                     self.kissport.ext = self.data.ext();
-                    self.kissport.write(p).await?;
+                    self.kissport
+                        .write(p, self.data.linux_extended_hint)
+                        .await?;
                     if let Some(f) = &mut self.pcap {
-                        f.write(&p.serialize())?;
+                        f.write(
+                            &p.serialize_with_linux_extended_hint(self.data.linux_extended_hint),
+                        )?;
                     }
                 }
             }
@@ -863,11 +880,13 @@ mod tests {
 
     #[tokio::test]
     async fn xid_connects_and_negotiates_both_modes() -> Result<()> {
-        for (mode, local, peer) in [
-            (None, "M0THC-1", "M0THC-2"),
-            (Some(false), "M0THC-1", "M0THC-2"),
-            (Some(true), "M0THC-1", "M0THC-2"),
-            (None, "LOCAL-0", "REMOTE-0"),
+        for (mode, local, peer, hint) in [
+            (None, "M0THC-1", "M0THC-2", true),
+            (Some(false), "M0THC-1", "M0THC-2", true),
+            (Some(true), "M0THC-1", "M0THC-2", true),
+            (None, "LOCAL-0", "REMOTE-0", true),
+            (Some(false), "LOCAL-0", "REMOTE-0", false),
+            (Some(true), "LOCAL-0", "REMOTE-0", false),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
@@ -878,8 +897,10 @@ mod tests {
                     ..Default::default()
                 })
                 .extended(mode)
+                .linux_extended_hint(hint)
                 .srt_default(Duration::from_millis(20));
-            let server = ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?;
+            let server = ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?
+                .linux_extended_hint(hint);
             let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
                 tokio::join!(
                     client.connect(Callsign::new(peer).unwrap()),
@@ -887,12 +908,22 @@ mod tests {
                 )
             })
             .await?;
-            let client = client?;
-            let server = server?;
+            let mut client = client?;
+            let mut server = server?;
             assert!(client.negotiated_parameters().is_some());
             assert!(server.negotiated_parameters().is_some());
             assert_eq!(client.data.ext(), mode.unwrap_or(true));
             assert_eq!(server.data.ext(), client.data.ext());
+            assert_eq!(client.data.linux_extended_hint, hint);
+            assert_eq!(server.data.linux_extended_hint, hint);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                client.write(b"hello").await?;
+                assert_eq!(server.read().await?, b"hello");
+                server.write(b"echo").await?;
+                assert_eq!(client.read().await?, b"echo");
+                Ok::<(), Error>(())
+            })
+            .await??;
         }
         Ok(())
     }

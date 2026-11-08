@@ -35,6 +35,12 @@ and `addr.callsign()` to access its identity without flags.
 state sets it for outgoing frames; use `packet.with_extended(true)` when
 constructing extended-mode packets directly.
 
+The Linux source-address extended-mode hint is enabled by default. Disable
+it with `.linux_extended_hint(false)` on the async connection builder or
+`client.set_linux_extended_hint(false)` on a sync client. For raw packets,
+use `packet.serialize_with_linux_extended_hint(false)`. This only disables
+the wire hint; modulo-128 framing and negotiated receive mode are unchanged.
+
 Address construction and serialization use named `AddrFlags` instead of
 positional boolean arguments. For example,
 `Addr::new_bits("M0QQQ-1", AddrFlags::LAST | AddrFlags::HIGH)` sets the final

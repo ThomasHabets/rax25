@@ -14,7 +14,7 @@
 //!
 //! ## Interoperability tested regularly
 //!
-//! * Linux kernel
+//! * Linux kernel (removed in newer kernels)
 //! * Direwolf
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::missing_errors_doc)]
@@ -425,9 +425,14 @@ pub struct Frmr {
     poll: bool,
 }
 
-/// Test - Test frame (4.3.3.8, page 28)
+/// Test - Test frame
 ///
-/// It's ping, basically. The payload is mirrorred back, or (if there's not
+/// * 1984: n/a
+/// * 1998: 4.3.3.8, page 28
+/// * 2006: 4.3.3.8, page 32
+/// * 2017: 4.3.3.8, page 35
+///
+/// It's ping, basically. The payload is mirrored back, or (if there's not
 /// enough room to store the payload), an empty response is returned.
 ///
 /// The intended use of the poll flag here is unclear.
@@ -500,10 +505,12 @@ pub struct Ui {
     pub payload: Vec<u8>,
 }
 
-/// DM - Disconnected Mode (4.3.3.5, page 23)
+/// DM - Disconnected Mode
 ///
-/// The reply if the incoming packet implies a connection is active, or if
-/// a SABM(E) was received and nothing was ready to receive it.
+/// * 1998: 4.3.3.5, page 23
+///
+/// Sent as reply to SAMB(E) if a connection can't be established, or as a reply
+/// to connection-assuming frames when no connection is in fact active.
 ///
 /// Basically a TCP RST.
 #[derive(Clone, Debug, PartialEq)]
@@ -511,7 +518,9 @@ pub struct Dm {
     poll: bool,
 }
 
-/// DISC - Disconnect (4.3.3.3, page 23)
+/// DISC - Disconnect
+///
+/// * 1998: 4.3.3.3, page 23
 ///
 /// End the connection. A DISC is acked with a UA packet, which seems
 /// silly. Replying with DISC would make more sense, but hey ho.
@@ -553,7 +562,7 @@ const NO_L3: u8 = 0xF0;
 
 impl Packet {
     /// Select the sequencing mode for control-field encoding and the
-    /// nonstandard source-address extended-mode hint.
+    /// nonstandard source-address extended-mode hint, when enabled.
     #[must_use]
     pub fn with_extended(mut self, extended: bool) -> Self {
         self.modulus = if extended {
@@ -631,10 +640,20 @@ impl Packet {
     pub fn packet_type(&self) -> &PacketType {
         &self.packet_type
     }
-    /// Serialize using this packet's sequencing mode.
+    /// Serialize using this packet's sequencing mode, with the Linux hint enabled.
+    #[must_use]
+    pub fn serialize(&self) -> Vec<u8> {
+        self.serialize_with_linux_extended_hint(true)
+    }
+
+    /// Serialize with optional Linux extended-sequencing signalling.
+    ///
+    /// When disabled, the reserved source-address bit remains one even in
+    /// modulo-128 mode. This does not change control-field encoding, destination
+    /// flags, or receive parsing; receivers must know the connection mode.
     #[must_use]
     #[allow(clippy::too_many_lines)]
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize_with_linux_extended_hint(&self, enabled: bool) -> Vec<u8> {
         let ext = self.modulus.is_extended();
         let mut ret = Vec::with_capacity(
             14 + 2
@@ -659,8 +678,7 @@ impl Packet {
                 AddrFlags::empty()
                     .with(AddrFlags::LAST, self.digipeater.is_empty())
                     .with(AddrFlags::HIGH, self.command_response_src())
-                    // Setting this bit for extseq seems to be a de facto standard.
-                    .with(AddrFlags::EXTENDED, self.modulus.is_extended()),
+                    .with(AddrFlags::EXTENDED, enabled && ext),
             ),
         );
 
@@ -1485,6 +1503,14 @@ mod tests {
                     0
                 };
                 assert_eq!(bytes.len(), 14 + control_length + payload_length);
+                let without_hint = packet.serialize_with_linux_extended_hint(false);
+                let mut expected = bytes.clone();
+                expected[13] |= 0x40;
+                assert_eq!(without_hint, expected);
+                assert_eq!(
+                    Packet::parse(&without_hint, Some(extended))?.packet_type,
+                    packet.packet_type
+                );
                 assert_eq!(Packet::parse(&bytes, None)?.packet_type, packet.packet_type);
                 assert_eq!(
                     Packet::parse(&bytes, Some(extended))?.modulus,
@@ -1554,6 +1580,7 @@ mod tests {
             packet.dst.flags = packet.dst.flags.with(AddrFlags::EXTENDED, extended);
             let bytes = packet.serialize();
             assert_eq!(bytes[6] & 0x40 == 0, extended);
+            assert_eq!(packet.serialize_with_linux_extended_hint(false), bytes);
 
             let parsed = Packet::parse(&bytes, None)?;
             assert_eq!(parsed.dst.flags.contains(AddrFlags::EXTENDED), extended);

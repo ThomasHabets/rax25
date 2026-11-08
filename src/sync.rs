@@ -91,6 +91,12 @@ impl Client {
         }
     }
 
+    /// Enable the outgoing Linux extended-mode address hint (default true).
+    /// This does not change the sequencing mode or receive parsing.
+    pub fn set_linux_extended_hint(&mut self, enabled: bool) {
+        self.data.set_linux_extended_hint(enabled);
+    }
+
     /// Configure XID negotiation for subsequent connections.
     pub fn set_xid_config(&mut self, config: state::XidConfig) {
         self.data.set_xid_config(config);
@@ -370,7 +376,9 @@ impl Client {
                 state::ReturnEvent::Packet(_) => {}
             }
 
-            if let Some(frame) = act.serialize() {
+            if let Some(frame) =
+                act.serialize_with_linux_extended_hint(self.data.linux_extended_hint)
+            {
                 self.kiss.send(&frame).unwrap();
             }
         }
@@ -432,13 +440,22 @@ mod tests {
 
     #[test]
     fn xid_fake_peer_negotiates_both_modes() -> Result<()> {
-        for mode in [None, Some(false), Some(true)] {
+        for (mode, hint) in [
+            (None, true),
+            (Some(false), true),
+            (Some(true), true),
+            (None, false),
+            (Some(false), false),
+            (Some(true), false),
+        ] {
             let peer = XidPeer {
                 respond: true,
                 ..Default::default()
             };
             let sent = peer.sent.clone();
             let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(peer));
+            assert!(client.data.linux_extended_hint);
+            client.set_linux_extended_hint(hint);
             client.set_xid_config(state::XidConfig {
                 management_timeout: std::time::Duration::from_millis(20),
                 ..Default::default()
@@ -452,6 +469,10 @@ mod tests {
                 sent[1].packet_type,
                 PacketType::Sabm(_) | PacketType::Sabme(_)
             ));
+            assert_eq!(
+                sent[1].src.flags.contains(crate::AddrFlags::EXTENDED),
+                mode.unwrap_or(true) && hint
+            );
         }
         Ok(())
     }
