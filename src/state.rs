@@ -646,7 +646,11 @@ impl Data {
         self.xid_config.as_ref().map_or(Ok(()), XidConfig::validate)
     }
 
+    /// Clear XID policy and pending proposals, stopping management retries.
+    /// This does not transition the link state; disconnect to abandon an
+    /// in-progress connection attempt.
     pub fn clear_xid_config(&mut self) {
+        self.management.stop();
         self.xid_config = None;
         self.pending_xid.clear();
     }
@@ -2347,11 +2351,11 @@ pub fn handle(
         Event::ManagementTimeout => {
             if !data.management.running {
                 vec![]
-            } else if data.management_retries < data.xid_config.as_ref().unwrap().management_retries
+            } else if let Some(config) = &data.xid_config
+                && data.management_retries < config.management_retries
             {
                 data.management_retries += 1;
-                data.management
-                    .start(data.xid_config.as_ref().unwrap().management_timeout);
+                data.management.start(config.management_timeout);
                 vec![data.xid_command()]
             } else {
                 data.finish_xid(None)
@@ -2484,6 +2488,43 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_xid_config_stops_retries_and_ignores_stale_timeout() -> Result<()> {
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        let peer = Callsign::new("REMOTE")?;
+        let request = Xid {
+            poll: PollFinal::Set,
+            parameters: Some(XidConfig::default().offer(false)),
+        };
+        data.receive_xid(&request, CommandResponse::Command, &peer);
+        assert_eq!(data.pending_xid.len(), 1);
+        data.start_xid(&peer, None);
+        assert!(data.management.running);
+        data.clear_xid_config();
+        assert!(!data.management.running);
+        assert!(data.xid_config.is_none());
+        assert_eq!(data.pending_xid, VecDeque::new());
+        let (state, events) = handle(&AwaitingXid, &mut data, &Event::ManagementTimeout);
+        assert!(state.is_none());
+        assert_eq!(events, []);
+        let (state, _) = handle(&AwaitingXid, &mut data, &Event::Disconnect);
+        assert!(state.is_some_and(|state| state.is_state_disconnected()));
+        Ok(())
+    }
+
+    #[test]
+    fn xid_timeout_without_config_falls_back() -> Result<()> {
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        data.start_xid(&Callsign::new("REMOTE")?, Some(true));
+        data.xid_config = None;
+        let (state, events) = handle(&AwaitingXid, &mut data, &Event::ManagementTimeout);
+        assert!(state.is_some_and(|state| state.name() == "AwaitingConnection"));
+        assert!(!data.management.running);
+        assert!(!data.ext());
+        assert!(matches!(events.as_slice(), [ReturnEvent::Packet(_)]));
+        Ok(())
+    }
 
     #[test]
     fn accepted_data_transfers_only_matching_live_proposal() -> Result<()> {
