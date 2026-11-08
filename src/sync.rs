@@ -595,7 +595,6 @@ mod tests {
                 modulus: state::Modulus::Standard,
                 command_response: true,
                 command_response_la: false,
-                rr_dist1: false,
                 packet_type: PacketType::Iframe(Iframe {
                     nr: 0,
                     ns: 0,
@@ -631,7 +630,6 @@ mod tests {
                 modulus: state::Modulus::Standard,
                 command_response: true,
                 command_response_la: false,
-                rr_dist1: false,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),
@@ -656,7 +654,6 @@ mod tests {
                 modulus: state::Modulus::Standard,
                 command_response: true,
                 command_response_la: false,
-                rr_dist1: false,
                 packet_type: PacketType::Sabm(Sabm { poll: true }),
             }
             .serialize(false),

@@ -305,7 +305,6 @@ pub struct Packet {
     modulus: Modulus,
     command_response: bool,
     command_response_la: bool,
-    rr_dist1: bool,
     #[allow(clippy::struct_field_names)]
     packet_type: PacketType,
 }
@@ -529,7 +528,6 @@ impl Packet {
             modulus: Modulus::Standard,
             command_response: command,
             command_response_la: !command,
-            rr_dist1: false,
             packet_type: PacketType::Xid(Xid { poll, parameters }),
         }
     }
@@ -545,7 +543,6 @@ impl Packet {
             modulus: Modulus::Standard,
             command_response: false,
             command_response_la: true,
-            rr_dist1: false,
             packet_type: PacketType::Ui(Ui {
                 pid: 0xf0,
                 push: false,
@@ -574,7 +571,10 @@ impl Packet {
             self.dst.serialize_with_flags(
                 AddrFlags::empty()
                     .with(AddrFlags::HIGH, self.command_response)
-                    .with(AddrFlags::EXTENDED, self.rr_dist1),
+                    .with(
+                        AddrFlags::EXTENDED,
+                        self.dst.flags.contains(AddrFlags::EXTENDED),
+                    ),
             ),
         );
         assert_ne!(self.command_response, self.command_response_la);
@@ -772,7 +772,6 @@ impl Packet {
             dst: dst.clone(),
             command_response: dst.flags.contains(AddrFlags::HIGH),
             command_response_la: src.flags.contains(AddrFlags::HIGH),
-            rr_dist1: dst.flags.contains(AddrFlags::EXTENDED),
             modulus,
             digipeater,
             packet_type: match control1 & TYPE_MASK {
@@ -864,7 +863,6 @@ impl FakeKiss {
             dst,
             command_response: true,
             command_response_la: false,
-            rr_dist1: false,
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Iframe(Iframe {
@@ -884,7 +882,6 @@ impl FakeKiss {
             dst,
             command_response: true,
             command_response_la: false,
-            rr_dist1: false,
             modulus: Modulus::Standard,
             digipeater: vec![],
             packet_type: PacketType::Ua(Ua { poll: true }),
@@ -1346,6 +1343,22 @@ mod tests {
     }
 
     #[test]
+    fn packet_destination_reserved_bit_uses_address_flags() -> Result<()> {
+        let mut packet = Packet::ui(Addr::new("M0AAA")?, Addr::new("M0BBB")?, b"hello");
+        for extended in [false, true, false] {
+            packet.dst.flags = packet.dst.flags.with(AddrFlags::EXTENDED, extended);
+            let bytes = packet.serialize(false);
+            assert_eq!(bytes[6] & 0x40 == 0, extended);
+
+            let parsed = Packet::parse(&bytes, None)?;
+            assert_eq!(parsed.dst.flags.contains(AddrFlags::EXTENDED), extended);
+            assert_eq!(parsed.modulus, Modulus::Standard);
+            assert_eq!(parsed.serialize(false), bytes);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn serialize_sabm() -> Result<()> {
         let src = Addr::new("M0THC-1")?;
         let dst = Addr::new("M0THC-2")?;
@@ -1355,7 +1368,6 @@ mod tests {
                 dst: dst.clone(),
                 command_response: true,
                 command_response_la: false,
-                rr_dist1: false,
                 modulus: Modulus::Standard,
                 digipeater: vec![],
                 packet_type: PacketType::Sabm(Sabm { poll: true })
@@ -1372,7 +1384,6 @@ mod tests {
                 command_response: true,
                 command_response_la: false,
                 digipeater: vec![],
-                rr_dist1: false,
                 modulus: Modulus::Standard,
                 src,
                 dst,
@@ -1395,7 +1406,6 @@ mod tests {
             dst: dst.clone(),
             command_response: true,
             command_response_la: false,
-            rr_dist1: false,
             modulus: Modulus::Standard,
             digipeater: vec![
                 Addr::new("WIDE1-1")?,
