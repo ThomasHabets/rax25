@@ -15,6 +15,73 @@ Page references below use the documents' printed page numbers. Where the code
 identifies a diagram as erroneous, the explanation records the implementation's
 interpretation, rather than an independently adopted official erratum.
 
+## Changes Between Specification Editions
+
+These are selected protocol changes, corrections, and regressions relevant to
+this implementation, not an exhaustive editorial diff. The years identify the
+files in `spec/`; the 2006 document still labels itself "Revision: July 1998".
+Figure and page references identify the newer edition unless stated otherwise.
+Bug assessments here are implementation notes, not official errata.
+
+### 1984->1998
+
+- Adds modulo-128 sequencing and SABME alongside modulo-8/SABM
+  (sections 4.2 and 4.3.3.1).
+- Adds selective-reject recovery and XID parameter negotiation
+  (sections 4.3.2.4 and 4.3.3.7).
+- Defines segmentation/reassembly and a layered service model, with SDL state
+  diagrams taking precedence over prose (Preface, sections 2 and 6.6, Appendix C).
+- Limits digipeating to two hops, reflecting the move toward network nodes
+  (Preface and section 3.12.5).
+
+### 1998->2006
+
+- Redraws the figures in Visio and repaginates the SDL (Foreword, Appendix C).
+- Renumbers XID bits from one-based to zero-based without changing wire masks;
+  this also fixes the REJ/SREJ prose's inconsistent bit references
+  (section 4.3.3.7, Figure 4.5).
+- Fixes the TimerRecovery SABM(E) reset: the duplicated `V(S) <- 0` becomes
+  `V(R) <- 0` (Figure C4.5, page 101; 1998 page 99).
+- Fixes Connected T3 expiry to initialize `RC` to 1 rather than 0
+  (Figure C4.4, page 96; 1998 page 93).
+- Changes TimerRecovery I-frame acknowledgement handling from assigning
+  `V(A) <- N(R)` to calling "Check I frames ack'd"
+  (Figure C4.5, page 103; 1998 page 102).
+- Introduces a typo: Disconnected's leftmost `DL-CONNECT Request` should be
+  `DL-DISCONNECT Request` (Figure C4.1, page 88).
+- Introduces an I-frame error-code bug: an I response reports O instead of S;
+  O means an oversized information field (Figures C4.4/C4.5, pages 98/103).
+  The 2017 diagrams retain O, and Connected additionally reverses the
+  command-test branches (Figures C4.4c/C4.5c, pages 93/96).
+
+### 2006->2017
+
+- Fixes the Disconnected `DL-CONNECT`/`DL-DISCONNECT` typo
+  (Figure C4.1, page 88).
+- Fixes successful connection establishment to start T3 instead of stopping it
+  (Figure C4.2, page 89; 2006 page 91).
+- Fixes enquiry replies to use RR/RNR responses rather than commands, and adds
+  SREJ-aware enquiry handling (Figure C4.7a, page 101; 2006 page 109).
+- Fixes the peer-busy acknowledgement path to stop T3 instead of starting it,
+  and initializes link-establishment `RC` to 1 instead of 0
+  (Figure C4.7a, page 101; 2006 pages 109-110).
+- Adds TimerRecovery final-response handling to restart T1 after retransmission
+  and clear `RC` when everything is acknowledged (Figure C4.5b, page 95).
+- Changes the T1-expiry backoff from `2 ** (RC + 1) * SRT` to
+  `(RC * 0.25) + SRT * 2` (Figure C4.7b, page 102; 2006 page 111).
+- Changes XID defaults from combined SREJ/REJ and modulo-8 to SREJ and
+  modulo-128 (section 4.3.3.7).
+- Permits multiframe SREJ and assigns optional-functions bit 22 to segmentation,
+  but introduces a contradiction: the prose still requires bit 22 to be zero
+  (Figure 4.5 and section 4.3.3.7, pages 32-33).
+- Introduces an invalid modulo-8 default window: `k <- 8` replaces 4, although
+  section 6.7.2 still limits it to 7 (Figure C4.7b, page 102).
+- Introduces a wrong error code: unexpected UA while Connected shares FRMR's
+  error K instead of reporting C (Figure C4.4b, page 92; 2006 page 97).
+- Introduces a timer regression: SABM(E) in TimerRecovery stops T3 instead of
+  starting it before returning to Connected (Figure C4.5b, page 95;
+  2006 page 101).
+
 ## Deliberate Choices
 
 ### Linux Extended-Sequence Indicator
