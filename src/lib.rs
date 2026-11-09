@@ -773,9 +773,7 @@ impl Packet {
         {
             let l = self.digipeater.len();
             for (n, digi) in self.digipeater.iter().enumerate() {
-                ret.extend(
-                    digi.serialize_with_flags(AddrFlags::empty().with(AddrFlags::LAST, n == l - 1)),
-                );
+                ret.extend(digi.serialize_with_flags(digi.flags.with(AddrFlags::LAST, n == l - 1)));
             }
         }
 
@@ -1904,7 +1902,7 @@ mod tests {
             dst: dst.clone().with_highbit(true),
             modulus: Modulus::Standard,
             digipeater: vec![
-                Addr::new("WIDE1-1")?,
+                Addr::new("WIDE1-1")?.with_highbit(true),
                 Addr::new("WIDE2-2")?.with_lowbit(true),
             ],
             packet_type: PacketType::Ui(Ui {
@@ -1919,7 +1917,7 @@ mod tests {
             vec![
                 154, 96, 168, 144, 134, 64, 228, // dst
                 154, 96, 168, 144, 134, 64, 98, // src
-                174, 146, 136, 138, 98, 64, 98, // rpt1
+                174, 146, 136, 138, 98, 64, 226, // rpt1, already repeated
                 174, 146, 136, 138, 100, 64, 101, //rpt2
                 3,   // UI
                 240, // Pid
