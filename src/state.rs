@@ -1600,9 +1600,9 @@ impl State for AwaitingConnection {
 
     // Page 88.
     fn t1(&self, data: &mut Data) -> Vec<Action> {
-        eprintln!("t1 expired while connecting, retrying");
         data.t1.stop();
         if data.rc == data.n2 {
+            debug!("t1 expired while connecting for the last time. Giving up");
             data.clear_iframe_queue();
             vec![
                 // Typo in 1998 spec: G, not g.
@@ -1610,6 +1610,7 @@ impl State for AwaitingConnection {
                 Action::State(Box::new(Disconnected::new())),
             ]
         } else {
+            debug!("t1 expired while connecting, retrying");
             data.rc += 1;
             data.select_t1_value();
             data.t1.start(data.srt);
