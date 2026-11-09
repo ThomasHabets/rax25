@@ -112,6 +112,31 @@ The examples provide `--no-extended` to constrain XID to modulo-8 and
 `--xid-receive-size` to set the advertised receive payload limit. `--srt`
 also sets the XID management retry interval.
 
+## AGW Server
+
+The `agw` example provides a single-channel packet engine over one KISS modem.
+The existing client examples still use rax25 directly, not AGW.
+
+```shell
+cargo run --features async --example agw -- --kiss localhost:8001 --listen 127.0.0.1:8000
+cargo run --features async --example agw -- --dev /dev/rfcomm0 --baud 9600 --listen 127.0.0.1:8000
+```
+
+It supports multiple application sockets and AX.25 links, exclusive incoming
+callsign registration/unregistration, direct and connect-via establishment,
+connected binary streams, disconnects, UI transmission, discovery, capability
+and queue queries. Add `-e` for outgoing modulo-128 links; incoming links follow
+the peer's SABM/SABME. API `Port(1)` maps to wire port zero and KISS channel zero.
+Connected streams use PID 0xf0; monitoring, raw mode, heard lists, authentication
+and nonstandard connected PIDs are not implemented. Bind only to trusted hosts.
+
+Queue counts include buffered and unacknowledged AX.25 data frames, not the
+unknown hardware queue inside a KISS TNC. Capability radio timing/rate values
+are conventional defaults, not measurements: KISS cannot query these settings.
+Slow application sockets are closed when their bounded output queue fills;
+link transmit queues are bounded and overflowing links are disconnected.
+Modem failure stops the server rather than silently reconnecting.
+
 ## Dire Wolf Audio Interoperability
 
 An integration test runs the `bell202` modem from the published rustradio

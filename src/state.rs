@@ -565,6 +565,11 @@ pub enum Experiment {
 }
 
 impl Data {
+    /// Number of buffered or unacknowledged data frames.
+    #[must_use]
+    pub fn pending_frames(&self) -> usize {
+        self.iframe_resend_queue.len() + self.obuf.len().div_ceil(self.mtu_out)
+    }
     /// Create new Data with the specified address being the local one.
     #[must_use]
     pub fn new(me: Callsign) -> Self {
@@ -1193,7 +1198,7 @@ impl Data {
     /// Set values for mod-8 connections.
     ///
     /// Page 109.
-    fn set_version_2(&mut self) {
+    pub(crate) fn set_version_2(&mut self) {
         self.modulus = Modulus::Standard;
         // TODO: n1r = 2048
 

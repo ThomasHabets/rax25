@@ -211,7 +211,7 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
     let packet = agw.recv().await?;
     writeln!(log, "{packet:?}")?;
     ensure!(
-        matches!(packet, Packet::IncomingConnect { port: Port(0), ref src, ref dst, .. } if *src == remote && *dst == local),
+        matches!(packet, Packet::IncomingConnect { port: Port(1), ref src, ref dst, .. } if *src == remote && *dst == local),
         "expected incoming AX.25 connection, got {packet:?}"
     );
     for expected in payloads {
@@ -221,7 +221,7 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
             writeln!(log, "{packet:?}")?;
             match packet {
                 Packet::Data {
-                    port: Port(0),
+                    port: Port(1),
                     src,
                     dst,
                     data,
@@ -230,7 +230,7 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
                     ensure!(!data.is_empty(), "empty AGW data");
                     received.extend_from_slice(&data);
                     agw.send(&Packet::Data {
-                        port: Port(0),
+                        port: Port(1),
                         pid: Pid(0xf0),
                         src: local.clone(),
                         dst: remote.clone(),
@@ -246,7 +246,7 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
     let packet = agw.recv().await?;
     writeln!(log, "{packet:?}")?;
     ensure!(
-        matches!(packet, Packet::Disconnect { port: Port(0), ref src, ref dst, .. } if *src == remote && *dst == local),
+        matches!(packet, Packet::Disconnect { port: Port(1), ref src, ref dst, .. } if *src == remote && *dst == local),
         "expected AGW disconnect, got {packet:?}"
     );
     Ok(())
@@ -274,7 +274,7 @@ async fn interop(extended: bool) -> Result<()> {
         };
         harness.spawn("direwolf", Command::new(binary).current_dir(&harness.dir).arg("-c").arg("direwolf.conf").args(["-t", "0"]))?;
         let mut agw = AGWServer::new(harness.connect(agw_port).await?);
-        agw.send(&Packet::RegisterCallsign(Port(0), Call::from_bytes(b"M0TST-2")?)).await?;
+        agw.send(&Packet::RegisterCallsign(Port(1), Call::from_bytes(b"M0TST-2")?)).await?;
         let registered = timeout(DEADLINE, agw.recv()).await.context("AGW registration timed out")??;
         ensure!(matches!(registered, Packet::RegisterCallsignReply { success: true, .. }), "registration rejected: {registered:?}");
         harness.spawn("bell202", Command::new(bell202).args([

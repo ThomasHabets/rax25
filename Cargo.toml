@@ -29,7 +29,7 @@ serial = ["dep:serialport"]
 anyhow = "1.0.86"
 stderrlog = "0.6.0"
 ctrlc = "3.4.5"
-agw = "0.6.0"
+agw = "0.12.0"
 rand = "0.10.1"
 
 [profile.release]

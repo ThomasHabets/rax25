@@ -1,18 +1,17 @@
-#![allow(clippy::similar_names)]
-//! AGW server.
-// TODO: move this to be a binary, not an example.
+//! Single-port AGW packet engine using an external KISS modem.
+use std::collections::{HashMap, VecDeque};
 
-use anyhow::Result;
-use clap::Parser;
-use log::{debug, info, warn};
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tokio_serial::SerialPortBuilderExt;
-
-use rax25::r#async::PortType;
-//use rax25::r#async::{ConnectionBuilder, PortType};
 use agw::r#async::AGWServer;
+use agw::{Baud, Packet, Pid, Port, PortCaps, PortInfo, PortsInfo};
+use anyhow::{Result, bail};
+use clap::{ArgGroup, Parser};
+use log::info;
+use rax25::{
+    Callsign,
+    engine::{Command, LinkEvent, Notification, OwnerId, PacketEngine, Route},
+};
+use tokio::sync::{mpsc, oneshot};
+use tokio_serial::SerialPortBuilderExt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 enum LogLevel {
@@ -23,183 +22,550 @@ enum LogLevel {
     Trace,
 }
 
-/// AGW server.
+/// AGW server over a shared KISS modem.
 #[derive(Parser)]
+#[command(group(ArgGroup::new("modem").required(true).args(["dev", "tcp"])))]
 struct Opt {
-    /// Serial KISS device.
-    // TODO: merge -d and -k
+    /// Serial KISS device (mutually exclusive with --tcp).
     #[arg(long, short)]
     dev: Option<std::path::PathBuf>,
 
-    /// KISS TCP address.
+    /// KISS modem TCP address, such as localhost:8001.
     #[arg(long, short)]
-    kiss: Option<String>,
+    tcp: Option<String>,
 
-    /// Baud rate.
+    /// Serial interface baud rate, not the over-the-air radio rate.
     #[arg(long, short, default_value_t = 9600)]
     baud: u32,
 
-    /// TCP address to listen on for AGW clients.
+    /// TCP address to listen on for AGW application clients.
     #[arg(long, short)]
     listen: String,
+
+    /// Use modulo-128 extended AX.25 for outgoing connections.
+    #[arg(long, short)]
+    extended: bool,
 
     /// Log level for stderr diagnostics.
     #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
     log_level: LogLevel,
 }
 
-async fn handle_client(mut stream: AGWServer, mut modem: ModemLink) -> Result<()> {
-    loop {
-        tokio::select! {
-            packet = stream.recv() => {
-                let packet = match packet {
-                    Ok(p) => p,
-                    Err(agw::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e.into()),
-                };
-                debug!("Got packet from AGW client: {packet:?}");
-                #[allow(clippy::single_match)]
-                match packet {
-                    agw::Packet::VersionQuery => {
-                        stream.send(&agw::Packet::VersionReply {
-                            major: 2005, // TODO: magic.
-                            minor: 127,
-                        }).await?;
+// An AGW packet received from an AGW client, or EOF.
+enum Input {
+    Reply(OwnerId, Packet),
+    Gone(OwnerId),
+}
+
+// An AGW client.
+struct Client {
+    tx: Option<mpsc::Sender<Packet>>,
+    reader_task: tokio::task::JoinHandle<()>,
+    writer_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.reader_task.abort();
+        self.writer_task.abort();
+    }
+}
+
+impl Client {
+    async fn finish(mut self) {
+        self.reader_task.abort();
+        self.tx.take();
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut self.writer_task).await;
+    }
+}
+
+fn route(src: &agw::Call, dst: &agw::Call) -> Result<Route> {
+    Ok(Route {
+        local: Callsign::new(src.as_str())?,
+        remote: Callsign::new(dst.as_str())?,
+    })
+}
+
+fn call(c: &Callsign) -> Result<agw::Call> {
+    Ok(agw::Call::from_bytes(c.call().as_bytes())?)
+}
+
+async fn submit(engine: &mpsc::Sender<Command>, command: Command) -> Result<()> {
+    engine
+        .send(command)
+        .await
+        .map_err(|_| anyhow::anyhow!("modem engine stopped"))
+}
+
+// Process an AGW packet from the client.
+//
+// Returns a packet to be sent back, if any.
+#[allow(clippy::too_many_lines)]
+async fn request(
+    owner: OwnerId,
+    packet: Packet,
+    engine: &mpsc::Sender<Command>,
+    extended: bool,
+) -> Result<Option<Packet>> {
+    Ok(match packet {
+        Packet::VersionQuery => Some(Packet::VersionReply {
+            major: 2005,
+            minor: 127,
+        }),
+        Packet::PortInfoQuery => Some(Packet::PortInfoReply(PortsInfo {
+            count: 1,
+            ports: vec![PortInfo {
+                port: Port(1),
+                descr: "rax25 KISS channel 0".into(),
+            }],
+        })),
+        Packet::PortCapQuery(Port(1)) => {
+            let (reply, rx) = oneshot::channel();
+            submit(engine, Command::Active(reply)).await?;
+            // KISS does not report radio settings. These are conventional
+            // defaults, not measurements or inferred serial baud rates.
+            Some(Packet::PortCapReply {
+                port: Port(1),
+                caps: PortCaps {
+                    rate: Baud::B1200,
+                    traffic_level: None,
+                    tx_delay: 30,
+                    tx_tail: 10,
+                    persist: 63,
+                    slot_time: 10,
+                    max_frame: if extended { 32 } else { 4 },
+                    active_connections: u8::try_from(rx.await?).unwrap_or(u8::MAX),
+                    bytes_per_2min: 0,
+                },
+            })
+        }
+        Packet::RegisterCallsign(port, call) => {
+            let success = port == Port(1) && {
+                if let Ok(local) = Callsign::new(call.as_str()) {
+                    let (reply, rx) = oneshot::channel();
+                    submit(
+                        engine,
+                        Command::Listen {
+                            owner,
+                            local,
+                            reply,
+                        },
+                    )
+                    .await?;
+                    rx.await?
+                } else {
+                    false
+                }
+            };
+            Some(Packet::RegisterCallsignReply {
+                port,
+                call,
+                success,
+            })
+        }
+        Packet::Connect {
+            port,
+            pid,
+            src,
+            dst,
+        } => {
+            if port != Port(1) || !matches!(pid, Pid(0 | 0xf0)) {
+                Some(Packet::ConnectionFailed {
+                    port,
+                    pid,
+                    src: dst,
+                    dst: src,
+                    message: "unsupported port or PID".into(),
+                })
+            } else {
+                submit(
+                    engine,
+                    Command::Connect {
+                        owner,
+                        route: route(&src, &dst)?,
+                        via: vec![],
+                        extended,
                     },
-                    _ => {}
-                }
-            }
-            packet = modem.recv() => {
-                let packet = packet?;
-                debug!("Got packet from modem: {packet:?}");
-                modem.send(vec![]).await?;
+                )
+                .await?;
+                None
             }
         }
-    }
-    info!("Connection ended normally");
-    Ok(())
+        Packet::ConnectVia {
+            port: Port(1),
+            pid: Pid(0 | 0xf0),
+            src,
+            dst,
+            via,
+        } => {
+            let via = via
+                .iter()
+                .map(|c| rax25::Addr::new(c.as_str()))
+                .collect::<rax25::Result<Vec<_>>>()?;
+            if via.len() > 8 {
+                bail!("too many digipeaters");
+            }
+            submit(
+                engine,
+                Command::Connect {
+                    owner,
+                    route: route(&src, &dst)?,
+                    via,
+                    extended,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::Data {
+            port: Port(1),
+            pid: Pid(0 | 0xf0),
+            src,
+            dst,
+            data,
+        } => {
+            submit(
+                engine,
+                Command::Write {
+                    owner,
+                    route: route(&src, &dst)?,
+                    bytes: data,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::ConnectViaMarked {
+            port: Port(1),
+            pid: Pid(0 | 0xf0),
+            src,
+            dst,
+            via,
+        } => {
+            // CALL* seen markers are a Dire Wolf extension, not AGWPE syntax.
+            let via = via
+                .iter()
+                .map(|hop| {
+                    rax25::Addr::new(hop.callsign().as_str())
+                        .map(|addr| addr.with_highbit(hop.is_seen()))
+                })
+                .collect::<rax25::Result<Vec<_>>>()?;
+            if via.len() > 8 {
+                bail!("too many digipeaters");
+            }
+            submit(
+                engine,
+                Command::Connect {
+                    owner,
+                    route: route(&src, &dst)?,
+                    via,
+                    extended,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::Disconnect {
+            port: Port(1),
+            src,
+            dst,
+            ..
+        } => {
+            submit(
+                engine,
+                Command::Disconnect {
+                    owner,
+                    route: route(&src, &dst)?,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::Unproto {
+            port: Port(1),
+            pid,
+            src,
+            dst,
+            data,
+        } => {
+            submit(
+                engine,
+                Command::Ui {
+                    local: Callsign::new(src.as_str())?,
+                    remote: Callsign::new(dst.as_str())?,
+                    pid: pid.0,
+                    bytes: data,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::FramesOutstandingPortQuery(Port(1)) => {
+            let (reply, rx) = oneshot::channel();
+            submit(
+                engine,
+                Command::Pending {
+                    owner,
+                    route: None,
+                    reply,
+                },
+            )
+            .await?;
+            Some(Packet::FramesOutstandingPortReply(Port(1), rx.await?))
+        }
+        Packet::UnregisterCallsign(Port(1), src) => {
+            submit(
+                engine,
+                Command::Unlisten {
+                    owner,
+                    local: Callsign::new(src.as_str())?,
+                },
+            )
+            .await?;
+            None
+        }
+        Packet::FramesOutstandingConnectionQuery {
+            port: Port(1),
+            src,
+            dst,
+        } => {
+            let (reply, rx) = oneshot::channel();
+            submit(
+                engine,
+                Command::Pending {
+                    owner,
+                    route: Some(route(&src, &dst)?),
+                    reply,
+                },
+            )
+            .await?;
+            Some(Packet::FramesOutstandingConnectionReply {
+                port: Port(1),
+                src,
+                dst,
+                count: u32::try_from(rx.await?)?,
+            })
+        }
+        other => {
+            log::warn!("Unsupported AGW request: {other:?}");
+            None
+        }
+    })
 }
 
-#[derive(Clone)]
-struct ModemLink {
-    tx: mpsc::Sender<Vec<u8>>,
-}
-impl ModemLink {
-    #[allow(clippy::unused_async)]
-    #[allow(clippy::unused_async_trait_impl)]
-    async fn recv(&mut self) -> Result<Vec<u8>> {
-        Ok(vec![])
-    }
-    async fn send<T: Into<Vec<u8>>>(
-        &mut self,
-        data: T,
-    ) -> Result<(), mpsc::error::SendError<Vec<u8>>> {
-        self.tx.send(data.into()).await
-    }
+// Process an update from the engine.
+//
+// Return a packet to to be sent to the AGW client in response.
+fn notification(n: Notification) -> Result<(OwnerId, Packet)> {
+    let src = call(&n.route.remote)?;
+    let dst = call(&n.route.local)?;
+    let port = Port(1);
+    let pid = Pid(0xf0);
+    let packet = match n.event {
+        LinkEvent::Connected { incoming: true } => Packet::IncomingConnect {
+            port,
+            pid,
+            src,
+            dst,
+        },
+        LinkEvent::Connected { incoming: false } => Packet::ConnectionEstablished {
+            port,
+            pid,
+            src,
+            dst,
+        },
+        LinkEvent::Data(data) => Packet::Data {
+            port,
+            pid,
+            src,
+            dst,
+            data,
+        },
+        LinkEvent::Closed => Packet::Disconnect {
+            port,
+            pid,
+            src,
+            dst,
+        },
+        LinkEvent::Failed => Packet::ConnectionFailed {
+            port,
+            pid,
+            src,
+            dst,
+            message: "AX.25 connection failed".into(),
+        },
+    };
+    Ok((n.owner, packet))
 }
 
-struct Modem {
-    portr: tokio::io::ReadHalf<PortType>,
-    portw: tokio::io::WriteHalf<PortType>,
-    to_tx: mpsc::Receiver<Vec<u8>>,
-    distribute: Vec<mpsc::Sender<agw::Packet>>,
-}
+// Run the AGW server loop, forever.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    engine: mpsc::Sender<Command>,
+    mut events: mpsc::Receiver<Notification>,
+    extended: bool,
+) -> Result<()> {
+    // Comms from clients to this main loop.
+    let (tx, mut rx) = mpsc::channel(256);
 
-impl Modem {
-    #[must_use]
-    fn new(port: PortType) -> (Self, ModemLink) {
-        let (portr, portw) = tokio::io::split(port);
-        let (tx, to_tx) = mpsc::channel(10); // TODO: magic number.
-        (
-            Self {
-                portr,
-                portw,
-                to_tx,
-                distribute: vec![],
-            },
-            ModemLink { tx },
-        )
-    }
-    async fn run(&mut self) -> Result<()> {
-        const MAX_BUF: usize = 8192; // TODO: magic value.
-        let mut buf = [0u8; 1024];
-        let mut to_modem = Vec::new();
-        loop {
-            // TODO: if there are bytes to write, have a deadline.
-            tokio::select! {
-                n = self.portw.write(&to_modem), if !to_modem.is_empty() => {
-                    let n = n?;
-                    to_modem.drain(..n);
+    // All connected or draining clients.
+    let mut clients: HashMap<OwnerId, Client> = HashMap::new();
+
+    // Clients in cleanup. We need to tell the engine to unregister any
+    // associated callsigns.
+    let mut cleanup = VecDeque::new();
+
+    // Next owner ID.
+    let mut next = 0_u64;
+    loop {
+        let output = tokio::select! {
+
+            // New client.
+            accepted = listener.accept() => {
+                let (socket, peer) = accepted?;
+                if clients.len() >= 256 || cleanup.len() >= 256 {
+                    info!("Client {peer:?} dropped due to connection limit exceeded");
+                    continue;
                 }
-                packet = self.to_tx.recv() => {
-                    match packet {
-                        Some(packet) => {
-                            to_modem.extend(&packet);
+                next = next.checked_add(1).ok_or_else(|| anyhow::anyhow!("client ID overflow"))?;
+                info!("Client {peer:?} id {next} connected");
+                let id = OwnerId(next);
+                let (mut reader, mut writer) = AGWServer::new(socket).into_split();
+
+                // For sending out AGW data on the connection.
+                let (out, mut outgoing) = mpsc::channel(64);
+
+                // Channels back from the AGW connection reader to the input
+                // processing path, and directly to the engine.
+                let input = tx.clone();
+                let commands = engine.clone();
+
+                // Just read AGW packets and send them or events over the
+                // channels.
+                let read = tokio::spawn(async move {
+                    while let Ok(packet) = reader.recv().await {
+                        match request(id, packet, &commands, extended).await {
+                            Ok(Some(reply)) => if input.send(Input::Reply(id, reply)).await.is_err() {
+                                return;
+                            },
+                            Ok(None) => {},
+                            Err(error) => { log::warn!("Client {id}: {error}"); break; }
                         }
-                        None => break
                     }
+                    // If the receiver is gone, that just means the connection
+                    // is tearing down while the whole process is tearing down,
+                    // so drop the error.
+                    let _ = input.send(Input::Gone(id)).await;
+                });
+
+                // The writer can also get "input" in the form of the client
+                // going away during write.
+                let input = tx.clone();
+                let write = tokio::spawn(async move {
+                    while let Some(packet) = outgoing.recv().await {
+                        if writer.send(&packet).await.is_err() { break; }
+                    }
+                    let _ = input.send(Input::Gone(id)).await;
+                });
+                clients.insert(id, Client { tx: Some(out), reader_task: read, writer_task: write });
+                None
+            }
+
+            // A notable event happened in the AX.25 processing, such as a
+            // connection having been established.
+            event = events.recv() => {
+                let Some(event) = event else {
+                    for (_, client) in clients.drain() {
+                        client.finish().await;
+                    }
+                    return Ok(());
+                };
+                Some(notification(event)?)
+            }
+
+            // Notify engine to clean up disconnected clients.
+            permit = engine.reserve(), if !cleanup.is_empty() => {
+                // Keep draining link events while cleanup waits for command
+                // capacity; awaiting it inline could deadlock a full engine.
+                if let Ok(permit) = permit {
+                    permit.send(cleanup.pop_front().expect("nonempty cleanup queue"));
+                } else {
+                    cleanup.clear();
                 }
-                // TODO: read whole packets.
-                n = self.portr.read(&mut buf), if to_modem.len()<MAX_BUF => {
-                    let n = n?;
-                    to_modem.extend(&buf[..n]);
-                    for _ in &self.distribute {
+                None
+            }
+
+            // A connection is conveying something that happened on the
+            // connection.
+            input = rx.recv() => {
+                match input {
+                    Some(Input::Gone(id)) => {
+                        if clients.remove(&id).is_some() {
+                            cleanup.push_back(Command::RemoveOwner(id));
+                        }
+                        None
                     }
+                    Some(Input::Reply(id, packet)) => if clients.contains_key(&id) {
+                        Some((id, packet))
+                    } else {
+                        None
+                    },
+                    None => None,
                 }
             }
+        };
+
+        // If the above resulted in a request to send AGW data to an AGW client,
+        // then send it.
+        if let Some((id, packet)) = output
+            && let Some(client) = clients.get(&id)
+            && client
+                .tx
+                .as_ref()
+                .is_some_and(|tx| tx.try_send(packet).is_err())
+        {
+            clients.remove(&id);
+            cleanup.push_back(Command::RemoveOwner(id));
         }
-        Ok(())
     }
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new()
+        .module("rax25")
         .module(module_path!())
-        .module("agw")
-        .quiet(false)
-        .show_module_names(true)
         .verbosity(opt.log_level as usize)
-        .timestamp(stderrlog::Timestamp::Second)
-        .init()
-        .unwrap();
-    info!("Starting up");
-
-    // Connect to modem.
-    let mut port = if let Some(dev) = opt.dev {
-        PortType::Serial(tokio_serial::new(dev.to_str().unwrap(), opt.baud).open_native_async()?)
-    } else if let Some(kiss) = opt.kiss {
-        PortType::Tcp(tokio::net::TcpStream::connect(kiss).await?)
+        .init()?;
+    let port = if let Some(dev) = opt.dev {
+        rax25::r#async::PortType::Serial(
+            tokio_serial::new(
+                dev.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("non-UTF8 device"))?,
+                opt.baud,
+            )
+            .open_native_async()?,
+        )
     } else {
-        panic!()
+        rax25::r#async::PortType::Tcp(
+            tokio::net::TcpStream::connect(opt.tcp.as_deref().unwrap_or_default()).await?,
+        )
     };
-
-    // Test code to see that we can write to modem.
-    if false {
-        let packet = rax25::Packet::ui(
-            rax25::Callsign::new("M0THC-1")?,
-            rax25::Callsign::new("M0THC-2")?,
-            b"hello world in the world",
-        );
-        let serial = rax25::escape(&packet.serialize());
-        port.write_all(&serial).await?;
-        port.flush().await?;
-    }
-
-    let (mut modem, link) = Modem::new(port);
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
-    tokio::spawn(async move { modem.run().await });
-    loop {
-        let (stream, peer) = listener.accept().await?;
-        let stream = AGWServer::new(stream);
-        info!("{peer}: Connected");
-        // TODO: register the modem link with the modem.
-        let link = link.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, link).await {
-                warn!("Client task failed: {e:?}");
-            }
-        });
+    let (engine, commands, events) = PacketEngine::new();
+    let modem = engine.run(port);
+    let server = serve(listener, commands, events, opt.extended);
+    tokio::pin!(modem, server);
+    tokio::select! {
+        result = &mut modem => {
+            // Drain final link notifications before closing application sockets.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), &mut server).await;
+            result?;
+        },
+        result = &mut server => result?,
+        result = tokio::signal::ctrl_c() => result?,
     }
+    Ok(())
 }

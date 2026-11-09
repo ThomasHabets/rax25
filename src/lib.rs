@@ -49,6 +49,9 @@ pub mod sync;
 
 pub mod pcap;
 
+#[cfg(feature = "async")]
+pub mod engine;
+
 /// Helper function for use with clap to parse command line durations.
 ///
 /// Bare numbers are seconds. The suffixes `ms`, `s`, `m`, and `h` are also

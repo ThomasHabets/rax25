@@ -84,6 +84,18 @@ Bug assessments here are implementation notes, not official errata.
 
 ## Deliberate Choices
 
+### Shared AGW Packet Engine
+
+The async packet engine shares one KISS channel across independently timed
+AX.25 links. AGW application registration and ownership are local routing
+policy, not over-the-air protocol extensions. Outgoing digipeater paths are
+attached to all link packets; responses reverse the incoming path and clear
+its repeated bits. Serialization preserves digipeater H bits, including
+marked routes supplied through the Dire Wolf-compatible AGW CALL* extension.
+Incoming frames are accepted only after all digipeaters have repeated them.
+AGW connected streams use PID 0xf0. Queue reports count buffered and
+unacknowledged AX.25 frames, since KISS does not expose the hardware TX queue.
+
 ### Linux Extended-Sequence Indicator
 
 Rax25 follows Linux's nonstandard use of a reserved source-address bit to
