@@ -22,15 +22,23 @@ fn call(s: &str) -> Call {
     Call::from_bytes(s.as_bytes()).unwrap()
 }
 
-async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> Result<()> {
+async fn exchange(
+    binary: &std::path::Path,
+    extended: bool,
+    outgoing: bool,
+    xid: bool,
+) -> Result<()> {
     let kiss = TcpListener::bind("127.0.0.1:0").await?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let mut cmd = Command::new(binary);
     let capture = binary.parent().unwrap().join(format!(
-        "agw-test-{}-{extended}-{outgoing}.pcap",
+        "agw-test-{}-{extended}-{outgoing}-{xid}.pcap",
         std::process::id()
     ));
     cmd.arg("--capture").arg(&capture);
+    if xid {
+        cmd.arg("--xid");
+    }
     cmd.args([
         "--tcp",
         &kiss.local_addr()?.to_string(),
@@ -51,8 +59,11 @@ async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> R
     let mut client = AGWServer::new(socket);
     prepare(&mut client, address).await?;
     let native = async {
-        let builder = ConnectionBuilder::new(Callsign::new("REMOTE")?, PortType::Tcp(modem))?
+        let mut builder = ConnectionBuilder::new(Callsign::new("REMOTE")?, PortType::Tcp(modem))?
             .extended(Some(extended));
+        if xid {
+            builder = builder.xid(rax25::XidConfig::default());
+        }
         let mut native = if outgoing {
             builder.accept().await?
         } else {
@@ -97,7 +108,13 @@ async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> R
         Ok::<_, anyhow::Error>(())
     };
     tokio::try_join!(native, application)?;
-    let bytes = std::fs::read(&capture)?;
+    check_capture(&capture, extended, xid)?;
+    std::fs::remove_file(capture)?;
+    Ok(())
+}
+
+fn check_capture(capture: &std::path::Path, extended: bool, xid: bool) -> Result<()> {
+    let bytes = std::fs::read(capture)?;
     ensure!(bytes.len() >= 24 && bytes[..4] == [0xd4, 0xc3, 0xb2, 0xa1]);
     let mut frames = Vec::new();
     let mut records = &bytes[24..];
@@ -119,7 +136,30 @@ async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> R
             "missing captured data from {source}"
         );
     }
-    std::fs::remove_file(capture)?;
+    let xid_frames: Vec<_> = frames
+        .iter()
+        .filter(|(_, packet)| matches!(packet.packet_type(), rax25::PacketType::Xid(_)))
+        .collect();
+    ensure!(
+        xid_frames.len() == if xid { 2 } else { 0 },
+        "unexpected XID exchange"
+    );
+    if xid {
+        ensure!(matches!(
+            frames[0].1.packet_type(),
+            rax25::PacketType::Xid(_)
+        ));
+        ensure!(matches!(
+            frames[1].1.packet_type(),
+            rax25::PacketType::Xid(_)
+        ));
+        for (_, packet) in xid_frames {
+            ensure!(
+                matches!(packet.packet_type(), rax25::PacketType::Xid(reply) if reply.parameters.is_some()),
+                "missing XID parameters"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -197,11 +237,13 @@ async fn agw_example_incoming_and_outgoing_native_interop() -> Result<()> {
     let binary = target.join("debug/examples/agw");
     for extended in [false, true] {
         for outgoing in [false, true] {
-            timeout(
-                Duration::from_secs(15),
-                exchange(&binary, extended, outgoing),
-            )
-            .await??;
+            for xid in [false, true] {
+                timeout(
+                    Duration::from_secs(15),
+                    exchange(&binary, extended, outgoing, xid),
+                )
+                .await??;
+            }
         }
     }
     Ok(())

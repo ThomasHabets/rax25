@@ -168,6 +168,7 @@ pub struct PacketEngine {
     listeners: HashMap<Callsign, OwnerId>,
     links: HashMap<Route, Link>,
     capture: Option<crate::pcap::PcapWriter>,
+    xid: Option<crate::XidConfig>,
 }
 impl PacketEngine {
     #[must_use]
@@ -181,6 +182,7 @@ impl PacketEngine {
                 listeners: HashMap::new(),
                 links: HashMap::new(),
                 capture: None,
+                xid: None,
             },
             tx,
             rx,
@@ -191,6 +193,14 @@ impl PacketEngine {
     /// Fails if the path already exists or cannot be created.
     pub fn capture(&mut self, path: std::path::PathBuf) -> Result<()> {
         self.capture = Some(crate::pcap::PcapWriter::create(path)?);
+        Ok(())
+    }
+
+    /// Enable XID negotiation for subsequently created links.
+    /// Outgoing links negotiate the mode selected by [`Command::Connect`].
+    pub fn set_xid_config(&mut self, config: crate::XidConfig) -> Result<()> {
+        config.validate()?;
+        self.xid = Some(config);
         Ok(())
     }
 
@@ -300,6 +310,9 @@ impl PacketEngine {
                         .map_err(|_| crate::Error::QueueFull)?;
                 } else {
                     let mut link = Link::new(owner, route.local.clone(), via, false);
+                    if let Some(config) = &self.xid {
+                        link.data.set_xid_config(config.clone());
+                    }
                     if extended {
                         link.data.set_version_2_2();
                     } else {
@@ -437,10 +450,11 @@ impl PacketEngine {
                 .cloned()
                 .map(|a| a.with_highbit(false))
                 .collect();
-            self.links.insert(
-                route.clone(),
-                Link::new(owner, route.local.clone(), via, true),
-            );
+            let mut link = Link::new(owner, route.local.clone(), via, true);
+            if let Some(config) = &self.xid {
+                link.data.set_xid_config(config.clone());
+            }
+            self.links.insert(route.clone(), link);
         }
         self.step(&route, packet_event(&p), port).await
     }

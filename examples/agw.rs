@@ -46,6 +46,11 @@ struct Opt {
     #[arg(long, short)]
     extended: bool,
 
+    /// Negotiate link parameters with XID before outgoing connections.
+    /// Use --extended to request modulo-128; otherwise request modulo-8.
+    #[arg(long)]
+    xid: bool,
+
     /// Capture sent and received AX.25 packets to a new pcap file.
     #[arg(long)]
     capture: Option<std::path::PathBuf>,
@@ -559,6 +564,9 @@ async fn main() -> Result<()> {
     };
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
     let (mut engine, commands, events) = PacketEngine::new();
+    if opt.xid {
+        engine.set_xid_config(rax25::XidConfig::default())?;
+    }
     if let Some(path) = opt.capture {
         engine.capture(path)?;
     }
