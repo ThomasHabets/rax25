@@ -167,6 +167,7 @@ pub struct PacketEngine {
     events: mpsc::Sender<Notification>,
     listeners: HashMap<Callsign, OwnerId>,
     links: HashMap<Route, Link>,
+    capture: Option<crate::pcap::PcapWriter>,
 }
 impl PacketEngine {
     #[must_use]
@@ -179,10 +180,18 @@ impl PacketEngine {
                 events,
                 listeners: HashMap::new(),
                 links: HashMap::new(),
+                capture: None,
             },
             tx,
             rx,
         )
+    }
+
+    /// Capture transmitted and received AX.25 frames, without KISS framing.
+    /// Fails if the path already exists or cannot be created.
+    pub fn capture(&mut self, path: std::path::PathBuf) -> Result<()> {
+        self.capture = Some(crate::pcap::PcapWriter::create(path)?);
+        Ok(())
     }
 
     async fn step(
@@ -213,7 +222,11 @@ impl PacketEngine {
             match event {
                 state::ReturnEvent::Packet(mut p) => {
                     p.digipeater.clone_from(&link.via);
-                    port.write_all(&crate::escape(&p.serialize())).await?;
+                    let bytes = p.serialize();
+                    port.write_all(&crate::escape(&bytes)).await?;
+                    if let Some(capture) = &mut self.capture {
+                        capture.write(&bytes)?;
+                    }
                 }
                 state::ReturnEvent::Data(state::Res::Some(bytes)) => {
                     notifications.push(LinkEvent::Data(bytes));
@@ -360,7 +373,11 @@ impl PacketEngine {
                 if let PacketType::Ui(ui) = &mut p.packet_type {
                     ui.pid = pid;
                 }
-                port.write_all(&crate::escape(&p.serialize())).await?;
+                let bytes = p.serialize();
+                port.write_all(&crate::escape(&bytes)).await?;
+                if let Some(capture) = &mut self.capture {
+                    capture.write(&bytes)?;
+                }
             }
             Command::Pending {
                 owner,
@@ -463,9 +480,14 @@ impl PacketEngine {
                         input.drain(..end);
                         if command == Some(0) {
                             match crate::unescape(&bytes) {
-                                Ok(bytes) => if let Err(error) = self.frame(&bytes, &mut port).await {
+                                Ok(bytes) => {
+                                    if let Some(capture) = &mut self.capture {
+                                        capture.write(&bytes)?;
+                                    }
+                                    if let Err(error) = self.frame(&bytes, &mut port).await {
                                     if matches!(error, crate::Error::Io(_) | crate::Error::QueueFull) { return Err(error); }
                                     log::warn!("KISS frame: {error}");
+                                    }
                                 },
                                 Err(error) => log::warn!("KISS framing: {error}"),
                             }

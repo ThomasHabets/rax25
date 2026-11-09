@@ -26,6 +26,11 @@ async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> R
     let kiss = TcpListener::bind("127.0.0.1:0").await?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let mut cmd = Command::new(binary);
+    let capture = binary.parent().unwrap().join(format!(
+        "agw-test-{}-{extended}-{outgoing}.pcap",
+        std::process::id()
+    ));
+    cmd.arg("--capture").arg(&capture);
     cmd.args([
         "--tcp",
         &kiss.local_addr()?.to_string(),
@@ -92,6 +97,29 @@ async fn exchange(binary: &std::path::Path, extended: bool, outgoing: bool) -> R
         Ok::<_, anyhow::Error>(())
     };
     tokio::try_join!(native, application)?;
+    let bytes = std::fs::read(&capture)?;
+    ensure!(bytes.len() >= 24 && bytes[..4] == [0xd4, 0xc3, 0xb2, 0xa1]);
+    let mut frames = Vec::new();
+    let mut records = &bytes[24..];
+    while !records.is_empty() {
+        ensure!(records.len() >= 16, "truncated pcap record");
+        let length = u32::from_le_bytes(records[8..12].try_into()?) as usize;
+        ensure!(records.len() >= 16 + length, "truncated pcap frame");
+        let frame = &records[16..16 + length];
+        let packet = rax25::Packet::parse(frame, Some(extended))?;
+        frames.push((rax25::Addr::parse(&frame[7..14])?, packet));
+        records = &records[16 + length..];
+    }
+    for source in ["LOCAL", "REMOTE"] {
+        ensure!(
+            frames.iter().any(|(address, packet)| {
+                address.callsign().call() == source
+                    && matches!(packet.packet_type(), rax25::PacketType::Iframe(_))
+            }),
+            "missing captured data from {source}"
+        );
+    }
+    std::fs::remove_file(capture)?;
     Ok(())
 }
 

@@ -118,7 +118,7 @@ The `agw` example provides a single-channel packet engine over one KISS modem.
 The existing client examples still use rax25 directly, not AGW.
 
 ```shell
-cargo run --features async --example agw -- --kiss localhost:8001 --listen 127.0.0.1:8000
+cargo run --features async --example agw -- --tcp localhost:8001 --listen 127.0.0.1:8000 --capture agw.pcap
 cargo run --features async --example agw -- --dev /dev/rfcomm0 --baud 9600 --listen 127.0.0.1:8000
 ```
 

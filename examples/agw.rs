@@ -46,6 +46,10 @@ struct Opt {
     #[arg(long, short)]
     extended: bool,
 
+    /// Capture sent and received AX.25 packets to a new pcap file.
+    #[arg(long)]
+    capture: Option<std::path::PathBuf>,
+
     /// Log level for stderr diagnostics.
     #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
     log_level: LogLevel,
@@ -554,7 +558,10 @@ async fn main() -> Result<()> {
         )
     };
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
-    let (engine, commands, events) = PacketEngine::new();
+    let (mut engine, commands, events) = PacketEngine::new();
+    if let Some(path) = opt.capture {
+        engine.capture(path)?;
+    }
     let modem = engine.run(port);
     let server = serve(listener, commands, events, opt.extended);
     tokio::pin!(modem, server);
