@@ -114,9 +114,12 @@ impl ReturnEvent {
     }
 }
 
-/// Data-link errors (C4.3, page 81).
+/// Data-link errors.
 ///
 /// Error codes of all kinds.
+///
+/// * 1984: n/a
+/// * 1998: C4.3, page 81
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DlError {
     A,
@@ -902,11 +905,12 @@ impl Data {
     ///
     /// But we should probably add some UI support. It wouldn't be much code.
     ///
-    /// Page 108.
+    /// * 1998: C4.7, page 108.
     #[must_use]
     fn ui_check(&self, command: CommandResponse, len: usize) -> Vec<Action> {
         if command.is_response() {
-            // 1998 Spec bug: error Q says this is also for UI frames with Poll set.
+            // 1998-2017 Spec bug: error Q says this is also for UI frames with
+            // Poll set.
             //
             // But 4.3.3.6 says command+poll is just fine, and should just trigger
             // DM.
@@ -915,6 +919,11 @@ impl Data {
             // should be changed.
             return vec![Action::DlError(DlError::Q)];
         }
+        // TODO: 4.3.3.6 says that if poll is set:
+        // * If we are disconnected, send DM.
+        // * If we are connected, send RR or RNR.
+        //
+        // This is not in the diagrams.
         if len > self.n1 {
             return vec![Action::DlError(DlError::K)];
         }
@@ -1605,7 +1614,7 @@ impl State for AwaitingConnection {
             debug!("t1 expired while connecting for the last time. Giving up");
             data.clear_iframe_queue();
             vec![
-                // Typo in 1998 spec: G, not g.
+                // 1998 spec bug: Typo: G, not g.
                 Action::DlError(DlError::G),
                 Action::State(Box::new(Disconnected::new())),
             ]
@@ -1733,8 +1742,8 @@ impl State for AwaitingRelease {
         data.t1.stop();
         if data.rc == data.n2 {
             debug!("rax25: DL-DISCONNECT confirm");
-            // The 1998 spec doesn't say, but if we're going disconnected, then
-            // there's no need for timers.
+            // 1998 spec bug: if we're going disconnected, then there's no need
+            // for timers. So stop t3.
             data.t3.stop();
             return vec![
                 Action::DlError(DlError::H),

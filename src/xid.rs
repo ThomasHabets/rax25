@@ -7,13 +7,13 @@
 //! mask 0x0001, half duplex is bit 6/5 with mask 0x0020, and modulo-128 is bit
 //! 12/11 with mask 0x000800 (1998/2017 numbering respectively).
 //!
-//! Spec bug(1998): The 1998 optional-functions prose incorrectly calls REJ/SREJ
+//! 1998 Spec bug: The 1998 optional-functions prose incorrectly calls REJ/SREJ
 //! bits 1 and 2; its table assigns bits 2 and 3.
 //!
 //! The 2017 table enables multiframe SREJ and adds a segmentation capability;
 //! see the corresponding flags below.
 //!
-//! Spec bug(1997): Retries parameter (PI=10) from Figure 4.5, although its
+//! 2017 Spec bug: Retries parameter (PI=10) from Figure 4.5, although its
 //! prose and example still use it.
 
 use crate::{Error, Result};
