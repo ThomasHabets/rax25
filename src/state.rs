@@ -163,14 +163,14 @@ impl std::fmt::Display for DlError {
 
                 DlError::F =>
                     "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
-                // 1998 Spec bug: Undocumented.
+                // 1998-2017 Spec bug: Undocumented. Defined per discussino.
                 DlError::G => "G: Connection timed out",
-                // 1998 Spec bug: Undocumented.
-                DlError::H => "H: Undocumented. May mean connection timed out while disconnecting",
+                // 1998-2017 Spec bug: Undocumented.
+                DlError::H => "H: Connection timed out while disconnecting",
                 DlError::I => "I: N2 timeouts; unacknowledged data",
                 DlError::J => "J: N(r) sequence error",
-                // 1998 Spec bug: Undocumented.
-                DlError::K => "K: Undocumented. May mean unexpected frame received",
+                // 1998-2017 Spec bug: Undocumented.
+                DlError::K => "K: Unexpected frame received",
                 DlError::L => "L: Control field invalid or not implemented",
                 DlError::M => "M: Information field was received in a U- or S-type frame",
                 DlError::N => "N: Length of frame incorrect for frame type",
