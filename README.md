@@ -198,6 +198,8 @@ See the [spec/](spec/) folder.
 * 2006 spec update: despite its name and title page, is actually from 2006.
 * 2017 spec update has [some findings by
   isomer](https://github.com/isomer/ax25embed/blob/main/ax25/ax25_dl.c)
+* There's ongoing work to fix the spec, with (as of 2026-11-10) 92 open spec
+  bugs in [this repo](https://github.com/packethacking/ax25spec).
 
 Also see:
 * [Examining Ambiguities in the Automatic Packet Reporting
