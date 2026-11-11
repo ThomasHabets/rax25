@@ -205,6 +205,15 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
 }
 
 fn tshark_capture(path: &Path) -> String {
+    #[cfg(unix)]
+    if let Ok(metadata) = fs::metadata(path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o444);
+        if let Err(error) = fs::set_permissions(path, permissions) {
+            return format!("cannot make {} readable by tshark: {error}", path.display());
+        }
+    }
     match Command::new("tshark").args(["-r"]).arg(path).output() {
         Ok(output) => format!(
             "tshark -r {} (exit {}):\n{}{}",
