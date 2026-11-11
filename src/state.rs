@@ -919,12 +919,14 @@ impl Data {
             // should be changed.
             return vec![Action::DlError(DlError::Q)];
         }
-        // TODO: 4.3.3.6 says that if poll is set:
+        // 4.3.3.6 says that if poll is set:
         // * If we are disconnected, send DM.
         // * If we are connected, send RR or RNR.
         //
-        // This is not in the diagrams.
+        // That logic is part of the individual state diagrams.
         if len > self.n1 {
+            // Spec bug(?): Surely error R is a better fit?
+            // https://github.com/packethacking/ax25spec/issues/154
             return vec![Action::DlError(DlError::K)];
         }
         debug!("rax25: DL-UNIT_DATA indication");
