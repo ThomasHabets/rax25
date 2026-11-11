@@ -204,6 +204,19 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
     Ok(())
 }
 
+fn tshark_capture(path: &Path) -> String {
+    match Command::new("tshark").args(["-r"]).arg(path).output() {
+        Ok(output) => format!(
+            "tshark -r {} (exit {}):\n{}{}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(error) => format!("tshark -r {} failed to run: {error}", path.display()),
+    }
+}
+
 async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Result<()> {
     use std::io::Write;
     let remote = Call::from_bytes(b"M0TST-1")?;
@@ -317,7 +330,10 @@ async fn interop(extended: bool) -> Result<()> {
                 .await.context("AGW echo/disconnect timed out")?
         };
         tokio::try_join!(client, server)?;
-        verify_capture(&harness.dir.join("rax25.pcap"), extended)?;
+        let capture = harness.dir.join("rax25.pcap");
+        if let Err(error) = verify_capture(&capture, extended) {
+            bail!("{error}\n{}", tshark_capture(&capture));
+        }
         harness.check_children()?;
         Ok::<_, anyhow::Error>(())
     }.await;
