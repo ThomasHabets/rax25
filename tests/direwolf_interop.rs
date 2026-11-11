@@ -205,16 +205,20 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
 }
 
 fn tshark_capture(path: &Path) -> String {
-    #[cfg(unix)]
-    if let Ok(metadata) = fs::metadata(path) {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(permissions.mode() | 0o444);
-        if let Err(error) = fs::set_permissions(path, permissions) {
-            return format!("cannot make {} readable by tshark: {error}", path.display());
-        }
+    let temp = std::env::temp_dir().join(format!(
+        "rax25-tshark-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    if let Err(error) =
+        fs::create_dir(&temp).and_then(|()| fs::copy(path, temp.join("capture.pcap")).map(|_| ()))
+    {
+        return format!("cannot stage {} for tshark: {error}", path.display());
     }
-    match Command::new("tshark").args(["-r"]).arg(path).output() {
+    let staged = temp.join("capture.pcap");
+    let result = match Command::new("tshark").args(["-r"]).arg(&staged).output() {
         Ok(output) => format!(
             "tshark -r {} (exit {}):\n{}{}",
             path.display(),
@@ -223,7 +227,9 @@ fn tshark_capture(path: &Path) -> String {
             String::from_utf8_lossy(&output.stderr),
         ),
         Err(error) => format!("tshark -r {} failed to run: {error}", path.display()),
-    }
+    };
+    let _ = fs::remove_dir_all(temp);
+    result
 }
 
 async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Result<()> {
