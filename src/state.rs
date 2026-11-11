@@ -103,7 +103,7 @@ impl ReturnEvent {
         match self {
             ReturnEvent::Packet(p) => Some(p.serialize_with_linux_extended_hint(enabled)),
             ReturnEvent::DlError(e) => {
-                eprintln!("TODO: DLERROR: {e}");
+                warn!("TODO: DLERROR: {e}");
                 None
             }
             ReturnEvent::Data(d) => {
@@ -1284,21 +1284,21 @@ pub trait State {
     /// User initiates a new connection.
     #[must_use]
     fn connect(&self, _data: &mut Data, _addr: &Callsign, _ext: bool) -> Vec<Action> {
-        eprintln!("TODO: unexpected DLConnect");
+        warn!("TODO: unexpected DLConnect");
         vec![]
     }
 
     /// User initiates disconnection.
     #[must_use]
     fn disconnect(&self, _data: &mut Data) -> Vec<Action> {
-        eprintln!("TODO: unexpected DLDisconnect in state {}", self.name());
+        warn!("TODO: unexpected DLDisconnect in state {}", self.name());
         vec![]
     }
 
     /// User initiates sending data on a connection.
     #[must_use]
     fn data(&self, _data: &mut Data, _payload: &[u8]) -> Vec<Action> {
-        eprintln!("writing data while not connected!");
+        warn!("writing data while not connected!");
         vec![]
     }
 
@@ -1306,7 +1306,7 @@ pub trait State {
     #[must_use]
     fn t1(&self, data: &mut Data) -> Vec<Action> {
         data.t1.stop();
-        eprintln!("TODO: unexpected T1 expire");
+        warn!("TODO: unexpected T1 expire");
         vec![]
     }
 
@@ -1314,42 +1314,42 @@ pub trait State {
     #[must_use]
     fn t3(&self, data: &mut Data) -> Vec<Action> {
         data.t3.stop();
-        eprintln!("TODO: unexpected T3 expire");
+        warn!("TODO: unexpected T3 expire");
         vec![]
     }
 
     /// RR received from peer.
     #[must_use]
     fn rr(&self, _data: &mut Data, _packet: &Rr, _command: CommandResponse) -> Vec<Action> {
-        eprintln!("TODO: unexpected RR");
+        warn!("TODO: unexpected RR");
         vec![]
     }
 
     /// REJ received from peer.
     #[must_use]
     fn rej(&self, _data: &mut Data, _packet: &Rej, _command: CommandResponse) -> Vec<Action> {
-        eprintln!("TODO: unexpected REJ");
+        warn!("TODO: unexpected REJ");
         vec![]
     }
 
     /// XID received from peer.
     #[must_use]
     fn xid(&self, _data: &mut Data, _packet: &Xid, _cr: CommandResponse) -> Vec<Action> {
-        eprintln!("TODO: unexpected XID");
+        warn!("TODO: unexpected XID");
         vec![]
     }
 
     /// TEST received from peer.
     #[must_use]
     fn test(&self, _data: &mut Data, _packet: &Test, _cr: CommandResponse) -> Vec<Action> {
-        eprintln!("TODO: unexpected TEST");
+        warn!("TODO: unexpected TEST");
         vec![]
     }
 
     /// SREJ received from peer.
     #[must_use]
     fn srej(&self, _data: &mut Data, _packet: &Srej) -> Vec<Action> {
-        eprintln!("TODO: unexpected SREJ");
+        warn!("TODO: unexpected SREJ");
         vec![]
     }
 
@@ -1358,35 +1358,35 @@ pub trait State {
     /// FRMR is deprecated, so we should probably never see this.
     #[must_use]
     fn frmr(&self, _data: &mut Data) -> Vec<Action> {
-        eprintln!("TODO: unexpected FRMR");
+        warn!("TODO: unexpected FRMR");
         vec![]
     }
 
     /// RNR received from peer.
     #[must_use]
     fn rnr(&self, _data: &mut Data, _packet: &Rnr) -> Vec<Action> {
-        eprintln!("TODO: unexpected RNR");
+        warn!("TODO: unexpected RNR");
         vec![]
     }
 
     /// SABM received from peer.
     #[must_use]
     fn sabm(&self, _data: &mut Data, _src: &Callsign, _packet: &Sabm) -> Vec<Action> {
-        eprintln!("TODO: unexpected SABM");
+        warn!("TODO: unexpected SABM");
         vec![]
     }
 
     /// SABME received from peer.
     #[must_use]
     fn sabme(&self, _data: &mut Data, _src: &Callsign, _packet: &Sabme) -> Vec<Action> {
-        eprintln!("TODO: unexpected SABME");
+        warn!("TODO: unexpected SABME");
         vec![]
     }
 
     /// IFRAME received from peer.
     #[must_use]
     fn iframe(&self, _data: &mut Data, _packet: &Iframe, _cr: CommandResponse) -> Vec<Action> {
-        eprintln!("TODO; unexpected iframe");
+        warn!("TODO; unexpected iframe");
         vec![]
     }
 
@@ -1399,21 +1399,21 @@ pub trait State {
     /// UA received from peer.
     #[must_use]
     fn ua(&self, _data: &mut Data, _packet: &Ua) -> Vec<Action> {
-        eprintln!("TODO; unexpected UA");
+        warn!("TODO; unexpected UA");
         vec![]
     }
 
     /// DM received from peer.
     #[must_use]
     fn dm(&self, _data: &mut Data, _packet: &Dm) -> Vec<Action> {
-        eprintln!("TODO: unexpected DM");
+        warn!("TODO: unexpected DM");
         vec![]
     }
 
     /// DISC received from peer.
     #[must_use]
     fn disc(&self, _data: &mut Data, _packet: &Disc) -> Vec<Action> {
-        eprintln!("TODO: unexpected DISC");
+        warn!("TODO: unexpected DISC");
         vec![]
     }
 }
