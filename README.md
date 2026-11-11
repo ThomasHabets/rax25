@@ -41,21 +41,17 @@ use `PollFinal::{Clear, Set}`. For example, an XID query is constructed with
 The same types are used by frame fields and state-machine events/actions;
 raw address C-bit accessors remain available for legacy encodings.
 
-The Linux source-address extended-mode hint is enabled by default. Disable
-it with `.linux_extended_hint(false)` on the async connection builder or
-`client.set_linux_extended_hint(false)` on a sync client. For raw packets,
-use `packet.serialize_with_linux_extended_hint(false)`. This only disables
-the wire hint; modulo-128 framing and negotiated receive mode are unchanged.
+The Linux source-address extended-mode hint is optional as an experiment.  For
+raw packets, use `packet.serialize_with_linux_extended_hint(true/false)`. This
+only disables the wire hint; modulo-128 framing and negotiated receive mode are
+unchanged.
+
+The extended hint bit is ignored on reception.
 
 Address construction and serialization use named `AddrFlags` instead of
 positional boolean arguments. For example,
 `Addr::new_bits("M0QQQ-1", AddrFlags::LAST | AddrFlags::HIGH)` sets the final
 address and high-bit indicators explicitly.
-
-* The reserved bit used by the Linux kernel (and other Linux tools,
-  like `axlisten`) to indicate extended sequence numbers is set. This
-  crate sets it too, but since we know the connection state, it's
-  ignored on reception.
 
 ## Testing
 
