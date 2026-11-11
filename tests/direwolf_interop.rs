@@ -197,6 +197,19 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
         "unexpected mode fallback"
     );
     ensure!(controls.last() == Some(&0x63), "expected final UA");
+    if false {
+        // We can't do this because sometimes delayed packets can squeeze in
+        // after we've sent DISC but before receiving UA. It could be a REJ
+        // because of a duplicate packet we sent, or Dire Wolf becoming bored
+        // and triggering an RR probe.
+        //
+        // This should explain the question in commit
+        // 5f5d9e10346cbbeafa3a63805c99b6cced858211.
+        ensure!(
+            controls.iter().rev().nth(1) == Some(&0x43),
+            "expected DISC immediately before final UA"
+        );
+    }
     ensure!(
         controls[..controls.len() - 1].contains(&0x43),
         "expected DISC before final UA"
