@@ -925,9 +925,10 @@ impl Data {
         //
         // That logic is part of the individual state diagrams.
         if len > self.n1 {
-            // Spec bug(?): Surely error R is a better fit?
+            // 1998-2017 Spec bug: Surely error R is a better fit than K?
+            //
             // https://github.com/packethacking/ax25spec/issues/154
-            return vec![Action::DlError(DlError::K)];
+            return vec![Action::DlError(DlError::R)];
         }
         debug!("rax25: DL-UNIT_DATA indication");
         vec![]
