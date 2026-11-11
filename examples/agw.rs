@@ -58,6 +58,10 @@ struct Opt {
     /// Log level for stderr diagnostics.
     #[arg(short = 'v', long = "log-level", value_enum, default_value = "info")]
     log_level: LogLevel,
+
+    /// Experiments to enable.
+    #[clap(long, value_enum, value_delimiter = ',')]
+    experiments: Vec<rax25::Experiment>,
 }
 
 // An AGW packet received from an AGW client, or EOF.
@@ -569,6 +573,9 @@ async fn main() -> Result<()> {
     }
     if let Some(path) = opt.capture {
         engine.capture(path)?;
+    }
+    for ex in &opt.experiments {
+        engine.enable_experiment(*ex);
     }
     let modem = engine.run(port);
     let server = serve(listener, commands, events, opt.extended);

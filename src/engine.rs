@@ -1,6 +1,6 @@
 //! Shared, single-channel KISS packet engine. The transport is owned once;
 //! each callsign pair has its own AX.25 state machine and timers.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -145,8 +145,15 @@ struct Link {
     expires: Option<std::time::Instant>,
 }
 impl Link {
-    fn new(owner: OwnerId, local: Callsign, via: Vec<Addr>, incoming: bool) -> Self {
+    fn new(
+        owner: OwnerId,
+        local: Callsign,
+        via: Vec<Addr>,
+        incoming: bool,
+        experiments: &HashSet<Experiment>,
+    ) -> Self {
         let mut data = state::Data::new(local);
+        data.experiments.clone_from(experiments);
         data.able_to_establish = incoming;
         Self {
             owner,
@@ -322,7 +329,8 @@ impl PacketEngine {
                         .await
                         .map_err(|_| crate::Error::QueueFull)?;
                 } else {
-                    let mut link = Link::new(owner, route.local.clone(), via, false);
+                    let mut link =
+                        Link::new(owner, route.local.clone(), via, false, &self.experiments);
                     if let Some(config) = &self.xid {
                         link.data.set_xid_config(config.clone());
                     }
@@ -463,7 +471,7 @@ impl PacketEngine {
                 .cloned()
                 .map(|a| a.with_highbit(false))
                 .collect();
-            let mut link = Link::new(owner, route.local.clone(), via, true);
+            let mut link = Link::new(owner, route.local.clone(), via, true, &self.experiments);
             if let Some(config) = &self.xid {
                 link.data.set_xid_config(config.clone());
             }
