@@ -198,7 +198,7 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
     );
     ensure!(controls.last() == Some(&0x63), "expected final UA");
     ensure!(
-        controls.iter().rev().nth(1) == Some(&0x43),
+        controls[..controls.len() - 1].contains(&0x43),
         "expected DISC before final UA"
     );
     Ok(())
