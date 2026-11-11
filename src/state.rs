@@ -2223,12 +2223,24 @@ impl State for Connected {
         ]
     }
 
-    // Page 93 & 100.
+    // UA received in Connected or TimerRecovery.
     //
-    // 2017 spec says DlError::K, which is undocumented.
+    // * 1998: C4.4 page 93, C4.5 page 100.
+    // * 2006: C4.4 page 97, C4.5 page 101.
+    // * 2017: C4.4b page 92, C4.5 page 94.
+    //
+    // 2017 spec says DlError::K, which is undocumented. But we're pretty sure
+    // it's "Unexpected frame received". But 'C' is a perfect match.
     fn ua(&self, data: &mut Data, _ua: &Ua) -> Vec<Action> {
         data.layer3_initiated = false;
         vec![
+            // 2017 spec bug: This spec bug says K for Connected, and N for
+            // TimerRecovery. Which doesn't make sense.
+            //
+            // C is the only correct option, here.
+            //
+            // https://github.com/packethacking/ax25spec/issues/172
+            // https://github.com/packethacking/ax25spec/issues/173
             Action::DlError(DlError::C),
             data.establish_data_link(),
             Action::State(Box::new(AwaitingConnection::new())),
