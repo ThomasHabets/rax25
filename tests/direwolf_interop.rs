@@ -218,7 +218,7 @@ fn tshark_capture(path: &Path) -> String {
         return format!("cannot stage {} for tshark: {error}", path.display());
     }
     let staged = temp.join("capture.pcap");
-    let result = match Command::new("tshark").args(["-r"]).arg(&staged).output() {
+    let result = match Command::new("tshark").args(["-Vr"]).arg(&staged).output() {
         Ok(output) => format!(
             "tshark -r {} (exit {}):\n{}{}",
             path.display(),
