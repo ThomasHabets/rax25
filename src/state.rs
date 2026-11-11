@@ -163,7 +163,7 @@ impl std::fmt::Display for DlError {
 
                 DlError::F =>
                     "F: Data link reset; i.e., SABM received in state 3 (Connected), 4 (TimerRecovery), 5 (Awaiting v2.2 Connection)",
-                // 1998-2017 Spec bug: Undocumented. Defined per discussino.
+                // 1998-2017 Spec bug: Undocumented. Defined per discussion.
                 DlError::G => "G: Connection timed out",
                 // 1998-2017 Spec bug: Undocumented.
                 DlError::H => "H: Connection timed out while disconnecting",
