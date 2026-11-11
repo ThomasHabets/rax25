@@ -240,7 +240,8 @@ pub const DEFAULT_SRT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Default maximum outgoing frame size.
 ///
 /// This is the transmitting part of what the spec calls `N1`.
-/// Spec bug: 4.3.3.7 page 26 says `N1` is retry count, but that's `N2`.
+/// 1998-2017 Spec bug: 4.3.3.7 page 26 says `N1` is retry count, but that's
+/// `N2`. <https://github.com/packethacking/ax25spec/pull/174>
 ///
 /// Higher makes for more efficient bulk transfers in a less noisy environment,
 /// but makes retransmissions more expensive.
@@ -272,8 +273,9 @@ pub const DEFAULT_T3V: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Max retry count.
 ///
-/// Linux uses 10. It's also set to 10 in the 1998 spec, page 109, figure C4.7,
-/// for both extended and not. Page 102 in 2017 spec.
+/// * Linux: 10
+/// * 1998: 10 (page 109, figure C4.7), for both extended and not.
+/// * 2017: 10 (page 102)
 ///
 /// Also 4.3.3.7 says 10 is the default. Not sure why the diagrams need to set
 /// it, then.
@@ -281,7 +283,13 @@ pub const DEFAULT_N2: u8 = 10;
 
 /// Timer object.
 ///
-/// There are two timers, T1 and T3 (4.4.5, page 30).
+/// There are two timers, T1 and T3.
+///
+/// * T1: waiting for something we sent.
+/// * T3: idle timer.
+///
+/// See:
+/// * 1998: 4.4.5, page 30.
 #[derive(Debug)]
 pub struct Timer {
     running: bool,
@@ -308,7 +316,7 @@ impl Timer {
 
     /// Return None if timer is not running.
     ///
-    /// Returns true if it's expired, alse false.
+    /// Returns true if it's expired, else false.
     #[must_use]
     pub fn is_expired(&self) -> Option<bool> {
         if !self.running {
@@ -340,7 +348,7 @@ impl Timer {
     ///
     /// Called by the state machine.
     ///
-    /// TODO: the spec doesn't say what the difference is between "start"
+    /// Spec bug: the spec doesn't say what the difference is between "start"
     /// and "restart". Maybe there's no difference?
     fn restart(&mut self, v: std::time::Duration) {
         self.start(v);
@@ -371,6 +379,9 @@ impl Modulus {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)] // Keep state variables aligned with the AX.25 specification.
 pub struct Data {
+    // Whether to set reserved bits in the way Linux does, to indicate mod128.
+    // This is mostly useful for people monitoring, who did not see if the
+    // connection started with SABM or SABME.
     pub(crate) linux_extended_hint: bool,
     xid_config: Option<XidConfig>,
     negotiated: Option<NegotiatedParameters>,
@@ -389,16 +400,17 @@ pub struct Data {
     // TODO: double check all types.
     /// True if this client initiated the connection via SABM(E).
     ///
-    /// C4.3, page 82.
+    /// * 1998: C4.3, page 82.
     layer3_initiated: bool,
 
     /// T1 timer - pending ACK.
-    /// 4.4.5.1, page 30.
+    ///
+    /// * 1998: 4.4.5.1, page 30.
     ///
     /// When a packet expecting a reply is sent, such as IFRAME (expecting RR or
     /// a returning IFRAME with NR), T1 is started (unless already running).
     ///
-    /// T1 stops if a the last sent IFRAME is acknowledged.
+    /// T1 stops if the last sent IFRAME is acknowledged.
     /// T1 is also used to send another SABM(E) if no UA or DM is received.
     ///
     /// If T1 expires, it initiates a retransmit.
@@ -471,7 +483,7 @@ pub struct Data {
     /// Either 8 or 128, depending on EXTSEQ.
     pub(crate) modulus: Modulus,
 
-    /// Remote end is busy, and canet receive frames.
+    /// Remote end is busy, and can't receive frames.
     /// Page 82.
     peer_receiver_busy: bool,
 
@@ -501,7 +513,7 @@ pub struct Data {
     acknowledge_pending: bool,
 
     /// This implementation doesn't yet implement SREJ, so this
-    /// is always falso for now.
+    /// is always false for now.
     srej_enabled: bool,
 
     /// Maximum number of iframes outstanding.
@@ -513,11 +525,10 @@ pub struct Data {
     /// but makes retransmissions worse. It also hogs the transmitter for other
     /// users.
     ///
+    /// Defaults are listed under XID 4.3.3.7:
     /// * I believe this is what Linux calls "window", where it uses 2 and 32,
     ///   for mod-8 and mod-128.
-    /// * 1998 spec says 4 and 32.
-    /// * 2017 spec says 8 and 32. 8 can't be right? Bug: this change is not
-    ///   hilighted.
+    /// * 1998-2017 spec says 4 and 32.
     k: u8,
 
     // TODO: not the right type. Should be VecDeque<u8> or VecDeque<Iframe>
@@ -536,7 +547,7 @@ pub struct Data {
     mtu_out: usize,
     mtu_out_default: usize,
 
-    /// When an IFRAME is sent out, it's stared in this queue, until it's been
+    /// When an IFRAME is sent out, it's stored in this queue, until it's been
     /// acked. When a resend is required, it's sent from here.
     iframe_resend_queue: VecDeque<Iframe>,
 
