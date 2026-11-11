@@ -149,7 +149,7 @@ async fn probe<T: AsyncRead + AsyncWrite + Unpin>(
             PollFinal::Set,
             None,
         )
-        .serialize(),
+        .serialize_with_linux_extended_hint(false),
     );
     let mut decoder = Decoder::default();
     for attempt in 0..=retries {
@@ -253,7 +253,8 @@ mod tests {
     async fn query(server: &mut DuplexStream) {
         let (local, peer) = addresses();
         let expected = escape(
-            &Packet::xid(local, peer, CommandResponse::Command, PollFinal::Set, None).serialize(),
+            &Packet::xid(local, peer, CommandResponse::Command, PollFinal::Set, None)
+                .serialize_with_linux_extended_hint(false),
         );
         let mut actual = vec![0; expected.len()];
         server.read_exact(&mut actual).await.unwrap();
@@ -268,7 +269,7 @@ mod tests {
             PollFinal::Set,
             parameters,
         )
-        .serialize()
+        .serialize_with_linux_extended_hint(false)
     }
 
     async fn run(client: &mut DuplexStream, milliseconds: u64, retries: u32) -> Result<Xid> {
@@ -345,7 +346,9 @@ mod tests {
                     None,
                 ),
             ] {
-                wire.extend_from_slice(&escape(&packet.serialize())[1..]);
+                wire.extend_from_slice(
+                    &escape(&packet.serialize_with_linux_extended_hint(false))[1..],
+                );
             }
             let mut nondata = escape(&reply(None));
             nondata[1] = 1;
@@ -429,7 +432,7 @@ mod tests {
             PollFinal::Set,
             None,
         )
-        .serialize();
+        .serialize_with_linux_extended_hint(false);
         for length in 0..raw.len() {
             assert!(
                 response(&[&[0], &raw[..length]].concat(), &local, &peer)

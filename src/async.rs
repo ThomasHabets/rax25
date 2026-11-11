@@ -53,7 +53,7 @@ use std::pin::Pin;
 
 use crate::pcap::PcapWriter;
 use crate::state::{self, Event, NegotiatedParameters, ReturnEvent, XidConfig};
-use crate::{Callsign, Error, Packet, PacketType, Result};
+use crate::{Callsign, Error, Experiment, Packet, PacketType, Result};
 
 use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
@@ -162,7 +162,6 @@ impl tokio::io::AsyncWrite for PortType {
 /// A builder for setting up a connection.
 pub struct ConnectionBuilder {
     me: Callsign,
-    linux_extended_hint: bool,
     extended: Option<bool>,
     capture: Option<std::path::PathBuf>,
     port: PortType,
@@ -178,7 +177,6 @@ impl ConnectionBuilder {
     pub fn new(me: Callsign, port: PortType) -> Result<Self> {
         Ok(Self {
             me,
-            linux_extended_hint: true,
             extended: None,
             capture: None,
             t3v: None,
@@ -203,16 +201,6 @@ impl ConnectionBuilder {
     #[must_use]
     pub fn extended(mut self, ext: Option<bool>) -> ConnectionBuilder {
         self.extended = ext;
-        self
-    }
-
-    /// Enable the outgoing Linux extended-mode address hint (default true).
-    ///
-    /// Disabling it leaves the reserved source-address bit set to one without
-    /// changing modulo-128 control fields or receive parsing.
-    #[must_use]
-    pub fn linux_extended_hint(mut self, enabled: bool) -> Self {
-        self.linux_extended_hint = enabled;
         self
     }
 
@@ -263,7 +251,7 @@ impl ConnectionBuilder {
     #[must_use]
     fn create_data(&self) -> state::Data {
         let mut data = state::Data::new(self.me.clone());
-        data.set_linux_extended_hint(self.linux_extended_hint);
+        data.experiments.clone_from(&self.experiments);
         if let Some(config) = &self.xid {
             data.set_xid_config(config.clone());
         }
@@ -452,8 +440,11 @@ fn kisser_read(
                     // perfect is, since we may want to both preserve the extra
                     // bits in the address fields *and* use them to signify
                     // extended mode.
-                    trace!("BYTES: {:?}", Packet::parse(&packet.serialize(), ext));
-                    assert_eq!(&packet.serialize(), &pb);
+                    trace!(
+                        "BYTES: {:?}",
+                        Packet::parse(&packet.serialize_with_linux_extended_hint(true), ext)
+                    );
+                    assert_eq!(&packet.serialize_with_linux_extended_hint(true), &pb);
                 }
                 if let Some(f) = &mut pcap
                     && let Err(e) = f.write(&pb)
@@ -724,15 +715,15 @@ impl Client {
                     }
                 }
                 ReturnEvent::Packet(p) => {
+                    let linux = self
+                        .data
+                        .experiments
+                        .contains(&Experiment::LinuxExtendedHint);
                     // TODO: we should probably only flip this on SABME, right?
                     self.kissport.ext = self.data.ext();
-                    self.kissport
-                        .write(p, self.data.linux_extended_hint)
-                        .await?;
+                    self.kissport.write(p, linux).await?;
                     if let Some(f) = &mut self.pcap {
-                        f.write(
-                            &p.serialize_with_linux_extended_hint(self.data.linux_extended_hint),
-                        )?;
+                        f.write(&p.serialize_with_linux_extended_hint(linux))?;
                     }
                 }
             }
@@ -874,16 +865,20 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let client_port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
             let (server_port, _) = listener.accept().await?;
-            let client = ConnectionBuilder::new(Callsign::new(local)?, PortType::Tcp(client_port))?
-                .xid(XidConfig {
-                    management_timeout: Duration::from_millis(20),
-                    ..Default::default()
-                })
-                .extended(mode)
-                .linux_extended_hint(hint)
-                .srt_default(Duration::from_millis(20));
-            let server = ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?
-                .linux_extended_hint(hint);
+            let mut client =
+                ConnectionBuilder::new(Callsign::new(local)?, PortType::Tcp(client_port))?
+                    .xid(XidConfig {
+                        management_timeout: Duration::from_millis(20),
+                        ..Default::default()
+                    })
+                    .extended(mode)
+                    .srt_default(Duration::from_millis(20));
+            let mut server =
+                ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?;
+            if hint {
+                client = client.enable_experiment(Experiment::LinuxExtendedHint);
+                server = server.enable_experiment(Experiment::LinuxExtendedHint);
+            }
             let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
                 tokio::join!(
                     client.connect(Callsign::new(peer).unwrap()),
@@ -897,8 +892,20 @@ mod tests {
             assert!(server.negotiated_parameters().is_some());
             assert_eq!(client.data.ext(), mode.unwrap_or(true));
             assert_eq!(server.data.ext(), client.data.ext());
-            assert_eq!(client.data.linux_extended_hint, hint);
-            assert_eq!(server.data.linux_extended_hint, hint);
+            assert_eq!(
+                client
+                    .data
+                    .experiments
+                    .contains(&Experiment::LinuxExtendedHint),
+                hint
+            );
+            assert_eq!(
+                server
+                    .data
+                    .experiments
+                    .contains(&Experiment::LinuxExtendedHint),
+                hint
+            );
             tokio::time::timeout(Duration::from_secs(2), async {
                 client.write(b"hello").await?;
                 assert_eq!(server.read().await?, b"hello");

@@ -732,8 +732,12 @@ impl Packet {
         &self.packet_type
     }
     /// Serialize using this packet's sequencing mode, with the Linux hint enabled.
+    ///
+    /// TODO: Nobody should call this, unless we funnel down the
+    /// `LinuxExtendedHint` from the state diagram to here.
+    #[cfg(test)]
     #[must_use]
-    pub fn serialize(&self) -> Vec<u8> {
+    pub(crate) fn serialize(&self) -> Vec<u8> {
         self.serialize_with_linux_extended_hint(true)
     }
 

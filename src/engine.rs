@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::r#async::PortType;
-use crate::{Addr, Callsign, CommandResponse, Packet, PacketType, Result, state};
+use crate::{Addr, Callsign, CommandResponse, Experiment, Packet, PacketType, Result, state};
 
 /// Address pair identifying a link, independently of its digipeater path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -169,6 +169,8 @@ pub struct PacketEngine {
     links: HashMap<Route, Link>,
     capture: Option<crate::pcap::PcapWriter>,
     xid: Option<crate::XidConfig>,
+
+    experiments: std::collections::HashSet<Experiment>,
 }
 impl PacketEngine {
     #[must_use]
@@ -183,10 +185,16 @@ impl PacketEngine {
                 links: HashMap::new(),
                 capture: None,
                 xid: None,
+                experiments: std::collections::HashSet::default(),
             },
             tx,
             rx,
         )
+    }
+
+    /// Enable an experiment.
+    pub fn enable_experiment(&mut self, ex: Experiment) {
+        self.experiments.insert(ex);
     }
 
     /// Capture transmitted and received AX.25 frames, without KISS framing.
@@ -204,12 +212,17 @@ impl PacketEngine {
         Ok(())
     }
 
+    fn linux_extended_hint(&self) -> bool {
+        self.experiments.contains(&Experiment::LinuxExtendedHint)
+    }
+
     async fn step(
         &mut self,
         route: &Route,
         event: state::Event,
         port: &mut PortType,
     ) -> Result<()> {
+        let linux = self.linux_extended_hint();
         let Some(link) = self.links.get_mut(route) else {
             return Ok(());
         };
@@ -232,7 +245,7 @@ impl PacketEngine {
             match event {
                 state::ReturnEvent::Packet(mut p) => {
                     p.digipeater.clone_from(&link.via);
-                    let bytes = p.serialize();
+                    let bytes = p.serialize_with_linux_extended_hint(linux);
                     port.write_all(&crate::escape(&bytes)).await?;
                     if let Some(capture) = &mut self.capture {
                         capture.write(&bytes)?;
@@ -386,7 +399,7 @@ impl PacketEngine {
                 if let PacketType::Ui(ui) = &mut p.packet_type {
                     ui.pid = pid;
                 }
-                let bytes = p.serialize();
+                let bytes = p.serialize_with_linux_extended_hint(self.linux_extended_hint());
                 port.write_all(&crate::escape(&bytes)).await?;
                 if let Some(capture) = &mut self.capture {
                     capture.write(&bytes)?;

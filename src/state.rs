@@ -93,7 +93,8 @@ impl ReturnEvent {
     /// TODO: Not very clean. Only packets can serialize. Other return events
     /// return None.
     #[must_use]
-    pub fn serialize(&self) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    pub(crate) fn serialize(&self) -> Option<Vec<u8>> {
         self.serialize_with_linux_extended_hint(true)
     }
 
@@ -379,10 +380,6 @@ impl Modulus {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)] // Keep state variables aligned with the AX.25 specification.
 pub struct Data {
-    // Whether to set reserved bits in the way Linux does, to indicate mod128.
-    // This is mostly useful for people monitoring, who did not see if the
-    // connection started with SABM or SABME.
-    pub(crate) linux_extended_hint: bool,
     xid_config: Option<XidConfig>,
     negotiated: Option<NegotiatedParameters>,
     management: Timer,
@@ -551,7 +548,7 @@ pub struct Data {
     /// acked. When a resend is required, it's sent from here.
     iframe_resend_queue: VecDeque<Iframe>,
 
-    experiments: HashSet<Experiment>,
+    pub(crate) experiments: HashSet<Experiment>,
 }
 
 /// A set of experiments to enable on the implementation outside of the official
@@ -576,6 +573,15 @@ pub enum Experiment {
     ///
     /// <https://github.com/packethacking/ax25spec/issues/8>
     ResendOnRrCommand,
+    /// Normally there's no way to tell if a frame is using extended or standard
+    /// frame numbers. Linux indicates this by clearing the reserved address bit
+    /// of the source address.
+    ///
+    /// This experiment duplicates that behavior.
+    ///
+    /// This is mostly useful for people monitoring, who did not see if the
+    /// connection started with SABM or SABME.
+    LinuxExtendedHint,
 }
 
 impl Data {
@@ -589,7 +595,6 @@ impl Data {
     pub fn new(me: Callsign) -> Self {
         Self {
             me,
-            linux_extended_hint: true,
             xid_config: None,
             negotiated: None,
             management: Timer::default(),
@@ -627,12 +632,6 @@ impl Data {
             able_to_establish: false,
             experiments: HashSet::new(),
         }
-    }
-
-    /// Enable the outgoing Linux source-address extended-mode hint (default true).
-    /// This does not change the sequencing mode or receive parsing.
-    pub fn set_linux_extended_hint(&mut self, enabled: bool) {
-        self.linux_extended_hint = enabled;
     }
 
     /// Set default T1 timer / smoothed roundtrip.
@@ -684,7 +683,6 @@ impl Data {
     #[must_use]
     pub fn accepted_data(&mut self, peer: &Callsign) -> Self {
         let mut data = Self::new(self.me.clone());
-        data.linux_extended_hint = self.linux_extended_hint;
         data.xid_config.clone_from(&self.xid_config);
         self.expire_pending_xid();
         if let Some(index) = self
@@ -2684,10 +2682,15 @@ mod tests {
     fn accepted_connection_inherits_linux_hint_policy() -> Result<()> {
         let mut listener = Data::new(Callsign::new("LOCAL")?);
         let peer = Callsign::new("REMOTE")?;
-        assert!(listener.linux_extended_hint);
         for enabled in [false, true] {
-            listener.set_linux_extended_hint(enabled);
-            assert_eq!(listener.accepted_data(&peer).linux_extended_hint, enabled);
+            if enabled {
+                listener.enable_experiment(Experiment::LinuxExtendedHint);
+            } else {
+                listener.experiments.clear();
+            }
+            let accepted = listener.accepted_data(&peer);
+            assert_eq!(accepted.experiments, listener.experiments);
+            assert_eq!(accepted.experiments.len(), usize::from(enabled));
         }
         Ok(())
     }

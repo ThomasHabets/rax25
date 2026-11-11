@@ -94,7 +94,14 @@ impl Client {
     /// Enable the outgoing Linux extended-mode address hint (default true).
     /// This does not change the sequencing mode or receive parsing.
     pub fn set_linux_extended_hint(&mut self, enabled: bool) {
-        self.data.set_linux_extended_hint(enabled);
+        if enabled {
+            self.data
+                .enable_experiment(crate::Experiment::LinuxExtendedHint);
+        } else {
+            self.data
+                .experiments
+                .remove(&crate::Experiment::LinuxExtendedHint);
+        }
     }
 
     /// Configure XID negotiation for subsequent connections.
@@ -388,9 +395,11 @@ impl Client {
                 state::ReturnEvent::Packet(_) => {}
             }
 
-            if let Some(frame) =
-                act.serialize_with_linux_extended_hint(self.data.linux_extended_hint)
-            {
+            if let Some(frame) = act.serialize_with_linux_extended_hint(
+                self.data
+                    .experiments
+                    .contains(&crate::Experiment::LinuxExtendedHint),
+            ) {
                 self.kiss.send(&frame).unwrap();
             }
         }
@@ -466,7 +475,12 @@ mod tests {
             };
             let sent = peer.sent.clone();
             let mut client = Client::new(Callsign::new("M0THC-1")?, Box::new(peer));
-            assert!(client.data.linux_extended_hint);
+            assert!(
+                !client
+                    .data
+                    .experiments
+                    .contains(&crate::Experiment::LinuxExtendedHint)
+            );
             client.set_linux_extended_hint(hint);
             client.set_xid_config(state::XidConfig {
                 management_timeout: std::time::Duration::from_millis(20),
