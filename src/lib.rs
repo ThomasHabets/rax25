@@ -7,15 +7,16 @@
 //!
 //! * Seems to work well.
 //! * Both 8 and 128 modulus supported.
-//! * REJ untested / probably broken.
+//! * Basic REJ retransmission is supported.
 //! * SREJ untested / mostly broken.
+//! * Segmentation: not implemented.
 //! * The sync API is not great.
 //! * The Async API works well as long as you only need one connection active.
 //!
 //! ## Interoperability tested regularly
 //!
 //! * Linux kernel (removed in newer kernels)
-//! * Direwolf
+//! * Dire Wolf
 #![allow(clippy::missing_errors_doc)]
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
