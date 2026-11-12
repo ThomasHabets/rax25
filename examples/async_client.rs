@@ -94,7 +94,8 @@ async fn main() -> Result<()> {
     let port = connect_kiss_endpoint(&opt.port).await?;
     let mut stdin = tokio::io::stdin();
     let builder = {
-        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?;
+        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?
+            .with_experiments(&opt.experiments);
         if opt.ext {
             builder = builder.extended(Some(opt.ext));
         }
@@ -123,9 +124,6 @@ async fn main() -> Result<()> {
         }
         if let Some(v) = opt.mtu {
             builder = builder.mtu(v);
-        }
-        for ex in &opt.experiments {
-            builder = builder.enable_experiment(*ex);
         }
         builder
     };

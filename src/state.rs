@@ -644,9 +644,13 @@ impl Data {
         self.t3v = v;
     }
 
-    /// Enable an experiment.
-    pub fn enable_experiment(&mut self, ex: Experiment) {
-        self.experiments.insert(ex);
+    /// Enable experiments.
+    pub fn enable_experiments<I, E>(&mut self, ex: I)
+    where
+        I: IntoIterator<Item = E>,
+        E: std::borrow::Borrow<Experiment>,
+    {
+        self.experiments.extend(ex.into_iter().map(|e| *e.borrow()));
     }
 
     /// Set MTU.
@@ -2684,7 +2688,7 @@ mod tests {
         let peer = Callsign::new("REMOTE")?;
         for enabled in [false, true] {
             if enabled {
-                listener.enable_experiment(Experiment::LinuxExtendedHint);
+                listener.enable_experiments([Experiment::LinuxExtendedHint]);
             } else {
                 listener.experiments.clear();
             }

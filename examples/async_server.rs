@@ -78,7 +78,8 @@ async fn main() -> Result<()> {
     let port = connect_kiss_endpoint(&opt.port).await?;
     info!("Awaiting connection");
     let mut client = {
-        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?;
+        let mut builder = ConnectionBuilder::new(Callsign::new(&opt.src)?, port)?
+            .with_experiments(&opt.experiments);
         if opt.xid || opt.max_receive_bytes.is_some() {
             let mut config = rax25::XidConfig::default();
             if let Some(v) = opt.srt {
@@ -101,9 +102,6 @@ async fn main() -> Result<()> {
         }
         if let Some(v) = opt.mtu {
             builder = builder.mtu(v);
-        }
-        for ex in &opt.experiments {
-            builder = builder.enable_experiment(*ex);
         }
         builder.accept().await?
     };

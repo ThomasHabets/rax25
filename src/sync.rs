@@ -51,7 +51,7 @@ use crate::{Error, Result};
 use log::{debug, error};
 
 use crate::state;
-use crate::{Callsign, CommandResponse, Hub, Packet, PacketType};
+use crate::{Callsign, CommandResponse, Experiment, Hub, Packet, PacketType};
 
 /// A connected mode client.
 ///
@@ -96,11 +96,9 @@ impl Client {
     pub fn set_linux_extended_hint(&mut self, enabled: bool) {
         if enabled {
             self.data
-                .enable_experiment(crate::Experiment::LinuxExtendedHint);
+                .enable_experiments([Experiment::LinuxExtendedHint]);
         } else {
-            self.data
-                .experiments
-                .remove(&crate::Experiment::LinuxExtendedHint);
+            self.data.experiments.remove(&Experiment::LinuxExtendedHint);
         }
     }
 
@@ -398,7 +396,7 @@ impl Client {
             if let Some(frame) = act.serialize_with_linux_extended_hint(
                 self.data
                     .experiments
-                    .contains(&crate::Experiment::LinuxExtendedHint),
+                    .contains(&Experiment::LinuxExtendedHint),
             ) {
                 self.kiss.send(&frame).unwrap();
             }
@@ -479,7 +477,7 @@ mod tests {
                 !client
                     .data
                     .experiments
-                    .contains(&crate::Experiment::LinuxExtendedHint)
+                    .contains(&Experiment::LinuxExtendedHint)
             );
             client.set_linux_extended_hint(hint);
             client.set_xid_config(state::XidConfig {

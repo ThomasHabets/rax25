@@ -574,9 +574,7 @@ async fn main() -> Result<()> {
     if let Some(path) = opt.capture {
         engine.capture(path)?;
     }
-    for ex in &opt.experiments {
-        engine.enable_experiment(*ex);
-    }
+    engine.enable_experiments(&opt.experiments);
     let modem = engine.run(port);
     let server = serve(listener, commands, events, opt.extended);
     tokio::pin!(modem, server);

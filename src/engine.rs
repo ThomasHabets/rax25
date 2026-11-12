@@ -199,9 +199,13 @@ impl PacketEngine {
         )
     }
 
-    /// Enable an experiment.
-    pub fn enable_experiment(&mut self, ex: Experiment) {
-        self.experiments.insert(ex);
+    /// Enable experiments.
+    pub fn enable_experiments<I, E>(&mut self, ex: I)
+    where
+        I: IntoIterator<Item = E>,
+        E: std::borrow::Borrow<Experiment>,
+    {
+        self.experiments.extend(ex.into_iter().map(|e| *e.borrow()));
     }
 
     /// Capture transmitted and received AX.25 frames, without KISS framing.

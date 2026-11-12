@@ -168,7 +168,7 @@ pub struct ConnectionBuilder {
     t3v: Option<std::time::Duration>,
     srt: Option<std::time::Duration>,
     mtu: Option<usize>,
-    experiments: HashSet<crate::Experiment>,
+    experiments: HashSet<Experiment>,
     xid: Option<XidConfig>,
 }
 
@@ -234,11 +234,24 @@ impl ConnectionBuilder {
         self
     }
 
-    /// Enable an experiment.
+    /// Enable experiments.
     #[must_use]
-    pub fn enable_experiment(mut self, ex: crate::Experiment) -> ConnectionBuilder {
-        self.experiments.insert(ex);
+    pub fn with_experiments<I, E>(mut self, ex: I) -> ConnectionBuilder
+    where
+        I: IntoIterator<Item = E>,
+        E: std::borrow::Borrow<Experiment>,
+    {
+        self.enable_experiments(ex);
         self
+    }
+
+    /// Enable experiments.
+    pub fn enable_experiments<I, E>(&mut self, ex: I)
+    where
+        I: IntoIterator<Item = E>,
+        E: std::borrow::Borrow<Experiment>,
+    {
+        self.experiments.extend(ex.into_iter().map(|e| *e.borrow()));
     }
 
     /// Set MTU. Only used for outgoing packets.
@@ -264,9 +277,7 @@ impl ConnectionBuilder {
         if let Some(v) = self.mtu {
             data.mtu(v);
         }
-        for ex in &self.experiments {
-            data.enable_experiment(*ex);
-        }
+        data.enable_experiments(&self.experiments);
         data
     }
 
@@ -876,8 +887,8 @@ mod tests {
             let mut server =
                 ConnectionBuilder::new(Callsign::new(peer)?, PortType::Tcp(server_port))?;
             if hint {
-                client = client.enable_experiment(Experiment::LinuxExtendedHint);
-                server = server.enable_experiment(Experiment::LinuxExtendedHint);
+                client.enable_experiments([Experiment::LinuxExtendedHint]);
+                server.enable_experiments([Experiment::LinuxExtendedHint]);
             }
             let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
                 tokio::join!(
