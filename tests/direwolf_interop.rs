@@ -50,7 +50,7 @@ impl Drop for Harness {
 }
 
 impl Harness {
-    fn new(extended: bool) -> Result<Self> {
+    fn new(extended: bool, drop_percent: u8) -> Result<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let id = format!("{}_{}_{}", std::process::id(), nonce, extended);
         let root = manifest_dir()?;
@@ -58,7 +58,11 @@ impl Harness {
             .map_or_else(|| root.join("target"), |path| root.join(path));
         let dir = target.join("direwolf_interop").join(&id);
         fs::create_dir_all(&dir)?;
-        eprintln!("Dire Wolf interop artifacts: {}", dir.display());
+        let mode = if extended { "modulo-128" } else { "modulo-8" };
+        eprintln!(
+            "Dire Wolf interop artifacts ({mode}, TX/RX loss {drop_percent}%, seed 123): {}",
+            dir.display()
+        );
         let mut harness = Self {
             dir,
             children: Vec::new(),
@@ -293,9 +297,9 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
     Ok(())
 }
 
-async fn interop(extended: bool) -> Result<()> {
+async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
     let bell202 = Harness::bell202()?;
-    let mut harness = Harness::new(extended)?;
+    let mut harness = Harness::new(extended, drop_percent)?;
     let result = async {
         let agw_port = free_port()?;
         let mut kiss_port = free_port()?;
@@ -322,7 +326,24 @@ async fn interop(extended: bool) -> Result<()> {
             "--audio", "--audio-input", "from-direwolf", "--audio-output", "to-direwolf",
             "--audio-rate", "48000", "--tcp-listen", &format!("127.0.0.1:{kiss_port}"),
         ]))?;
-        let stream = harness.connect(kiss_port).await?;
+        let proxy_port = loop {
+            let port = free_port()?;
+            if port != agw_port && port != kiss_port { break port; }
+        };
+        let root = manifest_dir()?;
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map_or_else(|| root.join("target"), |path| root.join(path));
+        let proxy = target.join("debug/examples/kiss_loss_proxy");
+        harness.spawn("loss-proxy", Command::new(proxy).args([
+            "--listen", &format!("127.0.0.1:{proxy_port}"),
+            "--modem", &format!("tcp://127.0.0.1:{kiss_port}"),
+            "--tx-drop", &drop_percent.to_string(),
+            "--rx-drop", &drop_percent.to_string(),
+            "--seed", "123",
+            "--capture",
+        ]).arg(harness.dir.join("loss.pcapng")))?;
+        let stream = harness.connect(proxy_port).await?;
+        let deadline = if drop_percent == 0 { DEADLINE } else { Duration::from_secs(180) };
         let payloads = vec![
             b"rax25 to Dire Wolf over Bell 202 audio\r\n".to_vec(),
             (0..=255).collect::<Vec<u8>>(),
@@ -330,7 +351,7 @@ async fn interop(extended: bool) -> Result<()> {
         ];
         let mut agw_log = File::create(harness.dir.join("agw.log"))?;
         let client = async {
-            let mut client = timeout(DEADLINE, ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
+            let mut client = timeout(deadline, ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
                 .extended(Some(extended))
                 .srt_default(Duration::from_secs(5))
                 .mtu(256)
@@ -338,7 +359,7 @@ async fn interop(extended: bool) -> Result<()> {
                 .connect(Callsign::new("M0TST-2")?))
                 .await.context("AX.25 connect timed out")??;
             for expected in &payloads {
-                timeout(DEADLINE, async {
+                timeout(deadline, async {
                     client.write(expected).await?;
                     let mut received = Vec::new();
                     while received.len() < expected.len() {
@@ -350,11 +371,11 @@ async fn interop(extended: bool) -> Result<()> {
                     Ok::<_, anyhow::Error>(())
                 }).await.context("AX.25 echo timed out")??;
             }
-            timeout(DEADLINE, client.disconnect()).await.context("AX.25 disconnect timed out")??;
+            timeout(deadline, client.disconnect()).await.context("AX.25 disconnect timed out")??;
             Ok::<_, anyhow::Error>(())
         };
         let server = async {
-            timeout(Duration::from_secs(180), echo(&mut agw, &mut agw_log, &payloads))
+            timeout(Duration::from_secs(600), echo(&mut agw, &mut agw_log, &payloads))
                 .await.context("AGW echo/disconnect timed out")?
         };
         tokio::try_join!(client, server)?;
@@ -365,17 +386,31 @@ async fn interop(extended: bool) -> Result<()> {
         harness.check_children()?;
         Ok::<_, anyhow::Error>(())
     }.await;
-    result.with_context(|| format!("interop artifacts: {}", harness.dir.display()))
+    if result.is_err() {
+        eprintln!("{}", tshark_capture(&harness.dir.join("loss.pcapng")));
+    }
+    result.with_context(|| {
+        format!(
+            "{drop_percent}% loss; interop artifacts: {}",
+            harness.dir.display()
+        )
+    })
 }
 
 #[tokio::test]
 #[ignore = "requires Dire Wolf, bell202, ALSA Pulse plugin and live Pulse audio; use tests/run_direwolf_interop.sh"]
 async fn direwolf_standard_audio() -> Result<()> {
-    interop(false).await
+    for percent in [0, 5, 10] {
+        interop(false, percent).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "requires Dire Wolf, bell202, ALSA Pulse plugin and live Pulse audio; use tests/run_direwolf_interop.sh"]
 async fn direwolf_extended_audio() -> Result<()> {
-    interop(true).await
+    for percent in [0, 5, 10] {
+        interop(true, percent).await?;
+    }
+    Ok(())
 }

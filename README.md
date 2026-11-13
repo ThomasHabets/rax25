@@ -160,6 +160,12 @@ Modem failure stops the server rather than silently reconnecting.
 
 ## Dire Wolf Audio Interoperability
 
+The audio interop tests run both standard and extended AX.25 through the KISS
+loss proxy at some loss percentages, using seed 123.  Each run retains
+`loss.pcapng` with dropped-frame comments alongside the client capture and
+child-process logs. Nonzero-loss cases allow longer deadlines for over-the-air
+retries.
+
 An integration test runs the `bell202` modem from the published rustradio
 release pinned in `tests/run_direwolf_interop.sh` against an installed Dire Wolf
 binary, through two virtual audio cables. A registered AGW application echoes

@@ -47,6 +47,7 @@ jobs:
         path: |
           target/*.test.direwolf/direwolf_interop/*/*.log
           target/*.test.direwolf/direwolf_interop/*/*.pcap
+          target/*.test.direwolf/direwolf_interop/*/*.pcapng
           target/*.test.direwolf/direwolf_interop/*/*.conf
         if-no-files-found: ignore
 

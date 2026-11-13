@@ -99,7 +99,21 @@ async fn main() -> Result<()> {
     ));
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
     let (application, _) = listener.accept().await?;
-    let modem = rax25::r#async::connect_kiss_endpoint(&opt.modem).await?;
+    // Allow the modem process to start alongside the proxy. Do not probe it:
+    // some KISS modems accept only one application connection.
+    let modem = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match rax25::r#async::connect_kiss_endpoint(&opt.modem).await {
+                Err(rax25::Error::Endpoint { source: error, .. })
+                    if error.kind() == std::io::ErrorKind::ConnectionRefused =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                result => break result,
+            }
+        }
+    })
+    .await??;
     let (ar, aw) = tokio::io::split(application);
     let (mr, mw) = tokio::io::split(modem);
     tokio::try_join!(

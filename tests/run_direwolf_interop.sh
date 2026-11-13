@@ -60,4 +60,5 @@ if [[ $ready != true ]]; then
     exit 1
 fi
 printf 'Private audio logs: %s\n' "$audio_logs"
+cargo build --features async --example kiss_loss_proxy
 cargo test --features async --test direwolf_interop -- --ignored --nocapture "$@"
