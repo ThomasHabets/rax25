@@ -115,6 +115,10 @@ impl Client {
 
     /// Negotiate parameters before connecting. `None` prefers extended mode;
     /// `Some` constrains the offered mode. Legacy peers fall back to standard.
+    ///
+    /// # Errors
+    ///
+    /// If the XID config is invalid, or connection fails.
     pub fn connect_with_xid(&mut self, addr: &Callsign, ext: Option<bool>) -> Result<()> {
         self.data.validate_xid_config()?;
         self.actions(&state::Event::ConnectWithXid {
@@ -174,6 +178,11 @@ impl Client {
     ///
     /// TODO: Not sure Result<Option<_>> is a good pattern. It's not really
     /// compatible with `must_use`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the XID config is invalid, or receiving a connection related
+    /// packet (XID or SABM(E)) fails or packet is broken.
     pub fn accept(&mut self, until: std::time::Instant) -> Result<Option<Client>> {
         self.data.validate_xid_config()?;
         self.data.able_to_establish = true;
@@ -218,6 +227,10 @@ impl Client {
     ///
     /// Currently does not wait for the remote end to send UA, but that may
     /// change.
+    ///
+    /// # Errors
+    ///
+    /// Currently doesn't fail, but may do so in the future.
     pub fn disconnect(&mut self) -> Result<()> {
         if !self.state.is_state_disconnected() {
             self.actions(&state::Event::Disconnect);
@@ -228,6 +241,10 @@ impl Client {
     /// Write data on an established connection.
     ///
     /// This may block.
+    ///
+    /// # Errors
+    ///
+    /// Currently doesn't fail, but may do so in the future.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(&state::Event::Data(data.to_vec()));
         Ok(())
@@ -238,6 +255,11 @@ impl Client {
     /// This should normally not be used. Instead use `.write()`.
     ///
     /// Possible uses for this if you're doing lower level stuff.
+    ///
+    /// # Errors
+    ///
+    /// If reading the packet or parsing the packet fails. Timeout just returns
+    /// `Ok(None)`.
     fn try_read(&mut self) -> Result<Option<Packet>> {
         let timeout = self
             .data
@@ -274,6 +296,10 @@ impl Client {
     /// threads / lifetimes.
     ///
     /// I'm not so sure about this return value.
+    ///
+    /// # Errors
+    ///
+    /// If reading fails.
     #[allow(clippy::needless_pass_by_value)]
     pub fn read_until(
         &mut self,

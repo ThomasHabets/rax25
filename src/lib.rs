@@ -241,6 +241,10 @@ pub struct Addr {
 
 impl Addr {
     /// Create a new Addr from string. The extra bits are all clear.
+    ///
+    /// # Errors
+    ///
+    /// If the callsign is invalid.
     pub fn new(s: impl Into<String>) -> Result<Self> {
         Ok(Callsign::new(s)?.into())
     }
@@ -264,6 +268,10 @@ impl Addr {
     }
 
     /// Create a new Addr from string and the extra bits.
+    ///
+    /// # Errors
+    ///
+    /// If the callsign is invalid.
     pub fn new_bits(s: impl Into<String>, flags: AddrFlags) -> Result<Self> {
         let mut a = Self::new(s)?;
         a.flags = flags;
@@ -283,6 +291,8 @@ impl Addr {
     }
 
     /// Parse the callsign and the extra bits from the packet format.
+    ///
+    /// # Errors
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != 7 || bytes[..6].iter().any(|byte| byte & 1 != 0) {
             return Err(Error::InvalidSerializedCallsign(bytes.to_vec()));
@@ -1309,7 +1319,12 @@ pub(crate) fn find_frame(vec: &std::collections::VecDeque<u8>) -> Option<(usize,
 }
 
 /// Unescape KISS data stream.
+///
 /// <https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)>
+///
+/// # Errors
+///
+/// Invalid escapes, or ending on an escape.
 pub fn unescape(data: &[u8]) -> Result<Vec<u8>> {
     let mut unescaped = Vec::with_capacity(data.len());
     let mut is_escaped = false;

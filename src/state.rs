@@ -665,6 +665,11 @@ impl Data {
     }
 
     /// Validate local policy before sending frames.
+    ///
+    /// # Errors
+    ///
+    /// If there's an XID config, and it's not valid, then
+    /// [`crate::Error::InvalidXidConfig`].
     pub fn validate_xid_config(&self) -> Result<()> {
         self.xid_config.as_ref().map_or(Ok(()), XidConfig::validate)
     }

@@ -150,6 +150,10 @@ impl XidParameters {
     ///
     /// Truncated groups/TLVs, unsupported format identifiers, duplicate known
     /// groups/parameters, and oversized known parameter values are errors.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidXid`] if it's broken.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 4 || bytes.first() != Some(&0x82) {
             return Err(Error::InvalidXid("invalid XID format identifier"));

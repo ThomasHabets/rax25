@@ -39,6 +39,11 @@ impl Default for XidConfig {
 
 impl XidConfig {
     /// Reject invalid policy before opening a connection or emitting frames.
+    ///
+    /// # Errors
+    ///
+    /// There are many ways XID could be invalid, and they should all be encoded
+    /// into [`Error::InvalidXidConfig`].
     pub fn validate(&self) -> Result<()> {
         if !(1..=(u32::MAX / 8) as usize).contains(&self.receive_length) {
             return Err(Error::InvalidXidConfig("invalid XID receive length"));
