@@ -49,6 +49,7 @@ pub mod r#async;
 pub mod sync;
 
 pub mod pcap;
+pub mod pcapng;
 
 #[cfg(feature = "async")]
 pub mod engine;

@@ -59,6 +59,10 @@ required-features = ["serial"]
 name = "agw"
 required-features = ["async"]
 
+[[example]]
+name = "kiss_loss_proxy"
+required-features = ["async"]
+
 [[test]]
 name = "async_tcp_examples"
 required-features = ["async"]

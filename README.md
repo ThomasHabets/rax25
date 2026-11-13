@@ -108,6 +108,28 @@ The examples provide `--no-extended` to constrain XID to modulo-8 and
 `--xid-receive-size` to set the advertised receive payload limit. `--srt`
 also sets the XID management retry interval.
 
+## KISS Loss Proxy
+
+Run a frame-aware loss proxy between a KISS application and its modem:
+
+```shell
+cargo run --features async --example kiss_loss_proxy -- \
+  --listen 127.0.0.1:8000 --modem tcp://localhost:8001 \
+  --tx-drop 50 --rx-drop 50 --seed 123 --capture loss.pcapng
+```
+
+Connect the application to port 8000. TX means application to modem; RX is
+the reverse. Drop percentages are independent, default to zero, and apply
+only to KISS data frames on any port. Modem control commands pass through.
+The modem may also use a `serial:///dev/ttyUSB0` endpoint. One application
+connection is accepted per run; EOF half-closes the opposite writer.
+
+The optional capture must be a new file. It records forwarded and dropped
+AX.25 packets on named TX/RX interfaces, with comment `dropped` on discarded
+packets. Omit `--seed` for a random seed, which is printed for replay.
+Separate directional RNGs reproduce decisions for each direction's frame
+sequence; retransmission timing can still change that sequence.
+
 ## AGW Server
 
 The `agw` example provides a single-channel packet engine over one KISS modem.
