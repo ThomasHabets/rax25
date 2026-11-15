@@ -227,6 +227,8 @@ impl PacketEngine {
         self.experiments.contains(&Experiment::LinuxExtendedHint)
     }
 
+    // Not cancellation-safe: state advances before packet writes and event
+    // sends; cancellation loses the remaining local actions/notifications.
     async fn step(
         &mut self,
         route: &Route,
@@ -295,6 +297,8 @@ impl PacketEngine {
 
     // Exhaustive command dispatch; link behavior lives in step.
     #[allow(clippy::too_many_lines)]
+    // Not cancellation-safe: commands can mutate ownership/links before step
+    // awaits I/O, and UI write_all can leave a partial frame on the transport.
     async fn command(&mut self, command: Command, port: &mut PortType) -> Result<()> {
         match command {
             Command::Listen {
@@ -441,6 +445,8 @@ impl PacketEngine {
         Ok(())
     }
 
+    // Not cancellation-safe: inserts incoming links before awaiting step,
+    // which can commit state and only partially execute the resulting actions.
     async fn frame(&mut self, bytes: &[u8], port: &mut PortType) -> Result<()> {
         if bytes.len() < 15 {
             return Ok(());
@@ -485,6 +491,15 @@ impl PacketEngine {
     }
 
     /// Drive until the modem fails or all command senders are dropped.
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe: cancelling drops the engine, all link state and
+    /// the owned modem without gracefully disconnecting peers. Commands or
+    /// incoming frames may already have advanced state when packet writes or
+    /// notification sends are interrupted; remaining actions/notifications are
+    /// lost and a KISS frame may be only partially written. Keep this future
+    /// running in a dedicated task rather than cancelling it to service other
+    /// work. Aborting that task is an abrupt shutdown, not a graceful release.
     pub async fn run(mut self, mut port: PortType) -> Result<()> {
         let mut input = VecDeque::new();
         let mut buf = [0; 4096];

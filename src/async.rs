@@ -282,6 +282,12 @@ impl ConnectionBuilder {
     }
 
     /// Initiate a connection.
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe: cancelling drops the owned modem connection and
+    /// protocol state without completing a disconnect. XID or SABM(E) may
+    /// already have been sent, or a KISS frame may have been partially written.
+    /// The peer may retain a pending or established link until it times out.
     pub async fn connect(self, peer: Callsign) -> Result<Client> {
         if let Some(config) = &self.xid {
             config.validate()?;
@@ -307,6 +313,12 @@ impl ConnectionBuilder {
     ///
     /// But this crate doesn't yet have a multi-connection API. Maybe it
     /// shouldn't, though, but instead rely on a TCP-based multiplexer?
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe: cancelling drops the owned modem and protocol
+    /// state. A handshake response may already have been sent or partially
+    /// written, leaving the peer connected without a local client. No graceful
+    /// disconnect is performed when the future is dropped.
     pub async fn accept(self) -> Result<Client> {
         if let Some(config) = &self.xid {
             config.validate()?;
@@ -390,6 +402,8 @@ impl KissPort {
         self.incoming_frames
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext), pcap));
     }
+    // Cancellation can discard a partially written KISS frame: the write
+    // offset lives in this future, not in KissPort.
     async fn write(&mut self, packet: &Packet, linux_extended_hint: bool) -> Result<()> {
         let bytes = packet.serialize_with_linux_extended_hint(linux_extended_hint);
         let frame = crate::escape(&bytes);
@@ -492,6 +506,8 @@ impl Client {
     }
 
     /// Initiate a connection.
+    /// Not cancellation-safe: owns the client and can be interrupted during
+    /// `actions` or `wait_event`, dropping the modem without graceful release.
     async fn connect(mut self, peer: Callsign, xid: bool, ext: Option<bool>) -> Result<Self> {
         let event = if xid {
             Event::ConnectWithXid { addr: peer, ext }
@@ -523,6 +539,10 @@ impl Client {
     ///
     /// If there's a chance that the caller is interested, then return. If the
     /// caller wants to wait more, they can call again.
+    ///
+    /// Not cancellation-safe: a frame is removed from the receive queue before
+    /// `actions_packet` awaits writes. Timer handling also invokes actions; its
+    /// state changes and uncompleted actions cannot be rolled back or resumed.
     async fn wait_event(&mut self) -> Result<()> {
         trace!(
             "rax25: Waiting for event. {} packets ready",
@@ -611,13 +631,20 @@ impl Client {
     }
 
     /// This function sends packets to the state machine.
+    /// Cancellation safety is the same as actions: processing may be committed
+    /// before its resulting I/O and data-delivery actions have completed.
     async fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         self.actions(crate::engine::packet_event(packet)).await
     }
 
     /// Disconnect an established connection.
     ///
-    /// This currently does not wait for the UA response.
+    /// Waits for release completion, subject to retries and modem EOF.
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe: this consumes the client. Cancelling drops the
+    /// modem and protocol state, possibly with a partial DISC on the transport
+    /// or before its acknowledgement. Drop does not finish the disconnect.
     pub async fn disconnect(mut self) -> Result<()> {
         trace!("rax25: Disconnecting while in state {}", self.state.name());
         self.actions(Event::Disconnect).await?;
@@ -656,6 +683,13 @@ impl Client {
     }
 
     /// Write data on an established connection.
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe: data and sequence numbers can be committed to
+    /// the state machine before packet writes complete. Cancellation can leave
+    /// a partial KISS frame and discard pending actions. Retrying the same
+    /// application bytes may enqueue them twice. Drive this future to completion
+    /// rather than cancelling it and continuing to use the client.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
         self.actions(Event::Data(data.to_vec())).await
     }
@@ -693,6 +727,14 @@ impl Client {
     /// If the caller intends to not call `read()` for a long time, then it should
     /// spawn a task that does it anyway, and handle any read data on its own
     /// side.
+    ///
+    /// # Cancellation Safety
+    /// Not cancellation-safe, even though this is a read: incoming packets and
+    /// timers can trigger writes. Cancellation can interrupt a KISS frame after
+    /// advancing protocol state, or discard remaining delivery/response actions.
+    /// Do not repeatedly cancel and recreate this future in a select loop.
+    /// Instead keep the client in a dedicated task and pass received data through
+    /// a channel; pinning and retaining the same future also preserves progress.
     pub async fn read(&mut self) -> Result<Vec<u8>> {
         loop {
             self.wait_event().await?;
@@ -709,6 +751,10 @@ impl Client {
 
     /// Update state machine from a new event happening, that is not "a packet
     /// arrived".
+    ///
+    /// Not cancellation-safe: handle commits state changes synchronously, then
+    /// this future owns the resulting action list across packet-write awaits.
+    /// Dropping it loses unprocessed actions, and a write may be partial.
     async fn actions(&mut self, event: Event) -> Result<()> {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
