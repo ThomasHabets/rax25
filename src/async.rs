@@ -57,6 +57,7 @@ use crate::{Callsign, Error, Experiment, Packet, PacketType, Result};
 
 use log::{debug, error, trace, warn};
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio_serial::SerialPortBuilderExt;
 
@@ -348,6 +349,7 @@ impl ConnectionBuilder {
 /// Every connection will have one, since extended and standard mode packets
 /// parse differently.
 struct KissPort {
+    outgoing: KissWrites,
     /// Incoming raw bytes.
     incoming_kiss: VecDeque<u8>,
 
@@ -402,13 +404,43 @@ impl KissPort {
         self.incoming_frames
             .extend(kisser_read(&mut self.incoming_kiss, Some(self.ext), pcap));
     }
-    // Cancellation can discard a partially written KISS frame: the write
-    // offset lives in this future, not in KissPort.
+    // Queued bytes and progress survive cancellation while this port survives.
     async fn write(&mut self, packet: &Packet, linux_extended_hint: bool) -> Result<()> {
         let bytes = packet.serialize_with_linux_extended_hint(linux_extended_hint);
-        let frame = crate::escape(&bytes);
-        self.port.write_all(&frame).await?;
-        self.port.flush().await?;
+        self.outgoing.write(&mut self.port, &bytes).await
+    }
+}
+
+/// Pending KISS writes live outside the futures driving them.
+#[derive(Default)]
+pub(crate) struct KissWrites {
+    frames: VecDeque<Vec<u8>>,
+    offset: usize,
+}
+
+impl KissWrites {
+    pub(crate) async fn write(
+        &mut self,
+        port: &mut (impl AsyncWrite + Unpin),
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.frames.push_back(crate::escape(bytes));
+        self.flush(port).await
+    }
+
+    pub(crate) async fn flush(&mut self, port: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
+        while let Some(frame) = self.frames.front() {
+            while self.offset < frame.len() {
+                let count = port.write(&frame[self.offset..]).await?;
+                if count == 0 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+                }
+                self.offset += count;
+            }
+            self.frames.pop_front();
+            self.offset = 0;
+        }
+        port.flush().await?;
         Ok(())
     }
 }
@@ -494,6 +526,7 @@ impl Client {
             eof: false,
             incoming: VecDeque::new(),
             kissport: KissPort {
+                outgoing: KissWrites::default(),
                 port,
                 incoming_kiss: VecDeque::new(),
                 incoming_frames: VecDeque::new(),
@@ -544,6 +577,10 @@ impl Client {
     /// `actions_packet` awaits writes. Timer handling also invokes actions; its
     /// state changes and uncompleted actions cannot be rolled back or resumed.
     async fn wait_event(&mut self) -> Result<()> {
+        self.kissport
+            .outgoing
+            .flush(&mut self.kissport.port)
+            .await?;
         trace!(
             "rax25: Waiting for event. {} packets ready",
             self.kissport.len()
@@ -687,7 +724,8 @@ impl Client {
     /// # Cancellation Safety
     /// Not cancellation-safe: data and sequence numbers can be committed to
     /// the state machine before packet writes complete. Cancellation can leave
-    /// a partial KISS frame and discard pending actions. Retrying the same
+    /// pending actions. Queued KISS writes retain their byte offsets and resume
+    /// on the next read or write, but retrying the same
     /// application bytes may enqueue them twice. Drive this future to completion
     /// rather than cancelling it and continuing to use the client.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -730,8 +768,9 @@ impl Client {
     ///
     /// # Cancellation Safety
     /// Not cancellation-safe, even though this is a read: incoming packets and
-    /// timers can trigger writes. Cancellation can interrupt a KISS frame after
-    /// advancing protocol state, or discard remaining delivery/response actions.
+    /// timers can trigger writes. Cancellation can discard remaining
+    /// delivery/response actions after advancing protocol state. Queued KISS
+    /// writes resume on the next read or write without interleaving frames.
     /// Do not repeatedly cancel and recreate this future in a select loop.
     /// Instead keep the client in a dedicated task and pass received data through
     /// a channel; pinning and retaining the same future also preserves progress.
@@ -754,7 +793,7 @@ impl Client {
     ///
     /// Not cancellation-safe: handle commits state changes synchronously, then
     /// this future owns the resulting action list across packet-write awaits.
-    /// Dropping it loses unprocessed actions, and a write may be partial.
+    /// Dropping it loses unprocessed actions; queued writes retain progress.
     async fn actions(&mut self, event: Event) -> Result<()> {
         let (state, actions) = state::handle(&*self.state, &mut self.data, &event);
         if let Some(state) = state {
@@ -801,6 +840,33 @@ fn is_error_eof(e: &Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cancelled_kiss_write_resumes_before_next_frame() -> crate::Result<()> {
+        use tokio::io::AsyncReadExt;
+        let (mut writer, mut reader) = tokio::io::duplex(1);
+        let mut pending = super::KissWrites::default();
+        let first = [0xc0, 0xdb, 1];
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                pending.write(&mut writer, &first),
+            )
+            .await
+            .is_err()
+        );
+        assert!(pending.offset > 0);
+        let receive = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).await.unwrap();
+            bytes
+        });
+        pending.write(&mut writer, &[2, 3]).await?;
+        drop(writer);
+        let expected = [crate::escape(&first), crate::escape(&[2, 3])].concat();
+        assert_eq!(receive.await.unwrap(), expected);
+        Ok(())
+    }
+
     use super::*;
     use std::time::Duration;
 

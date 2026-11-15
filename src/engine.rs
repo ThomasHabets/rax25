@@ -2,7 +2,7 @@
 //! each callsign pair has its own AX.25 state machine and timers.
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::r#async::PortType;
@@ -170,6 +170,7 @@ impl Link {
 
 /// An engine and bounded command/event channels. Drive `run` continuously.
 pub struct PacketEngine {
+    outgoing: crate::r#async::KissWrites,
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Notification>,
     listeners: HashMap<Callsign, OwnerId>,
@@ -186,6 +187,7 @@ impl PacketEngine {
         let (events, rx) = mpsc::channel(256);
         (
             Self {
+                outgoing: crate::r#async::KissWrites::default(),
                 commands,
                 events,
                 listeners: HashMap::new(),
@@ -259,7 +261,7 @@ impl PacketEngine {
                 state::ReturnEvent::Packet(mut p) => {
                     p.digipeater.clone_from(&link.via);
                     let bytes = p.serialize_with_linux_extended_hint(linux);
-                    port.write_all(&crate::escape(&bytes)).await?;
+                    self.outgoing.write(port, &bytes).await?;
                     if let Some(capture) = &mut self.capture {
                         capture.write(&bytes)?;
                     }
@@ -298,7 +300,7 @@ impl PacketEngine {
     // Exhaustive command dispatch; link behavior lives in step.
     #[allow(clippy::too_many_lines)]
     // Not cancellation-safe: commands can mutate ownership/links before step
-    // awaits I/O, and UI write_all can leave a partial frame on the transport.
+    // awaits I/O. Queued writes retain progress, but other actions may be lost.
     async fn command(&mut self, command: Command, port: &mut PortType) -> Result<()> {
         match command {
             Command::Listen {
@@ -416,7 +418,7 @@ impl PacketEngine {
                     ui.pid = pid;
                 }
                 let bytes = p.serialize_with_linux_extended_hint(self.linux_extended_hint());
-                port.write_all(&crate::escape(&bytes)).await?;
+                self.outgoing.write(port, &bytes).await?;
                 if let Some(capture) = &mut self.capture {
                     capture.write(&bytes)?;
                 }
