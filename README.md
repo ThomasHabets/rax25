@@ -181,6 +181,38 @@ Modem failure stops the server rather than silently reconnecting.
 
 ## Dire Wolf Audio Interoperability
 
+Case names appear in every START/PASS/FAIL message and artifact directory:
+
+| Test | Mode | Recovery and loss | Transfer |
+| --- | --- | --- | --- |
+| `direwolf_standard_srej_audio` | modulo-8 | XID-negotiated multi-SREJ; drop I frames 1 and 2 each direction | 256-byte pattern plus small echoes |
+| `direwolf_extended_srej_audio` | modulo-128 | XID-negotiated multi-SREJ; same scripted drops | Same small echoes |
+| `direwolf_standard_rej_audio`, `direwolf_extended_rej_audio` | respective mode | XID-negotiated REJ; same scripted drops | Same small echoes |
+| `direwolf_standard_audio`, `direwolf_extended_audio` | respective mode | No XID; random loss at 0%, 5%, 10% | Small echoes |
+| `direwolf_lossy_file_transfer` | modulo-8 | No XID; REJ; random 10% loss | 4 KiB upload and echo download |
+| `direwolf_lossy_file_transfer_extended_srej` | modulo-128 | Post-connect XID multi-SREJ; random 10% loss | 4 KiB upload and echo download |
+
+To run the modulo-128 file transfer and produce an annotated `loss.pcapng`:
+
+```shell
+tests/run_direwolf_interop.sh direwolf_lossy_file_transfer_extended_srej
+```
+
+The printed artifact directory contains `rax25.pcap`, `direwolf.stdout.log`,
+and `agw.log`. Scripted-loss cases also contain `to-direwolf.pcap`,
+`from-direwolf.pcap`, and corresponding loss logs. Random-loss cases instead
+include `loss.pcapng` with dropped-frame comments.
+
+XID diagnostics print single-SREJ and multi-SREJ separately. Dire Wolf 1.7
+can clear single-SREJ while selecting multi-SREJ (`0x200000`); a false
+single-SREJ bit therefore does not mean all selective recovery was rejected.
+In modulo-8 tests it advertises and uses multi-SREJ despite logging internal
+warnings that SREJ should not be used in basic mode. These are observations
+of that binary's behavior, not a claim of consistent official support.
+The warning sites in the 1.7 source are
+[out-of-order receive](https://github.com/wb2osz/direwolf/blob/1.7/src/ax25_link.c#L2911)
+and [enquiry response](https://github.com/wb2osz/direwolf/blob/1.7/src/ax25_link.c#L5837).
+
 The `direwolf_lossy_file_transfer` case additionally uploads a 4 KiB binary
 file and downloads its echo, checking both copies byte-for-byte in standard
 mode with 10% TX/RX loss. It prints recovery counts and requires
@@ -191,8 +223,9 @@ This slow test is excluded from pre-commit. Run it manually with
 `tests/run_direwolf_interop.sh direwolf_lossy_file_transfer`.
 GitHub Actions runs it separately after the pre-commit suite.
 The bulk case uses longer audio retry timers to accommodate modem queue airtime.
-The bulk test exercises modulo-8 REJ; dedicated SREJ interop tests separately
-exercise negotiated selective recovery in both sequence-numbering modes.
+The extended file variant requires XID-negotiated multi-SREJ, retransmissions,
+and SREJ frames, and rejects unexpected REJ recovery. Both bulk cases are
+excluded from local pre-commit and selected by the CI file-transfer step.
 
 Latency investigation (local PipeWire/ALSA setup): a no-loss standard-mode
 run measured echo round trips of 1.16 s, 1.66 s, and 4.52 s for 7-, 40-, and

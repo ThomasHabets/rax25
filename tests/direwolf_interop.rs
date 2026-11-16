@@ -52,18 +52,71 @@ impl Drop for Harness {
     }
 }
 
+fn report_case(case: &str, harness: &Harness, result: Result<()>) -> Result<()> {
+    eprintln!(
+        "[{case}] {} artifacts: {}",
+        if result.is_ok() { "PASS" } else { "FAIL" },
+        harness.dir.display()
+    );
+    result.with_context(|| format!("{case}: interop artifacts: {}", harness.dir.display()))
+}
+
+fn selective_harness(extended: bool, srej: Option<bool>) -> Result<(String, Harness)> {
+    let case = format!(
+        "direwolf_{}_{}_audio",
+        if extended { "extended" } else { "standard" },
+        if srej == Some(true) { "srej" } else { "rej" }
+    );
+    let harness = Harness::new(
+        extended,
+        None,
+        &case,
+        "XID after connect; scripted TX/RX drops of I frames N(S)=1,2; 256-byte recovery payload",
+    )?;
+    Ok((case, harness))
+}
+
+fn random_harness(extended: bool, percent: u8, files: bool) -> Result<(&'static str, Harness)> {
+    let case = if files && extended {
+        "direwolf_lossy_file_transfer_extended_srej"
+    } else if files {
+        "direwolf_lossy_file_transfer"
+    } else if extended {
+        "direwolf_extended_audio"
+    } else {
+        "direwolf_standard_audio"
+    };
+    let loss = format!(
+        "random TX/RX loss {percent}%, seed 123; {}",
+        if files && extended {
+            "4 KiB upload/echo download, XID-negotiated multi-SREJ"
+        } else if files {
+            "4 KiB upload/echo download, REJ, no XID"
+        } else {
+            "small echo, no XID"
+        }
+    );
+    Ok((case, Harness::new(extended, Some(percent), case, &loss)?))
+}
+
 impl Harness {
-    fn new(extended: bool, drop_percent: u8) -> Result<Self> {
+    fn new(extended: bool, drop_percent: Option<u8>, case: &str, loss: &str) -> Result<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let id = format!("{}_{}_{}", std::process::id(), nonce, extended);
         let root = manifest_dir()?;
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map_or_else(|| root.join("target"), |path| root.join(path));
-        let dir = target.join("direwolf_interop").join(&id);
+        let profile = drop_percent.map_or_else(
+            || "scripted-loss".to_owned(),
+            |percent| format!("random-loss{percent}"),
+        );
+        let dir = target
+            .join("direwolf_interop")
+            .join(format!("{case}-{profile}-{id}"));
         fs::create_dir_all(&dir)?;
         let mode = if extended { "modulo-128" } else { "modulo-8" };
         eprintln!(
-            "Dire Wolf interop artifacts ({mode}, TX/RX loss {drop_percent}%, seed 123): {}",
+            "[{case}] START {mode}; {loss}\n[{case}] artifacts: {}",
             dir.display()
         );
         let mut harness = Self {
@@ -170,7 +223,7 @@ fn free_port() -> Result<u16> {
     Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
 
-fn verify_capture(path: &Path, extended: bool) -> Result<()> {
+fn verify_capture(path: &Path, extended: bool, case: &str) -> Result<()> {
     let bytes = fs::read(path)?;
     ensure!(
         bytes.len() >= 24 && bytes[..4] == [0xd4, 0xc3, 0xb2, 0xa1],
@@ -192,6 +245,19 @@ fn verify_capture(path: &Path, extended: bool) -> Result<()> {
             "expected direct AX.25 frame"
         );
         controls.push(frame[14] & !0x10); // Ignore poll/final in U frames.
+        if frame[14] & !0x10 == 0xaf
+            && let rax25::PacketType::Xid(xid) =
+                rax25::Packet::parse(frame, Some(extended))?.packet_type()
+            && let Some(functions) = xid.parameters.as_ref().and_then(|p| p.optional_functions)
+        {
+            let source = rax25::Addr::parse(&frame[7..14])?;
+            eprintln!(
+                "[{case}] XID from {}: PI=3 0x{functions:06x}, single-SREJ={}, multi-SREJ={}",
+                source.callsign().call(),
+                functions & 4 != 0,
+                functions & 0x20_0000 != 0
+            );
+        }
         remaining = &remaining[size..];
     }
     let setup = if extended { 0x6f } else { 0x2f };
@@ -306,6 +372,7 @@ fn recovery_summary(path: &Path, extended: bool) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     let mut resends = 0;
     let mut rejects = 0;
+    let mut selective_rejects = 0;
     while !records.is_empty() {
         ensure!(records.len() >= 16, "truncated pcap record");
         let size = usize::try_from(u32::from_le_bytes(records[8..12].try_into()?))?;
@@ -318,15 +385,24 @@ fn recovery_summary(path: &Path, extended: bool) -> Result<()> {
                 }
             }
             rax25::PacketType::Rej(_) => rejects += 1,
+            rax25::PacketType::Srej(_) => selective_rejects += 1,
             _ => {}
         }
         records = &records[16 + size..];
     }
     eprintln!(
-        "Dire Wolf file recovery: {resends} repeated I frames, {rejects} REJ frames (extended={extended})"
+        "Dire Wolf file recovery: {resends} repeated I frames, {rejects} REJ, {selective_rejects} SREJ frames (extended={extended})"
     );
     ensure!(resends > 0, "file transfer exercised no retransmissions");
-    ensure!(rejects > 0, "file transfer exercised no REJ recovery");
+    if extended {
+        ensure!(
+            selective_rejects > 0,
+            "file transfer exercised no SREJ recovery"
+        );
+        ensure!(rejects == 0, "SREJ file transfer unexpectedly used REJ");
+    } else {
+        ensure!(rejects > 0, "file transfer exercised no REJ recovery");
+    }
     Ok(())
 }
 
@@ -355,7 +431,7 @@ fn configure_bulk_audio(config: &Path) -> Result<()> {
     // than the default retry timer to leave the modem queue.
     writeln!(
         fs::OpenOptions::new().append(true).open(config)?,
-        "FRACK 15"
+        "FRACK 15\nEMAXFRAME 4"
     )?;
     Ok(())
 }
@@ -375,20 +451,40 @@ async fn connect_interop(
     dir: &Path,
     deadline: Duration,
 ) -> Result<rax25::r#async::Client> {
-    let builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
+    let mut builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
         .extended(Some(extended))
         .srt_default(Duration::from_secs(if files { 45 } else { 5 }))
         .mtu(256)
         .capture(dir.join("rax25.pcap"));
+    if files && extended {
+        // Dire Wolf ignores pre-connect XID and assumes selective recovery
+        // after SABME. Explicitly negotiate it after establishment instead.
+        builder = builder.srej(true).xid_after_connect(rax25::XidConfig {
+            acknowledgement_timer: Duration::from_secs(15),
+            management_timeout: Duration::from_secs(5),
+            receive_window_extended: 4,
+            ..Default::default()
+        });
+    }
     let client = timeout(deadline, builder.connect(Callsign::new("M0TST-2")?))
         .await
         .context("AX.25 connect timed out")??;
+    if files && extended {
+        let parameters = client
+            .negotiated_parameters()
+            .context("missing bulk XID agreement")?;
+        ensure!(
+            parameters.extended && parameters.reject_mode == rax25::RejectMode::MultiSrej,
+            "unexpected bulk negotiation: {parameters:?}"
+        );
+        eprintln!("[direwolf_lossy_file_transfer_extended_srej] negotiated: {parameters:?}");
+    }
     Ok(client)
 }
 
 async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
     let bell202 = Harness::bell202()?;
-    let mut harness = Harness::new(extended, 0)?;
+    let (case, mut harness) = selective_harness(extended, srej)?;
     let result = Box::pin(async {
         let agw_port = free_port()?;
         let mut kiss_port = free_port()?;
@@ -452,6 +548,7 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
                 .await.context("AX.25 connect timed out")??;
             if let Some(enabled) = srej {
                 let negotiated = client.negotiated_parameters().context("no XID agreement")?;
+                eprintln!("[{case}] negotiated: {negotiated:?}");
                 ensure!(negotiated.reject_mode == if enabled { rax25::RejectMode::MultiSrej }
                     else { rax25::RejectMode::Rej }, "unexpected recovery: {negotiated:?}");
             }
@@ -484,12 +581,12 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
                 bail!("KISS proxy ended before exchange completed");
             }
         }
-        verify_capture(&harness.dir.join("rax25.pcap"), extended)?;
+        verify_capture(&harness.dir.join("rax25.pcap"), extended, &case)?;
         if let Some(enabled) = srej { srej_loss::verify(&harness.dir, extended, enabled)?; }
         harness.check_children()?;
         Ok::<_, anyhow::Error>(())
     }).await;
-    result.with_context(|| format!("interop artifacts: {}", harness.dir.display()))
+    report_case(&case, &harness, result)
 }
 
 #[tokio::test]
@@ -518,7 +615,7 @@ async fn direwolf_extended_rej_audio() -> Result<()> {
 
 async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
     let bell202 = Harness::bell202()?;
-    let mut harness = Harness::new(extended, drop_percent)?;
+    let (case, mut harness) = random_harness(extended, drop_percent, files)?;
     let result = async {
         let agw_port = free_port()?;
         let mut kiss_port = free_port()?;
@@ -592,7 +689,7 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
         };
         tokio::try_join!(client, server)?;
         let capture = harness.dir.join("rax25.pcap");
-        if let Err(error) = verify_capture(&capture, extended) {
+        if let Err(error) = verify_capture(&capture, extended, case) {
             bail!("{error}\n{}", tshark_capture(&capture));
         }
         if files {
@@ -604,12 +701,7 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
     if result.is_err() {
         eprintln!("{}", tshark_capture(&harness.dir.join("loss.pcapng")));
     }
-    result.with_context(|| {
-        format!(
-            "{drop_percent}% loss; interop artifacts: {}",
-            harness.dir.display()
-        )
-    })
+    report_case(case, &harness, result)
 }
 
 #[tokio::test]
@@ -627,6 +719,12 @@ async fn direwolf_lossy_file_transfer() -> Result<()> {
     // Exercise bulk REJ recovery here; the dedicated SREJ tests separately
     // negotiate and verify selective recovery in both numbering modes.
     interop(false, 10, true).await
+}
+
+#[tokio::test]
+#[ignore = "slow bulk-transfer stress test; run tests/run_direwolf_interop.sh direwolf_lossy_file_transfer_extended_srej manually"]
+async fn direwolf_lossy_file_transfer_extended_srej() -> Result<()> {
+    interop(true, 10, true).await
 }
 
 #[tokio::test]
