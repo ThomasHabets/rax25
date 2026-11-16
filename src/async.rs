@@ -2,12 +2,10 @@
 //!
 //! This is probably going to be the best API to use.
 //!
-//! There's currently no background task, so you'll want to have a `read()`
-//! outstanding most of the time. Otherwise events like timers and received
-//! packets don't happen.
-//!
-//! If the caller is not interested in the received data, then it's probably
-//! best to spawn a task that reads in a loop and discards.
+//! Established clients run protocol I/O and timers in a background task.
+//! Reads are cancellation-safe channel receives; they need not remain pending
+//! for acknowledgements and retransmissions to progress. Receive buffering is
+//! bounded: a client that does not consume incoming data can be disconnected.
 //!
 //! # Examples
 //!
@@ -25,7 +23,7 @@
 //!         .capture("foo.cap".into())
 //!         .connect(Callsign::new("M0THC-2")?)
 //!         .await?;
-//!     client.write(b"Client says hello!").await?;
+//!     client.write(b"Client says hello!").await?.await?;
 //!     println!("Got: {:?}", client.read().await?);
 //!     Ok(())
 //! }
@@ -43,7 +41,7 @@
 //!     let mut client = ConnectionBuilder::new(Callsign::new("M0THC-2")?, port)?
 //!         .accept()
 //!         .await?;
-//!     client.write(b"Server says hello!\n").await?;
+//!     client.write(b"Server says hello!\n").await?.await?;
 //!     println!("Got: {:?}", client.read().await?);
 //!     Ok(())
 //! }
@@ -295,7 +293,7 @@ impl ConnectionBuilder {
         }
         let extended = self.extended;
         let xid = self.xid.is_some();
-        let mut cli = Client::internal_new(
+        let mut cli = Driver::internal_new(
             self.create_data(),
             self.port,
             self.extended.unwrap_or(false),
@@ -303,7 +301,7 @@ impl ConnectionBuilder {
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
         }
-        cli.connect(peer, xid, extended).await
+        Ok(Client::spawn(cli.connect(peer, xid, extended).await?))
     }
 
     /// Accept a single connection.
@@ -329,7 +327,7 @@ impl ConnectionBuilder {
 
         // Default to assuming not extended. It doesn't affect parsing of
         // SABM(E), and we set it later it it does end up being extended.
-        let mut cli = Client::internal_new(data, self.port, false);
+        let mut cli = Driver::internal_new(data, self.port, false);
         // Extended attribute ignored. Should it be?
         if let Some(capture) = self.capture {
             cli.capture(capture)?;
@@ -338,7 +336,7 @@ impl ConnectionBuilder {
         loop {
             cli.wait_event().await?;
             if cli.state.is_state_connected() {
-                return Ok(cli);
+                return Ok(Client::spawn(cli));
             }
         }
     }
@@ -445,11 +443,8 @@ impl KissWrites {
     }
 }
 
-/// An async AX.25 client.
-///
-/// Despite its name, it's used both for the initiating and listening side of a
-/// connection. Probably should be renamed.
-pub struct Client {
+/// Protocol state owned by connection setup, then by the background task.
+struct Driver {
     state: Box<dyn state::State>,
     data: state::Data,
     eof: bool,
@@ -459,6 +454,154 @@ pub struct Client {
     kissport: KissPort,
 
     pcap: Option<PcapWriter>,
+}
+
+enum ClientCommand {
+    Write(Vec<u8>, tokio::sync::oneshot::Sender<()>),
+    Disconnect(tokio::sync::oneshot::Sender<Result<()>>),
+}
+
+/// Optional notification that a queued write was processed by the local task.
+/// This does not confirm remote acknowledgement or application delivery.
+/// Dropping this handle does not cancel or resubmit the queued write. Retain
+/// and poll the same handle to resume waiting after a timeout.
+pub struct WriteCompletion(tokio::sync::oneshot::Receiver<()>);
+
+impl std::future::Future for WriteCompletion {
+    type Output = Result<()>;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        Pin::new(&mut self.0).poll(cx).map(|result| {
+            result.map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe).into())
+        })
+    }
+}
+
+/// An established async AX.25 link with independently driven I/O and timers.
+/// Dropping the client requests a best-effort disconnect in its background task.
+pub struct Client {
+    /// Bounded requests to the protocol task. Dropping this sender requests
+    /// best-effort disconnect once previously queued commands are processed.
+    commands: tokio::sync::mpsc::Sender<ClientCommand>,
+    /// Bounded application-data queue. Receives are cancellation-safe; channel
+    /// closure means buffered data is exhausted and the task result is ready.
+    received: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    /// Task completion result, published before the receive channel closes.
+    /// None while running (or after an error is consumed); clean EOF is retained
+    /// so subsequent reads and disconnect requests continue to succeed.
+    task_result: std::sync::Arc<std::sync::Mutex<Option<Result<()>>>>,
+    /// Snapshot of parameters negotiated during establishment, available without
+    /// querying the task. None if the link was established without XID agreement.
+    negotiated: Option<NegotiatedParameters>,
+}
+
+impl Client {
+    fn spawn(driver: Driver) -> Self {
+        let (commands, rx) = tokio::sync::mpsc::channel(32);
+        let (tx, received) = tokio::sync::mpsc::channel(128);
+        let task_result = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let status = task_result.clone();
+        let negotiated = driver.data.negotiated_parameters().cloned();
+        tokio::spawn(async move {
+            let result = driver.run(rx, &tx).await;
+            *status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+            // Close only after publishing the task result, so readers
+            // drain data before receiving the original I/O/protocol error.
+            drop(tx);
+        });
+        Self {
+            commands,
+            received,
+            task_result,
+            negotiated,
+        }
+    }
+
+    /// Receive application data, or an empty vector after a clean disconnect.
+    /// Protocol I/O and timers progress independently of reads.
+    ///
+    /// # Cancellation Safety
+    /// Cancellation-safe: cancelling a pending receive leaves data queued.
+    pub async fn read(&mut self) -> Result<Vec<u8>> {
+        if let Some(data) = self.received.recv().await {
+            return Ok(data);
+        }
+        self.check_task_result()?;
+        Ok(Vec::new())
+    }
+
+    fn check_task_result(&self) -> Result<()> {
+        let mut task_result = self
+            .task_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match task_result.take() {
+            Some(Ok(())) => {
+                *task_result = Some(Ok(()));
+                Ok(())
+            }
+            Some(Err(error)) => Err(error),
+            None => {
+                warn!(
+                    "Further operations called on client that already returned error. Returning BrokenPipe"
+                );
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into())
+            }
+        }
+    }
+
+    /// Queue application bytes and return an optional completion future.
+    /// Await the returned handle to wait for local processing, not remote ACK:
+    /// `client.write(bytes).await?.await?`. Drop it to only enqueue the bytes.
+    ///
+    /// # Cancellation Safety
+    /// Cancellation-safe: if this future is cancelled while waiting for queue
+    /// capacity, nothing is submitted. There is no suspension between enqueueing
+    /// and returning the handle. Once returned, the write proceeds independently
+    /// of whether the handle is polled or dropped; do not resubmit those bytes.
+    pub async fn write(&mut self, data: &[u8]) -> Result<WriteCompletion> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(ClientCommand::Write(data.to_vec(), tx))
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        Ok(WriteCompletion(rx))
+    }
+
+    /// Disconnect and wait for release completion.
+    ///
+    /// # Cancellation Safety
+    /// This future owns the client, so cancelling it drops the client, even if
+    /// the disconnect command has not yet been enqueued. Dropping the client
+    /// closes its command channel; the background task processes any queued
+    /// commands, then attempts a best-effort disconnect with a 30-second cleanup
+    /// deadline. If the disconnect command was already enqueued, the task
+    /// continues that operation normally. Cancellation never aborts the task,
+    /// but the caller no longer waits for or observes the disconnect result.
+    pub async fn disconnect(self) -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .commands
+            .send(ClientCommand::Disconnect(tx))
+            .await
+            .is_err()
+        {
+            return self.check_task_result();
+        }
+        rx.await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?
+    }
+
+    /// Parameters agreed during establishment, or `None` without negotiation.
+    #[must_use]
+    pub fn negotiated_parameters(&self) -> Option<&NegotiatedParameters> {
+        self.negotiated.as_ref()
+    }
 }
 
 /// Turn bytes into frames.
@@ -518,7 +661,58 @@ fn kisser_read(
     ret
 }
 
-impl Client {
+impl Driver {
+    async fn run(
+        mut self,
+        mut commands: tokio::sync::mpsc::Receiver<ClientCommand>,
+        received: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    ) -> Result<()> {
+        loop {
+            self.process_frames().await?;
+            if !self.incoming.is_empty() {
+                let bytes = self.incoming.drain(..).collect();
+                if received.try_send(bytes).is_err() {
+                    // Never wait on a full application queue while protocol
+                    // timers and acknowledgements need servicing.
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(30), self.disconnect())
+                            .await;
+                    return Err(Error::QueueFull);
+                }
+            }
+            if self.eof || self.state.is_state_disconnected() {
+                return Ok(());
+            }
+            let command = tokio::select! {
+                command = commands.recv() => command,
+                event = self.next_event() => {
+                    if let Some(event) = event? {
+                        self.actions(event).await?;
+                    }
+                    continue;
+                }
+            };
+            match command {
+                Some(ClientCommand::Write(bytes, reply)) => {
+                    self.actions(Event::Data(bytes)).await?;
+                    let _ = reply.send(());
+                }
+                Some(ClientCommand::Disconnect(reply)) => {
+                    let result = self.disconnect().await;
+                    let _ = reply.send(result);
+                    return Ok(());
+                }
+                // Client was dropped. Implicit disconnect.
+                None => {
+                    return tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        self.disconnect(),
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
     // TODO: now that we have a builder, these functions should be cleaned up.
     #[must_use]
     fn internal_new(data: state::Data, port: PortType, ext: bool) -> Self {
@@ -586,7 +780,25 @@ impl Client {
             self.kissport.len()
         );
         let state_name = self.state.name();
-        // First process all incoming frames. This is non-blocking.
+        self.process_frames().await?;
+
+        // Return delivered data and state transitions without waiting for I/O.
+        if !self.incoming.is_empty() {
+            return Ok(());
+        }
+        if self.state.name() != state_name {
+            return Ok(());
+        }
+
+        let event = self.next_event().await?;
+        if let Some(event) = event {
+            self.actions(event).await?;
+        }
+        Ok(())
+    }
+
+    // Called outside select branches so frame actions always finish.
+    async fn process_frames(&mut self) -> Result<()> {
         while let Some(p) = self.kissport.pop_frame() {
             if p.dst.callsign() != &self.data.me {
                 trace!("rax25: Skipping packet not for {:?}", self.data.me.call());
@@ -611,24 +823,15 @@ impl Client {
             );
         }
 
-        // wait_event is called when connecting, accepting, or attempting to
-        // read. In the first two cases there's no incoming bytes. In the
-        // last case we actually want to return the bytes ASAP. So we do that
-        // here, without waiting for timers, more packets, or more serial
-        // bytes.
-        if !self.incoming.is_empty() {
-            return Ok(());
+        if self.state.is_state_connected() {
+            self.kissport.ext = self.data.modulus.is_extended();
         }
+        Ok(())
+    }
 
-        // If the state changed, there's a good chance that the client wants to
-        // know.
-        if self.state.name() != state_name {
-            if self.state.is_state_connected() {
-                self.kissport.ext = self.data.modulus.is_extended();
-            }
-            return Ok(());
-        }
-
+    // Cancellation-safe: only waits for timers or stores bytes/frames in
+    // KissPort. Protocol actions are deliberately executed by the caller.
+    async fn next_event(&mut self) -> Result<Option<Event>> {
         let (t1, t3) = self.timer_13();
         tokio::pin!(t1);
         tokio::pin!(t3);
@@ -641,15 +844,15 @@ impl Client {
 
         tokio::select! {
             () = &mut management => {
-                self.actions(Event::ManagementTimeout).await?;
+                return Ok(Some(Event::ManagementTimeout));
             },
             () = &mut t1 => {
                 debug!("rax25: async con event: T1");
-                self.actions(Event::T1).await?;
+                return Ok(Some(Event::T1));
             },
             () = &mut t3 => {
                 debug!("rax25: async con event: T3");
-                self.actions(Event::T3).await?;
+                return Ok(Some(Event::T3));
             },
             res = self.kissport.process(self.pcap.as_mut()) => {
             if let Err(e) = res {
@@ -664,7 +867,7 @@ impl Client {
             self.data.t1.remaining(),
             self.data.t3.remaining()
         );
-        Ok(())
+        Ok(None)
     }
 
     /// This function sends packets to the state machine.
@@ -682,11 +885,12 @@ impl Client {
     /// Not cancellation-safe: this consumes the client. Cancelling drops the
     /// modem and protocol state, possibly with a partial DISC on the transport
     /// or before its acknowledgement. Drop does not finish the disconnect.
-    pub async fn disconnect(mut self) -> Result<()> {
+    async fn disconnect(mut self) -> Result<()> {
         trace!("rax25: Disconnecting while in state {}", self.state.name());
         self.actions(Event::Disconnect).await?;
         match self.state.name().as_str() {
             "AwaitingRelease" => loop {
+                self.incoming.clear();
                 match self.wait_event().await {
                     Ok(()) => {}
                     // If while waiting for UA to our DISC, KISS goes
@@ -719,25 +923,6 @@ impl Client {
         }
     }
 
-    /// Write data on an established connection.
-    ///
-    /// # Cancellation Safety
-    /// Not cancellation-safe: data and sequence numbers can be committed to
-    /// the state machine before packet writes complete. Cancellation can leave
-    /// pending actions. Queued KISS writes retain their byte offsets and resume
-    /// on the next read or write, but retrying the same
-    /// application bytes may enqueue them twice. Drive this future to completion
-    /// rather than cancelling it and continuing to use the client.
-    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.actions(Event::Data(data.to_vec())).await
-    }
-
-    /// Parameters negotiated by XID, or `None` for an unnegotiated link.
-    #[must_use]
-    pub fn negotiated_parameters(&self) -> Option<&NegotiatedParameters> {
-        self.data.negotiated_parameters()
-    }
-
     /// Get a pair of sleepers from the T1/T3 timers.
     ///
     /// TODO: 24h is used as "forever". Use something better?
@@ -755,37 +940,6 @@ impl Client {
                 .unwrap_or(std::time::Duration::from_hours(24)),
         );
         (timer1, timer3)
-    }
-
-    /// Read from the established connection.
-    ///
-    /// This function must be called to keep the state machine running.
-    /// Otherwise timers and incoming packets are not processed.
-    ///
-    /// If the caller intends to not call `read()` for a long time, then it should
-    /// spawn a task that does it anyway, and handle any read data on its own
-    /// side.
-    ///
-    /// # Cancellation Safety
-    /// Not cancellation-safe, even though this is a read: incoming packets and
-    /// timers can trigger writes. Cancellation can discard remaining
-    /// delivery/response actions after advancing protocol state. Queued KISS
-    /// writes resume on the next read or write without interleaving frames.
-    /// Do not repeatedly cancel and recreate this future in a select loop.
-    /// Instead keep the client in a dedicated task and pass received data through
-    /// a channel; pinning and retaining the same future also preserves progress.
-    pub async fn read(&mut self) -> Result<Vec<u8>> {
-        loop {
-            self.wait_event().await?;
-            if self.incoming.is_empty() && self.eof {
-                return Ok(vec![]);
-            }
-            if !self.incoming.is_empty() {
-                let ret: Vec<_> = self.incoming.iter().copied().collect();
-                self.incoming.clear();
-                return Ok(ret);
-            }
-        }
     }
 
     /// Update state machine from a new event happening, that is not "a packet
@@ -828,7 +982,7 @@ impl Client {
     }
 }
 
-impl Drop for Client {
+impl Drop for Driver {
     fn drop(&mut self) {
         self.sync_disconnect();
     }
@@ -868,6 +1022,170 @@ mod tests {
     }
 
     use super::*;
+
+    async fn client_pair() -> Result<(Client, Client)> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let outgoing = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+        let (incoming, _) = listener.accept().await?;
+        let local = ConnectionBuilder::new(Callsign::new("LOCAL")?, PortType::Tcp(outgoing))?;
+        let remote = ConnectionBuilder::new(Callsign::new("REMOTE")?, PortType::Tcp(incoming))?;
+        tokio::try_join!(local.connect(Callsign::new("REMOTE")?), remote.accept())
+    }
+
+    #[tokio::test]
+    async fn dropped_completion_does_not_cancel_or_duplicate_write() -> Result<()> {
+        let (mut local, mut remote) = client_pair().await?;
+        drop(local.write(b"once").await?);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), remote.read()).await??,
+            b"once"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), remote.read())
+                .await
+                .is_err()
+        );
+        local.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completion_wait_can_resume_after_timeout() -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut completion = WriteCompletion(rx);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), &mut completion)
+                .await
+                .is_err()
+        );
+        tx.send(()).unwrap();
+        completion.await?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(tx);
+        assert!(matches!(WriteCompletion(rx).await, Err(Error::Io(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_enqueue_submits_nothing() -> Result<()> {
+        let (commands, mut rx) = tokio::sync::mpsc::channel(1);
+        let (reply, _completion) = tokio::sync::oneshot::channel();
+        commands
+            .send(ClientCommand::Write(vec![1], reply))
+            .await
+            .unwrap();
+        let (_tx, received) = tokio::sync::mpsc::channel(1);
+        let mut client = Client {
+            commands,
+            received,
+            task_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            negotiated: None,
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1), client.write(&[2]))
+                .await
+                .is_err()
+        );
+        assert!(matches!(rx.recv().await, Some(ClientCommand::Write(bytes, _)) if bytes == [1]));
+        assert!(rx.try_recv().is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_reads_preserve_data_and_background_progress() -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (mut local, mut remote) = client_pair().await?;
+            for _ in 0..3 {
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(1), local.read())
+                        .await
+                        .is_err()
+                );
+            }
+            remote.write(b"background delivery").await?.await?;
+            // Neither application's read drives the protocol. Wait until the
+            // background task has delivered the packet to the receive queue.
+            while local.received.is_empty() {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(local.read().await?, b"background delivery");
+            remote.disconnect().await?;
+            assert_eq!(local.read().await?, Vec::<u8>::new());
+            assert_eq!(local.read().await?, Vec::<u8>::new());
+            local.disconnect().await?;
+            Ok::<_, Error>(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn dropping_client_disconnects_peer_without_application_reads() -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (local, mut remote) = client_pair().await?;
+            drop(local);
+            assert_eq!(remote.read().await?, Vec::<u8>::new());
+            Ok::<_, Error>(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn background_modem_eof_reaches_reader() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+        let (peer, _) = listener.accept().await?;
+        let mut driver = Driver::internal_new(
+            state::Data::new(Callsign::new("LOCAL")?),
+            PortType::Tcp(port),
+            false,
+        );
+        driver
+            .actions(Event::Connect {
+                addr: Callsign::new("REMOTE")?,
+                ext: false,
+            })
+            .await?;
+        driver
+            .actions(Event::Ua(crate::Ua {
+                poll: crate::PollFinal::Set,
+            }))
+            .await?;
+        let mut client = Client::spawn(driver);
+        drop(peer);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), client.read())
+            .await?
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receive_overflow_disconnects_without_blocking_protocol() -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (mut local, mut remote) = client_pair().await?;
+            for byte in 0_u8..128 {
+                remote.write(&[byte]).await?.await?;
+                while local.received.len() != usize::from(byte) + 1 {
+                    tokio::task::yield_now().await;
+                }
+                // Piggyback acknowledgements without draining local's queue,
+                // keeping this test independent of the delayed-ACK timer.
+                local.write(b"ack").await?.await?;
+                assert_eq!(remote.read().await?, b"ack");
+            }
+            remote.write(&[128]).await?.await?;
+            while !local.commands.is_closed() {
+                tokio::task::yield_now().await;
+            }
+            for byte in 0_u8..128 {
+                assert_eq!(local.read().await?, [byte]);
+            }
+            assert!(matches!(local.read().await, Err(Error::QueueFull)));
+            assert_eq!(remote.read().await?, Vec::<u8>::new());
+            Ok::<_, Error>(())
+        })
+        .await?
+    }
     use std::time::Duration;
 
     #[test]
@@ -1002,6 +1320,15 @@ mod tests {
                 client.enable_experiments([Experiment::LinuxExtendedHint]);
                 server.enable_experiments([Experiment::LinuxExtendedHint]);
             }
+            for builder in [&client, &server] {
+                assert_eq!(
+                    builder
+                        .create_data()
+                        .experiments
+                        .contains(&Experiment::LinuxExtendedHint),
+                    hint
+                );
+            }
             let (client, server) = tokio::time::timeout(Duration::from_secs(2), async {
                 tokio::join!(
                     client.connect(Callsign::new(peer).unwrap()),
@@ -1013,26 +1340,18 @@ mod tests {
             let mut server = server?;
             assert!(client.negotiated_parameters().is_some());
             assert!(server.negotiated_parameters().is_some());
-            assert_eq!(client.data.ext(), mode.unwrap_or(true));
-            assert_eq!(server.data.ext(), client.data.ext());
             assert_eq!(
-                client
-                    .data
-                    .experiments
-                    .contains(&Experiment::LinuxExtendedHint),
-                hint
+                client.negotiated_parameters().unwrap().extended,
+                mode.unwrap_or(true)
             );
             assert_eq!(
-                server
-                    .data
-                    .experiments
-                    .contains(&Experiment::LinuxExtendedHint),
-                hint
+                server.negotiated_parameters(),
+                client.negotiated_parameters()
             );
             tokio::time::timeout(Duration::from_secs(2), async {
-                client.write(b"hello").await?;
+                client.write(b"hello").await?.await?;
                 assert_eq!(server.read().await?, b"hello");
-                server.write(b"echo").await?;
+                server.write(b"echo").await?.await?;
                 assert_eq!(client.read().await?, b"echo");
                 Ok::<(), Error>(())
             })

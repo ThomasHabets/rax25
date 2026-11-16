@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
                     buf.to_vec()
                 };
                 //eprintln!("Got {buf:?} from stdin");
-                client.write(&buf).await?;
+                client.write(&buf).await?.await?;
             },
             data = client.read() => {
                 let data = data?;

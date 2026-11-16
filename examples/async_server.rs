@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
         builder.accept().await?
     };
     info!("Connected");
-    client.write(b"Welcome to the server!\n").await?;
+    client.write(b"Welcome to the server!\n").await?.await?;
     loop {
         tokio::select! {
             data = client.read() => {
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
                     Err(_) => String::from_utf8(data.iter().map(|&b| b & 0x7F).collect())?,
                 };
                 let s = s.trim_end();
-                client.write(format!("Got <{s}>\n").as_bytes()).await?;
+                client.write(format!("Got <{s}>\n").as_bytes()).await?.await?;
             },
         }
     }

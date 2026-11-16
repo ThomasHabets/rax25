@@ -1293,7 +1293,7 @@ impl Data {
 ///
 /// TODO: remove default implementations, to make the "default noop" more
 /// deliberate.
-pub trait State {
+pub trait State: Send {
     fn name(&self) -> String;
     fn is_state_connected(&self) -> bool {
         false

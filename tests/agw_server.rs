@@ -69,7 +69,7 @@ async fn exchange(
         } else {
             builder.connect(Callsign::new("LOCAL")?).await?
         };
-        native.write(&[0, 0xc0, 0xdb, 255]).await?;
+        native.write(&[0, 0xc0, 0xdb, 255]).await?.await?;
         ensure!(native.read().await? == [0, 0xc0, 0xdb, 255]);
         native.disconnect().await?;
         Ok::<_, anyhow::Error>(())

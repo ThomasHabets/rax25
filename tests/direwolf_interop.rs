@@ -360,7 +360,7 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
                 .await.context("AX.25 connect timed out")??;
             for expected in &payloads {
                 timeout(deadline, async {
-                    client.write(expected).await?;
+                    client.write(expected).await?.await?;
                     let mut received = Vec::new();
                     while received.len() < expected.len() {
                         let bytes = client.read().await?;
