@@ -2,7 +2,8 @@
 
 * One logical change per commit
 * Do not vendor dependencies
-* Keep `SPEC_DIFFERENCES.md` up to date
+* Keep `SPEC_DIFFERENCES.md` up to date with differences between specs, and
+  where the spec and implementation differ
 
 ## Commit messages
 
