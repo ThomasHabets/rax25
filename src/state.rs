@@ -1046,7 +1046,13 @@ impl Data {
     fn invoke_retransmission(&mut self, _nr: u8) -> Vec<Action> {
         self.iframe_resend_queue
             .iter()
-            .map(|i| Action::SendIframe(i.clone()))
+            .map(|i| {
+                let mut frame = i.clone();
+                // N(S) and payload identify the retransmission, but N(R)
+                // must acknowledge our current receive state, not an old one.
+                frame.nr = self.vr;
+                Action::SendIframe(frame)
+            })
             .collect()
     }
 
@@ -2845,6 +2851,7 @@ mod tests {
     fn rej_retires_acknowledged_frames_and_resends_remaining() -> Result<()> {
         let mut data = Data::new(Callsign::new("LOCAL")?);
         data.vs = 2;
+        data.vr = 6;
         for ns in 0..2 {
             data.iframe_resend_queue.push_back(Iframe {
                 ns,
@@ -2863,6 +2870,9 @@ mod tests {
             },
             CommandResponse::Response,
         );
+        assert!(actions.iter().any(
+            |action| matches!(action, Action::SendIframe(frame) if frame.ns == 1 && frame.nr == 6)
+        ));
         assert_eq!(data.va, 1);
         assert_eq!(data.iframe_resend_queue.len(), 1);
         assert!(
