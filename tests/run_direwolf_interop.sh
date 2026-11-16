@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Private audio session: never change the desktop's default sinks or sources.
+#
+# List tests with:
+# ```
+# cargo test --features async --test direwolf_interop -- --list
+# ```
+#
+# Run a single test by giving it as a command line arg.
 set -euo pipefail
 
 RUSTRADIO_VERSION="0.20.2"

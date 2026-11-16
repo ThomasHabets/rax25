@@ -217,6 +217,10 @@ explicit lists: Dire Wolf 1.7 does not expand spans. This encoding choice is
 for interoperability, not a requirement of the specification. Likewise, a
 multi-SREJ-only XID selection is accepted for Dire Wolf compatibility, despite
 the 2017 prose prohibiting both the REJ and single-SREJ bits being clear.
+The tested Dire Wolf 1.7 binary also advertises and uses multi-SREJ in
+modulo-8 while printing internal warnings against doing so. The modulo-8
+interop test records this observed behavior; those warnings should not be
+mistaken for a negative multi-SREJ selection in the XID response.
 
 A SABM does not indicate whether an earlier XID response reached the initiator.
 If every response was lost, a standard-mode initiator may have fallen back to
