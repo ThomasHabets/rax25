@@ -160,6 +160,29 @@ Modem failure stops the server rather than silently reconnecting.
 
 ## Dire Wolf Audio Interoperability
 
+The `direwolf_lossy_file_transfer` case additionally uploads a 4 KiB binary
+file and downloads its echo, checking both copies byte-for-byte in standard
+mode with 10% TX/RX loss. It prints recovery counts and requires
+retransmitted I frames and REJ frames in the capture. The upload is queued as
+one burst, exercising the full transmit window.
+The generated `transfer.bin` is retained with the interop artifacts.
+This slow test is excluded from pre-commit. Run it manually with
+`tests/run_direwolf_interop.sh direwolf_lossy_file_transfer`.
+GitHub Actions runs it separately after the pre-commit suite.
+The bulk case uses longer audio retry timers to accommodate modem queue airtime.
+Extended bulk transfers are not covered: Dire Wolf defaults to SREJ after a
+plain SABME, which this branch does not implement.
+
+Latency investigation (local PipeWire/ALSA setup): a no-loss standard-mode
+run measured echo round trips of 1.16 s, 1.66 s, and 4.52 s for 7-, 40-, and
+256-byte payloads. Subtracting AX.25 bytes at 1200 bit/s in both directions
+leaves about 0.9 s of fixed overhead, including HDLC flags, transmit delays,
+DSP and audio buffering; this does not isolate audio-server latency.
+The long bulk-test runtime also includes 45-second retry waits (including
+setup retransmissions), not simply audio-path latency. Requesting 20 ms via
+`PULSE_LATENCY_MSEC` failed to decode packets in a control run; it is not
+enabled by the harness.
+
 The audio interop tests run both standard and extended AX.25 through the KISS
 loss proxy at some loss percentages, using seed 123.  Each run retains
 `loss.pcapng` with dropped-frame comments alongside the client capture and

@@ -297,7 +297,93 @@ async fn echo(agw: &mut AGWServer, log: &mut File, payloads: &[Vec<u8>]) -> Resu
     Ok(())
 }
 
-async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
+fn recovery_summary(path: &Path, extended: bool) -> Result<()> {
+    let capture = fs::read(path)?;
+    let mut records = capture.get(24..).context("missing pcap header")?;
+    let mut seen = std::collections::HashSet::new();
+    let mut resends = 0;
+    let mut rejects = 0;
+    while !records.is_empty() {
+        ensure!(records.len() >= 16, "truncated pcap record");
+        let size = usize::try_from(u32::from_le_bytes(records[8..12].try_into()?))?;
+        let frame = records.get(16..16 + size).context("truncated pcap frame")?;
+        let packet = rax25::Packet::parse(frame, Some(extended))?;
+        match packet.packet_type() {
+            rax25::PacketType::Iframe(data) => {
+                if !seen.insert((frame[7..14].to_vec(), data.ns, data.payload.clone())) {
+                    resends += 1;
+                }
+            }
+            rax25::PacketType::Rej(_) => rejects += 1,
+            _ => {}
+        }
+        records = &records[16 + size..];
+    }
+    eprintln!(
+        "Dire Wolf file recovery: {resends} repeated I frames, {rejects} REJ frames (extended={extended})"
+    );
+    ensure!(resends > 0, "file transfer exercised no retransmissions");
+    ensure!(rejects > 0, "file transfer exercised no REJ recovery");
+    Ok(())
+}
+
+fn transfer_payloads(files: bool, dir: &Path) -> Result<Vec<Vec<u8>>> {
+    let mut payloads = vec![
+        b"rax25 to Dire Wolf over Bell 202 audio\r\n".to_vec(),
+        (0..=255).collect(),
+        vec![0xc0, 0xdb, 0, 0xff, 0xc0, 0xdb, 0x7e],
+    ];
+    if files {
+        // Multiple transmit windows and modulo-8 sequence wraps. AGW
+        // verifies the upload; rax25 verifies the echoed download.
+        let file: Vec<_> = (0..4096_u32)
+            .map(|n| n.wrapping_mul(73).wrapping_add(n >> 8).to_le_bytes()[0])
+            .collect();
+        fs::write(dir.join("transfer.bin"), &file)?;
+        payloads.push(file);
+        eprintln!("Dire Wolf file transfer: 4096-byte upload and echoed download");
+    }
+    Ok(payloads)
+}
+
+fn configure_bulk_audio(config: &Path) -> Result<()> {
+    use std::io::Write;
+    // Test setup, not protocol policy: a 1200-baud full window takes longer
+    // than the default retry timer to leave the modem queue.
+    writeln!(
+        fs::OpenOptions::new().append(true).open(config)?,
+        "FRACK 15"
+    )?;
+    Ok(())
+}
+
+fn check_echoed(expected: &[u8], received: &[u8], files: bool, dir: &Path) -> Result<()> {
+    if files && expected.len() == 4096 {
+        fs::write(dir.join("download-received.bin"), received)?;
+    }
+    ensure!(received == expected, "corrupt or extra echoed bytes");
+    Ok(())
+}
+
+async fn connect_interop(
+    stream: TcpStream,
+    extended: bool,
+    files: bool,
+    dir: &Path,
+    deadline: Duration,
+) -> Result<rax25::r#async::Client> {
+    let builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
+        .extended(Some(extended))
+        .srt_default(Duration::from_secs(if files { 45 } else { 5 }))
+        .mtu(256)
+        .capture(dir.join("rax25.pcap"));
+    let client = timeout(deadline, builder.connect(Callsign::new("M0TST-2")?))
+        .await
+        .context("AX.25 connect timed out")??;
+    Ok(client)
+}
+
+async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
     let bell202 = Harness::bell202()?;
     let mut harness = Harness::new(extended, drop_percent)?;
     let result = async {
@@ -308,6 +394,9 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
         fs::write(&config, format!(
             "ADEVICE from-bell202 to-bell202\nARATE 48000\nACHANNELS 1\nCHANNEL 0\nMYCALL M0TST-2\nMODEM 1200\nAGWPORT {agw_port}\nKISSPORT 0\nTXDELAY 20\nTXTAIL 10\nPERSIST 255\nSLOTTIME 1\nFIX_BITS 0\n"
         ))?;
+        if files {
+            configure_bulk_audio(&config)?;
+        }
         // Dire Wolf 1.7 truncates long -c arguments; keep the filename short
         // even when Tickbox's persistent target directory has a long path.
         let binary = std::env::var_os("DIREWOLF_BIN").unwrap_or_else(|| "/usr/bin/direwolf".into());
@@ -343,21 +432,11 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
             "--capture",
         ]).arg(harness.dir.join("loss.pcapng")))?;
         let stream = harness.connect(proxy_port).await?;
-        let deadline = if drop_percent == 0 { DEADLINE } else { Duration::from_secs(180) };
-        let payloads = vec![
-            b"rax25 to Dire Wolf over Bell 202 audio\r\n".to_vec(),
-            (0..=255).collect::<Vec<u8>>(),
-            vec![0xc0, 0xdb, 0, 0xff, 0xc0, 0xdb, 0x7e],
-        ];
+        let deadline = if files { Duration::from_secs(600) } else if drop_percent == 0 { DEADLINE } else { Duration::from_secs(180) };
+        let payloads = transfer_payloads(files, &harness.dir)?;
         let mut agw_log = File::create(harness.dir.join("agw.log"))?;
         let client = async {
-            let mut client = timeout(deadline, ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
-                .extended(Some(extended))
-                .srt_default(Duration::from_secs(5))
-                .mtu(256)
-                .capture(harness.dir.join("rax25.pcap"))
-                .connect(Callsign::new("M0TST-2")?))
-                .await.context("AX.25 connect timed out")??;
+            let mut client = connect_interop(stream, extended, files, &harness.dir, deadline).await?;
             for expected in &payloads {
                 timeout(deadline, async {
                     client.write(expected).await?.await?;
@@ -367,7 +446,7 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
                         ensure!(!bytes.is_empty(), "unexpected AX.25 EOF");
                         received.extend(bytes);
                     }
-                    ensure!(received == *expected, "corrupt or extra echoed bytes");
+                    check_echoed(expected, &received, files, &harness.dir)?;
                     Ok::<_, anyhow::Error>(())
                 }).await.context("AX.25 echo timed out")??;
             }
@@ -375,13 +454,16 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
             Ok::<_, anyhow::Error>(())
         };
         let server = async {
-            timeout(Duration::from_secs(600), echo(&mut agw, &mut agw_log, &payloads))
+            timeout(Duration::from_mins(15), echo(&mut agw, &mut agw_log, &payloads))
                 .await.context("AGW echo/disconnect timed out")?
         };
         tokio::try_join!(client, server)?;
         let capture = harness.dir.join("rax25.pcap");
         if let Err(error) = verify_capture(&capture, extended) {
             bail!("{error}\n{}", tshark_capture(&capture));
+        }
+        if files {
+            recovery_summary(&capture, extended)?;
         }
         harness.check_children()?;
         Ok::<_, anyhow::Error>(())
@@ -401,16 +483,25 @@ async fn interop(extended: bool, drop_percent: u8) -> Result<()> {
 #[ignore = "requires Dire Wolf, bell202, ALSA Pulse plugin and live Pulse audio; use tests/run_direwolf_interop.sh"]
 async fn direwolf_standard_audio() -> Result<()> {
     for percent in [0, 5, 10] {
-        interop(false, percent).await?;
+        interop(false, percent, false).await?;
     }
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "slow bulk-transfer stress test; run tests/run_direwolf_interop.sh direwolf_lossy_file_transfer manually"]
+async fn direwolf_lossy_file_transfer() -> Result<()> {
+    // Dire Wolf defaults to SREJ with plain SABME, which this branch does not
+    // implement. Exercise REJ recovery in modulo-8 rather than silently ignoring
+    // unsupported selective-reject requests during an extended bulk transfer.
+    interop(false, 10, true).await
 }
 
 #[tokio::test]
 #[ignore = "requires Dire Wolf, bell202, ALSA Pulse plugin and live Pulse audio; use tests/run_direwolf_interop.sh"]
 async fn direwolf_extended_audio() -> Result<()> {
     for percent in [0, 5, 10] {
-        interop(true, percent).await?;
+        interop(true, percent, false).await?;
     }
     Ok(())
 }
