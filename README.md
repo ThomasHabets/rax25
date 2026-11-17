@@ -129,6 +129,22 @@ XID-first setup also reconfirms after UA because Dire Wolf resets negotiated
 parameters on SABM(E). Established async links continue negotiation in their
 background task without requiring a pending application read.
 
+## KISS Channel Busy
+
+Rax25 automatically handles port-zero MeshCore-compatible ChannelBusy
+notifications (`C0 06 8E state C0`, 0 quiet, 1 busy). Busy suspends T1, T3,
+and XID management timers; quiet resumes their remaining time, per C3.2.
+This works with native async clients, the AGW engine, and synchronous
+KISS/bus clients. Custom synchronous hubs can implement `recv_event_timeout`
+to supply `HubEvent::ChannelBusy` alongside data frames.
+
+If using rustradio's `bell202`, enable its notifications with
+`--busy-threshold-db=-30`, adjusting the threshold for your receiver. Its
+receive-power detector approximates channel activity; noise can hold timers
+paused, and it does not report local TX or implement CSMA. Timer suspension
+neither sends RNR nor inhibits transmission. See `SPEC_DIFFERENCES.md` for the
+C2a detection limitations.
+
 ## KISS Loss Proxy
 
 Run a frame-aware loss proxy between a KISS application and its modem:

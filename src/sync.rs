@@ -158,9 +158,7 @@ impl Client {
     fn wait_connected(&mut self, addr: &Callsign) -> Result<()> {
         loop {
             let dead = self.data.next_timer_remaining();
-            let packet = self
-                .kiss
-                .recv_timeout(dead.unwrap_or(std::time::Duration::from_mins(1)))?;
+            let packet = self.receive_frame(dead.unwrap_or(std::time::Duration::from_mins(1)))?;
             if let Some(packet) = packet {
                 let packet = Packet::parse(&packet, Some(self.data.ext()))?;
                 // dbg!(&packet);
@@ -208,9 +206,8 @@ impl Client {
             if until < now {
                 return Ok(None);
             }
-            let packet = self
-                .kiss
-                .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))?;
+            let packet =
+                self.receive_frame(until.saturating_duration_since(std::time::Instant::now()))?;
             if let Some(packet) = packet
                 && let Ok(packet) = Packet::parse(&packet, None)
             {
@@ -283,7 +280,7 @@ impl Client {
             .next_timer_remaining()
             .unwrap_or(std::time::Duration::from_millis(100))
             .min(std::time::Duration::from_millis(100));
-        let Some(bytes) = self.kiss.recv_timeout(timeout)? else {
+        let Some(bytes) = self.receive_frame(timeout)? else {
             return Ok(None);
         };
         let packet = Packet::parse(&bytes, Some(self.data.ext()))?;
@@ -293,6 +290,17 @@ impl Client {
             Ok(None)
         } else {
             Ok(Some(packet))
+        }
+    }
+
+    fn receive_frame(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        match self.kiss.recv_event_timeout(timeout)? {
+            Some(crate::HubEvent::Frame(bytes)) => Ok(Some(bytes)),
+            Some(crate::HubEvent::ChannelBusy(busy)) => {
+                self.data.set_channel_busy(busy);
+                Ok(None)
+            }
+            None => Ok(None),
         }
     }
 
@@ -456,6 +464,43 @@ mod tests {
     use super::*;
     use crate::{Callsign, FakeKiss, PollFinal};
     use crate::{Iframe, PacketType, Sabm};
+
+    #[test]
+    fn hub_busy_events_suspend_and_resume_connection_timers() -> Result<()> {
+        struct BusyHub(std::collections::VecDeque<crate::HubEvent>);
+        impl Hub for BusyHub {
+            fn send(&mut self, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn recv_timeout(&mut self, _: std::time::Duration) -> Result<Option<Vec<u8>>> {
+                panic!("client must receive modem events");
+            }
+            fn recv_event_timeout(
+                &mut self,
+                _: std::time::Duration,
+            ) -> Result<Option<crate::HubEvent>> {
+                Ok(self.0.pop_front())
+            }
+            fn clone(&self) -> Result<Box<dyn Hub>> {
+                Ok(Box::new(Self(self.0.clone())))
+            }
+        }
+        let hub = BusyHub([true, true, false].map(crate::HubEvent::ChannelBusy).into());
+        let mut client = Client::new(Callsign::new("LOCAL")?, Box::new(hub));
+        client.actions(&state::Event::Connect {
+            addr: Callsign::new("REMOTE")?,
+            ext: false,
+        });
+        assert!(client.data.next_timer_remaining().is_some());
+        for _ in 0..2 {
+            assert_eq!(client.receive_frame(std::time::Duration::ZERO)?, None);
+            assert!(client.data.next_timer_remaining().is_none());
+            assert_eq!(client.data.active_timers(), []);
+        }
+        assert_eq!(client.receive_frame(std::time::Duration::ZERO)?, None);
+        assert!(client.data.next_timer_remaining().is_some());
+        Ok(())
+    }
 
     #[derive(Clone, Default)]
     struct XidPeer {

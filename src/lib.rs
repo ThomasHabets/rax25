@@ -1116,12 +1116,28 @@ pub trait Hub {
 
     /// Try receiving a frame.
     ///
-    /// Ok(None) means timeout.
+    /// `Ok(None)` means timeout or a consumed channel indication. Use
+    /// `recv_event_timeout` when channel-busy indications must be preserved.
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>>;
+
+    /// Receive data or a physical channel indication. Legacy hubs only supply
+    /// data; modem-aware hubs should override this method to report busy/quiet.
+    fn recv_event_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<HubEvent>> {
+        Ok(self.recv_timeout(timeout)?.map(HubEvent::Frame))
+    }
 
     /// Clone a kisser.
     /// All packets get delivered to all clones.
     fn clone(&self) -> Result<Box<dyn Hub>>;
+}
+
+/// Input from a modem, distinct from AX.25 peer flow control (RNR).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HubEvent {
+    /// Complete, unescaped AX.25 frame without FCS.
+    Frame(Vec<u8>),
+    /// Physical channel state: true is busy, false is quiet.
+    ChannelBusy(bool),
 }
 
 #[cfg(test)]
@@ -1200,7 +1216,7 @@ impl Hub for FakeKiss {
 #[derive(Clone)]
 pub struct BusMessage {
     sender: usize,
-    data: Vec<u8>,
+    data: HubEvent,
 }
 
 pub struct BusHub {
@@ -1229,13 +1245,20 @@ impl Hub for BusHub {
             .map_err(|_| Error::MutexPoisoned)?
             .try_broadcast(BusMessage {
                 sender: 0,
-                data: frame.to_vec(),
+                data: HubEvent::Frame(frame.to_vec()),
             })
             .map_err(|_| Error::BroadcastFailed)?;
         Ok(())
     }
 
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        Ok(match self.recv_event_timeout(timeout)? {
+            Some(HubEvent::Frame(bytes)) => Some(bytes),
+            _ => None,
+        })
+    }
+
+    fn recv_event_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<HubEvent>> {
         Ok(Some(self.rx.recv_timeout(timeout)?.data))
     }
 
@@ -1301,12 +1324,13 @@ impl BusKiss {
             let d = std::time::Duration::from_millis(10);
             if let Ok(rx) = self.rx.recv_timeout(d)
                 && rx.sender != self.id
-                && let Err(e) = self.kiss.send(&rx.data)
+                && let HubEvent::Frame(bytes) = rx.data
+                && let Err(e) = self.kiss.send(&bytes)
             {
                 log::warn!("Sending to KISS failed: {e}");
                 break;
             }
-            if let Ok(Some(rx)) = self.kiss.recv_timeout(d)
+            if let Ok(Some(rx)) = self.kiss.recv_event_timeout(d)
                 && let Err(e) = broadcast_to_bus(
                     &self.bus,
                     BusMessage {
@@ -1401,6 +1425,17 @@ pub fn unescape(data: &[u8]) -> Result<Vec<u8>> {
     Ok(unescaped)
 }
 
+/// `MeshCore` SetHardware/ChannelBusy extension, on the supported KISS port zero.
+/// Do not interpret malformed states or other hardware commands as AX.25 data.
+#[cfg(any(feature = "async", feature = "serial", test))]
+fn kiss_channel_busy(command: u8, payload: &[u8]) -> Option<bool> {
+    match (command, payload) {
+        (0x06, [0x8e, 0]) => Some(false),
+        (0x06, [0x8e, 1]) => Some(true),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "serial")]
 impl Hub for Kiss {
     fn clone(&self) -> Result<Box<dyn Hub>> {
@@ -1416,6 +1451,13 @@ impl Hub for Kiss {
         Ok(())
     }
     fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        Ok(match self.recv_event_timeout(timeout)? {
+            Some(HubEvent::Frame(bytes)) => Some(bytes),
+            _ => None,
+        })
+    }
+
+    fn recv_event_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<HubEvent>> {
         let end = std::time::Instant::now() + timeout;
         loop {
             self.port
@@ -1433,11 +1475,12 @@ impl Hub for Kiss {
             //debug!("Got {} bytes from serial", buf.len());
             self.buf.extend(buf);
             while let Some((a, b)) = find_frame(&self.buf) {
-                if b - a < 14 {
+                if b <= a + 1 {
                     debug!("short packet {a} {b}");
                     self.buf.drain(..=a);
                     continue;
                 }
+                let command = self.buf[a + 1];
                 let bytes: Vec<_> = self
                     .buf
                     .iter()
@@ -1448,11 +1491,17 @@ impl Hub for Kiss {
                 self.buf.drain(..b);
                 debug!("After drain: {:?}", self.buf);
                 let bytes = unescape(&bytes)?;
+                if let Some(busy) = kiss_channel_busy(command, &bytes) {
+                    return Ok(Some(HubEvent::ChannelBusy(busy)));
+                }
+                if command != 0 {
+                    continue;
+                }
                 if bytes.len() > 14 {
                     debug!("Found from (not yet unescaped) from {a} to {b}: {bytes:?}");
                     let packet = Packet::parse(&bytes, None)?;
                     debug!("... Decoded as: {packet:?}");
-                    return Ok(Some(bytes));
+                    return Ok(Some(HubEvent::Frame(bytes)));
                 }
             }
         }
@@ -1462,6 +1511,42 @@ impl Hub for Kiss {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kiss_channel_indications_are_strict_and_bus_preserves_them() -> crate::Result<()> {
+        use super::*;
+        assert_eq!(kiss_channel_busy(6, &[0x8e, 1]), Some(true));
+        assert_eq!(kiss_channel_busy(6, &[0x8e, 0]), Some(false));
+        for (command, payload) in [
+            (0, vec![0x8e, 1]),
+            (0x16, vec![0x8e, 1]),
+            (6, vec![0x8e, 2]),
+            (6, vec![0x8e]),
+            (6, vec![0x8e, 1, 0]),
+        ] {
+            assert_eq!(kiss_channel_busy(command, &payload), None);
+        }
+        let bus = Arc::new(Mutex::new(bus::Bus::new(4)));
+        let mut hub = BusHub::new(bus.clone())?;
+        let mut other = Hub::clone(&hub)?;
+        for busy in [true, false] {
+            broadcast_to_bus(
+                &bus,
+                BusMessage {
+                    sender: 1,
+                    data: HubEvent::ChannelBusy(busy),
+                },
+            )?;
+            assert_eq!(
+                hub.recv_event_timeout(std::time::Duration::ZERO)?,
+                Some(HubEvent::ChannelBusy(busy))
+            );
+            assert_eq!(
+                other.recv_event_timeout(std::time::Duration::ZERO)?,
+                Some(HubEvent::ChannelBusy(busy))
+            );
+        }
+        Ok(())
+    }
     use super::*;
 
     #[test]
@@ -1483,7 +1568,7 @@ mod tests {
             &bus,
             BusMessage {
                 sender: 1,
-                data: vec![1],
+                data: HubEvent::Frame(vec![1]),
             },
         )?;
         assert!(matches!(
@@ -1491,7 +1576,7 @@ mod tests {
                 &bus,
                 BusMessage {
                     sender: 1,
-                    data: vec![2]
+                    data: HubEvent::Frame(vec![2])
                 }
             ),
             Err(Error::QueueFull)
@@ -1518,7 +1603,7 @@ mod tests {
                 &bus,
                 BusMessage {
                     sender: 1,
-                    data: vec![]
+                    data: HubEvent::Frame(vec![])
                 }
             ),
             Err(Error::MutexPoisoned)

@@ -170,6 +170,7 @@ impl Link {
 
 /// An engine and bounded command/event channels. Drive `run` continuously.
 pub struct PacketEngine {
+    channel_busy: bool,
     srej: bool,
     outgoing: crate::r#async::KissWrites,
     commands: mpsc::Receiver<Command>,
@@ -182,6 +183,13 @@ pub struct PacketEngine {
     experiments: std::collections::HashSet<Experiment>,
 }
 impl PacketEngine {
+    fn set_channel_busy(&mut self, busy: bool) {
+        self.channel_busy = busy;
+        for link in self.links.values_mut() {
+            link.data.set_channel_busy(busy);
+        }
+    }
+
     /// Permit negotiated SREJ for subsequent links without initiating XID.
     pub fn set_srej(&mut self, enabled: bool) {
         self.srej = enabled;
@@ -194,6 +202,7 @@ impl PacketEngine {
             Self {
                 srej: true,
                 outgoing: crate::r#async::KissWrites::default(),
+                channel_busy: false,
                 commands,
                 events,
                 listeners: HashMap::new(),
@@ -348,6 +357,7 @@ impl PacketEngine {
                     let mut link =
                         Link::new(owner, route.local.clone(), via, false, &self.experiments);
                     link.data.set_srej(self.srej);
+                    link.data.set_channel_busy(self.channel_busy);
                     if let Some(config) = &self.xid {
                         link.data.set_xid_config(config.clone());
                     }
@@ -492,6 +502,7 @@ impl PacketEngine {
                 .collect();
             let mut link = Link::new(owner, route.local.clone(), via, true, &self.experiments);
             link.data.set_srej(self.srej);
+            link.data.set_channel_busy(self.channel_busy);
             if let Some(config) = &self.xid {
                 link.data.set_xid_config(config.clone());
             }
@@ -542,7 +553,12 @@ impl PacketEngine {
                         let bytes: Vec<_> = input.iter().skip(start + 2).take(end - start - 2).copied().collect();
                         let command = input.get(start + 1).copied();
                         input.drain(..end);
-                        if command == Some(0) {
+                        if let Some(command) = command
+                            && let Ok(payload) = crate::unescape(&bytes)
+                            && let Some(busy) = crate::kiss_channel_busy(command, &payload)
+                        {
+                            self.set_channel_busy(busy);
+                        } else if command == Some(0) {
                             match crate::unescape(&bytes) {
                                 Ok(bytes) => {
                                     if let Some(capture) = &mut self.capture {
@@ -640,6 +656,54 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn channel_busy_covers_existing_and_new_links() {
+        let (mut engine, _tx, _rx) = PacketEngine::new();
+        let (mut port, _peer) = ports().await;
+        for (index, remote) in ["REMOTE", "OTHER"].into_iter().enumerate() {
+            if index == 1 {
+                engine.set_channel_busy(true);
+            }
+            engine
+                .command(
+                    Command::Connect {
+                        owner: OwnerId(1),
+                        route: Route {
+                            local: call("LOCAL"),
+                            remote: call(remote),
+                        },
+                        via: vec![],
+                        extended: false,
+                    },
+                    &mut port,
+                )
+                .await
+                .unwrap();
+            if index == 0 {
+                assert!(
+                    engine
+                        .links
+                        .values()
+                        .all(|link| link.data.next_timer_remaining().is_some())
+                );
+            }
+        }
+        assert_eq!(engine.links.len(), 2);
+        assert!(
+            engine
+                .links
+                .values()
+                .all(|link| link.data.next_timer_remaining().is_none())
+        );
+        engine.set_channel_busy(false);
+        assert!(
+            engine
+                .links
+                .values()
+                .all(|link| link.data.next_timer_remaining().is_some())
+        );
+    }
+
     #[tokio::test]
     async fn exclusive_registration_cleanup_and_ui_pid() {
         let (mut engine, _tx, _rx) = PacketEngine::new();

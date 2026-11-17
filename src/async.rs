@@ -381,7 +381,7 @@ struct KissPort {
     incoming_kiss: VecDeque<u8>,
 
     /// Pending packets in need of processing.
-    incoming_frames: VecDeque<Packet>,
+    incoming_frames: VecDeque<ModemEvent>,
 
     /// Parse as extended mode.
     ext: bool,
@@ -423,7 +423,7 @@ impl KissPort {
         self.incoming_frames.len()
     }
     #[must_use]
-    fn pop_frame(&mut self) -> Option<Packet> {
+    fn pop_frame(&mut self) -> Option<ModemEvent> {
         self.incoming_frames.pop_front()
     }
 
@@ -641,17 +641,23 @@ impl Client {
 ///
 /// Given an input buffer `ibuf` of KISS data, drain all packets we can find.
 #[must_use]
+enum ModemEvent {
+    Packet(Packet),
+    ChannelBusy(bool),
+}
+
 fn kisser_read(
     ibuf: &mut VecDeque<u8>,
     ext: Option<bool>,
     mut pcap: Option<&mut PcapWriter>,
-) -> Vec<Packet> {
+) -> Vec<ModemEvent> {
     let mut ret = Vec::new();
     while let Some((a, b)) = crate::find_frame(ibuf) {
-        if b - a < 14 {
-            ibuf.drain(..=a);
+        if b <= a + 1 {
+            ibuf.drain(..b.max(1));
             continue;
         }
+        let command = ibuf[a + 1];
         let pb: Vec<_> = ibuf.iter().skip(a + 2).take(b - a - 2).copied().collect();
         ibuf.drain(..b);
         let pb = match crate::unescape(&pb) {
@@ -661,6 +667,13 @@ fn kisser_read(
                 continue;
             }
         };
+        if let Some(busy) = crate::kiss_channel_busy(command, &pb) {
+            ret.push(ModemEvent::ChannelBusy(busy));
+            continue;
+        }
+        if command != 0 {
+            continue;
+        }
         match Packet::parse(&pb, ext) {
             Ok(packet) => {
                 trace!("rax25: parsed {packet:?}");
@@ -684,7 +697,7 @@ fn kisser_read(
                 {
                     error!("Failed to write to pcap: {e}");
                 }
-                ret.push(packet);
+                ret.push(ModemEvent::Packet(packet));
             }
             Err(e) => {
                 debug!("rax25: Failed to parse packet: {e:?}");
@@ -845,7 +858,14 @@ impl Driver {
 
     // Called outside select branches so frame actions always finish.
     async fn process_frames(&mut self) -> Result<()> {
-        while let Some(p) = self.kissport.pop_frame() {
+        while let Some(event) = self.kissport.pop_frame() {
+            let p = match event {
+                ModemEvent::ChannelBusy(busy) => {
+                    self.data.set_channel_busy(busy);
+                    continue;
+                }
+                ModemEvent::Packet(packet) => packet,
+            };
             if p.dst.callsign() != &self.data.me {
                 trace!("rax25: Skipping packet not for {:?}", self.data.me.call());
                 continue;
@@ -889,14 +909,14 @@ impl Driver {
         tokio::pin!(management);
 
         tokio::select! {
-            () = &mut management => {
+            () = &mut management, if self.data.management_remaining().is_some() => {
                 return Ok(Some(Event::ManagementTimeout));
             },
-            () = &mut t1 => {
+            () = &mut t1, if self.data.t1.remaining().is_some() => {
                 debug!("rax25: async con event: T1");
                 return Ok(Some(Event::T1));
             },
-            () = &mut t3 => {
+            () = &mut t3, if self.data.t3.remaining().is_some() => {
                 debug!("rax25: async con event: T3");
                 return Ok(Some(Event::T3));
             },
@@ -1235,6 +1255,67 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn kiss_status_is_ordered_fragment_safe_and_not_ax25() -> Result<()> {
+        let expected = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, b"hello");
+        let mut input = VecDeque::from([0xc0, 6, 0x8e]);
+        assert!(kisser_read(&mut input, Some(false), None).is_empty());
+        input.extend([1, 0xc0]);
+        // Reject invalid state, wrong port, unrelated hardware commands, and
+        // data-shaped payloads carried by non-data KISS commands.
+        input.extend([0xc0, 6, 0x8e, 2, 0xc0, 0x16, 0x8e, 0, 0xc0]);
+        let mut nondata = crate::escape(&expected.serialize());
+        nondata[1] = 6;
+        input.extend(nondata);
+        input.extend(crate::escape(&expected.serialize()));
+        input.extend([0xc0, 6, 0x8e, 0, 0xc0]);
+        let events = kisser_read(&mut input, Some(false), None);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], ModemEvent::ChannelBusy(true)));
+        assert!(
+            matches!(&events[1], ModemEvent::Packet(p) if p.packet_type == expected.packet_type)
+        );
+        assert!(matches!(events[2], ModemEvent::ChannelBusy(false)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kiss_busy_suspends_and_quiet_resumes_xid_timeout() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let socket = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+        let (mut modem, _) = listener.accept().await?;
+        let mut data = state::Data::new(Callsign::new("LOCAL")?);
+        data.set_xid_config(XidConfig {
+            management_timeout: Duration::from_millis(100),
+            ..Default::default()
+        });
+        let mut driver = Driver::internal_new(data, PortType::Tcp(socket), false);
+        modem.write_all(&[0xc0, 6, 0x8e, 1, 0xc0]).await?;
+        assert!(driver.next_event().await?.is_none());
+        driver.process_frames().await?;
+        driver
+            .actions(Event::ConnectWithXid {
+                addr: Callsign::new("REMOTE")?,
+                ext: Some(false),
+            })
+            .await?;
+        assert!(driver.data.management_remaining().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), driver.next_event())
+                .await
+                .is_err()
+        );
+        modem.write_all(&[0xc0, 6, 0x8e, 0, 0xc0]).await?;
+        assert!(driver.next_event().await?.is_none());
+        driver.process_frames().await?;
+        assert!(driver.data.management_remaining().is_some());
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), driver.next_event()).await??,
+            Some(Event::ManagementTimeout)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn malformed_kiss_frame_does_not_hide_next_packet() -> Result<()> {
         let expected = Packet::ui(Callsign::new("LOCAL")?, Callsign::new("REMOTE")?, b"hello");
         let mut wire = vec![0xc0, 0];
@@ -1243,7 +1324,10 @@ mod tests {
         wire.extend(crate::escape(&expected.serialize()));
         let packets = kisser_read(&mut wire.into(), Some(false), None);
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].packet_type, expected.packet_type);
+        let ModemEvent::Packet(packet) = &packets[0] else {
+            panic!("expected data frame");
+        };
+        assert_eq!(packet.packet_type, expected.packet_type);
         Ok(())
     }
 

@@ -84,6 +84,26 @@ Bug assessments here are implementation notes, not official errata.
 
 ## Deliberate Choices
 
+### Physical Channel Busy over KISS
+
+C3.2 suspends data-link timers while the physical channel is busy and resumes
+them on quiet. Rax25 maps the MeshCore-compatible port-zero KISS SetHardware
+ChannelBusy extension (`C0 06 8E state C0`, state 0 or 1) to these indications.
+This is a modem-interface extension, not an AX.25 over-the-air change. Native
+async clients, the shared packet engine, and synchronous KISS/bus clients
+suspend T1, T3, and the XID management timer, retaining their remaining time.
+Timers started or restarted during busy begin counting only after quiet.
+Without notifications, timers retain their normal wall-clock behavior.
+
+Busy does not set the AX.25 receiver-busy/RNR state, block application data,
+or implement channel access: the modem remains responsible for transmission
+scheduling. C2a defines busy using modem synchronization or HDLC activity,
+not merely an FM carrier, and includes local transmission in simplex busy
+time. Bell202's optional receive-power detector is only an approximation:
+noise or an inappropriate threshold can hold timers paused indefinitely,
+and receive-only detection does not cover local transmission. Full C2a
+behavior requires suitable modem activity detection and TX indications.
+
 ### Shared AGW Packet Engine
 
 The async packet engine shares one KISS channel across independently timed

@@ -300,6 +300,7 @@ pub const DEFAULT_N2: u8 = 10;
 pub struct Timer {
     running: bool,
     expiry: std::time::Instant,
+    paused: Option<std::time::Instant>,
 }
 
 impl Default for Timer {
@@ -307,6 +308,7 @@ impl Default for Timer {
         Self {
             running: false,
             expiry: std::time::Instant::now(),
+            paused: None,
         }
     }
 }
@@ -316,7 +318,7 @@ impl Timer {
     ///
     /// Called by the state machine.
     fn start(&mut self, v: std::time::Duration) {
-        self.expiry = std::time::Instant::now() + v;
+        self.expiry = self.paused.unwrap_or_else(std::time::Instant::now) + v;
         self.running = true;
     }
 
@@ -328,13 +330,13 @@ impl Timer {
         if !self.running {
             return None;
         }
-        Some(std::time::Instant::now() > self.expiry)
+        Some(self.paused.is_none() && std::time::Instant::now() > self.expiry)
     }
 
-    /// Return the remaining time of the timer, if it's running.
+    /// Return time until expiry, or None when stopped or channel-suspended.
     #[must_use]
     pub fn remaining(&self) -> Option<std::time::Duration> {
-        if !self.running {
+        if !self.running || self.paused.is_some() {
             return None;
         }
         Some(
@@ -348,6 +350,17 @@ impl Timer {
     /// Called by the state machine.
     fn stop(&mut self) {
         self.running = false;
+    }
+
+    fn set_paused(&mut self, busy: bool, now: std::time::Instant) {
+        match (busy, self.paused) {
+            (true, None) => self.paused = Some(now),
+            (false, Some(start)) => {
+                self.expiry += now.saturating_duration_since(start);
+                self.paused = None;
+            }
+            _ => {}
+        }
     }
 
     /// Restart timer.
@@ -724,6 +737,7 @@ impl Data {
     #[must_use]
     pub fn accepted_data(&mut self, peer: &Callsign) -> Self {
         let mut data = Self::new(self.me.clone());
+        data.set_channel_busy(self.t1.paused.is_some());
         data.xid_config.clone_from(&self.xid_config);
         data.srej_allowed = self.srej_allowed;
         self.expire_pending_xid();
@@ -1080,6 +1094,16 @@ impl Data {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// Suspend or resume protocol timers on physical channel busy/quiet (C3.2).
+    /// This is unrelated to the peer's RNR flow-control state. Timers started
+    /// while busy are suspended too; repeated indications are idempotent.
+    pub fn set_channel_busy(&mut self, busy: bool) {
+        let now = std::time::Instant::now();
+        for timer in [&mut self.t1, &mut self.t3, &mut self.management] {
+            timer.set_paused(busy, now);
+        }
     }
 
     /// Do something with a received UI frame.
@@ -2940,6 +2964,46 @@ mod srej_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_busy_preserves_timers_and_accept_state() -> Result<()> {
+        let mut data = Data::new(Callsign::new("LOCAL")?);
+        let duration = std::time::Duration::from_secs(10);
+        for timer in [&mut data.t1, &mut data.t3, &mut data.management] {
+            timer.start(duration);
+        }
+        data.set_channel_busy(true);
+        let paused = data.t1.paused.unwrap();
+        let expiry = data.t1.expiry;
+        data.set_channel_busy(true);
+        assert_eq!(data.t1.paused, Some(paused));
+        assert_eq!(data.t1.expiry, expiry);
+        assert!(data.next_timer_remaining().is_none());
+        assert_eq!(data.active_timers(), []);
+        let accepted = data.accepted_data(&Callsign::new("REMOTE")?);
+        assert!(accepted.t1.paused.is_some());
+
+        // Restarting during the pause must grant the full new interval after
+        // quiet. Stopping must not let quiet resurrect the stopped timer.
+        data.t1.restart(duration);
+        data.t3.stop();
+        let quiet = paused + std::time::Duration::from_secs(100);
+        for timer in [&mut data.t1, &mut data.t3, &mut data.management] {
+            let expiry = timer.expiry;
+            timer.set_paused(false, quiet);
+            assert_eq!(timer.expiry, expiry + std::time::Duration::from_secs(100));
+            timer.set_paused(false, quiet + duration);
+            assert_eq!(timer.expiry, expiry + std::time::Duration::from_secs(100));
+        }
+        assert_eq!(data.t1.expiry, quiet + duration);
+        assert!(!data.t3.running);
+
+        // Even an overdue timer is suppressed until the channel is quiet.
+        data.t1.expiry = paused.checked_sub(duration).unwrap();
+        data.t1.set_paused(true, paused);
+        assert_eq!(data.t1.is_expired(), Some(false));
+        Ok(())
+    }
 
     #[test]
     fn missing_peer_terminates_and_preserves_prior_events() -> Result<()> {
