@@ -4,6 +4,7 @@
 * Do not vendor dependencies
 * Keep `SPEC_DIFFERENCES.md` up to date with differences between specs, and
   where the spec and implementation differ
+* Commit with env `SLOW=true` to include direwolf interop tests
 
 ## Commit messages
 

@@ -38,7 +38,7 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run:  CLEANUP=true tickbox --dir tickbox/pre-commit --disable-tui
+      run:  SLOW=true CLEANUP=true tickbox --dir tickbox/pre-commit --disable-tui
     - name: Run lossy Dire Wolf file transfer
       timeout-minutes: 20
       env:
