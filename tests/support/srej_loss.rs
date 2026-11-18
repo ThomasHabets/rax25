@@ -36,7 +36,15 @@ async fn forward(
             if frame.is_empty() {
                 continue;
             }
-            ensure!(frame[0] == 0, "expected KISS data on port zero");
+            if frame[0] != 0 {
+                // Hardware status must reach the client even when data is
+                // dropped; it is not an AX.25 frame and has no place in pcap.
+                writer.write_all(&[0xc0]).await?;
+                writer.write_all(&frame).await?;
+                writer.write_all(&[0xc0]).await?;
+                frame.clear();
+                continue;
+            }
             let decoded = rax25::unescape(&frame[1..])?;
             let packet = rax25::Packet::parse(&decoded, Some(extended))?;
             capture.write(&decoded)?;

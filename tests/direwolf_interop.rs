@@ -21,6 +21,71 @@ use tokio::time::{sleep, timeout};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 
+struct Modem {
+    binary: PathBuf,
+    busy: bool,
+}
+
+impl Modem {
+    fn command(&self, port: u16) -> Command {
+        let mut command = Command::new(&self.binary);
+        command.args([
+            "--audio",
+            "--audio-input",
+            "from-direwolf",
+            "--audio-output",
+            "to-direwolf",
+            "--audio-rate",
+            "48000",
+            "--tcp-listen",
+            &format!("127.0.0.1:{port}"),
+        ]);
+        if self.busy {
+            command.arg("--busy-threshold-db=-30");
+        }
+        command
+    }
+
+    fn retry(&self, files: bool) -> u64 {
+        if self.busy {
+            3
+        } else if files {
+            45
+        } else {
+            5
+        }
+    }
+
+    fn window(&self, files: bool) -> u8 {
+        if self.busy {
+            if files { 16 } else { 8 }
+        } else {
+            4
+        }
+    }
+}
+
+#[test]
+fn modem_profiles_keep_legacy_modems_conservative() {
+    for busy in [false, true] {
+        let modem = Modem {
+            binary: PathBuf::from("bell202"),
+            busy,
+        };
+        assert_eq!(modem.retry(false), if busy { 3 } else { 5 });
+        assert_eq!(modem.retry(true), if busy { 3 } else { 45 });
+        assert_eq!(modem.window(false), if busy { 8 } else { 4 });
+        assert_eq!(modem.window(true), if busy { 16 } else { 4 });
+        assert_eq!(
+            modem
+                .command(8000)
+                .get_args()
+                .any(|arg| arg == "--busy-threshold-db=-30"),
+            busy
+        );
+    }
+}
+
 #[path = "support/srej_loss.rs"]
 mod srej_loss;
 
@@ -211,11 +276,26 @@ impl Harness {
         .context("waiting for interop TCP listener")?
     }
 
-    fn bell202() -> Result<PathBuf> {
-        std::env::var_os("BELL202_BIN")
+    fn bell202() -> Result<Modem> {
+        let binary = std::env::var_os("BELL202_BIN")
             .filter(|binary| !binary.is_empty())
             .map(PathBuf::from)
-            .context("BELL202_BIN must point to a built bell202 modem; run tests/run_direwolf_interop.sh to install and configure it")
+            .context("BELL202_BIN must point to a built bell202 modem; run tests/run_direwolf_interop.sh to install and configure it")?;
+        let help = Command::new(&binary).arg("--help").output()?;
+        ensure!(help.status.success(), "bell202 --help failed");
+        let help = String::from_utf8(help.stdout)?;
+        // RX alone is insufficient: queued local audio also consumes T1.
+        let busy = help.contains("--busy-threshold-db") && help.contains("--full-duplex");
+        eprintln!(
+            "Modem {}: {}",
+            binary.display(),
+            if busy {
+                "RX/TX busy notifications, 3s timers, larger extended windows"
+            } else {
+                "legacy modem, conservative audio timers/windows"
+            }
+        );
+        Ok(Modem { binary, busy })
     }
 }
 
@@ -425,13 +505,16 @@ fn transfer_payloads(files: bool, dir: &Path) -> Result<Vec<Vec<u8>>> {
     Ok(payloads)
 }
 
-fn configure_bulk_audio(config: &Path) -> Result<()> {
+fn configure_bulk_audio(config: &Path, modem: &Modem) -> Result<()> {
     use std::io::Write;
-    // Test setup, not protocol policy: a 1200-baud full window takes longer
-    // than the default retry timer to leave the modem queue.
+    // Test setup, not protocol policy: without RX/TX busy indications a
+    // 1200-baud full window requires a longer wall-clock retry allowance.
     writeln!(
         fs::OpenOptions::new().append(true).open(config)?,
-        "FRACK 15\nEMAXFRAME 4"
+        "FRACK {}\nEMAXFRAME {}\nMAXFRAME {}",
+        if modem.busy { 3 } else { 15 },
+        modem.window(true),
+        if modem.busy { 7 } else { 4 },
     )?;
     Ok(())
 }
@@ -450,19 +533,20 @@ async fn connect_interop(
     files: bool,
     dir: &Path,
     deadline: Duration,
+    modem: &Modem,
 ) -> Result<rax25::r#async::Client> {
     let mut builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
         .extended(Some(extended))
-        .srt_default(Duration::from_secs(if files { 45 } else { 5 }))
+        .srt_default(Duration::from_secs(modem.retry(files)))
         .mtu(256)
         .capture(dir.join("rax25.pcap"));
     if files && extended {
         // Dire Wolf ignores pre-connect XID and assumes selective recovery
         // after SABME. Explicitly negotiate it after establishment instead.
         builder = builder.srej(true).xid_after_connect(rax25::XidConfig {
-            acknowledgement_timer: Duration::from_secs(15),
-            management_timeout: Duration::from_secs(5),
-            receive_window_extended: 4,
+            acknowledgement_timer: Duration::from_secs(if modem.busy { 3 } else { 15 }),
+            management_timeout: Duration::from_secs(if modem.busy { 3 } else { 5 }),
+            receive_window_extended: modem.window(true),
             ..Default::default()
         });
     }
@@ -477,6 +561,14 @@ async fn connect_interop(
             parameters.extended && parameters.reject_mode == rax25::RejectMode::MultiSrej,
             "unexpected bulk negotiation: {parameters:?}"
         );
+        if modem.busy {
+            ensure!(
+                parameters.transmit_window == modem.window(true)
+                    && parameters.receive_window == modem.window(true)
+                    && parameters.acknowledgement_timer == Duration::from_secs(3),
+                "busy-aware bulk settings were not negotiated: {parameters:?}"
+            );
+        }
         eprintln!("[direwolf_lossy_file_transfer_extended_srej] negotiated: {parameters:?}");
     }
     Ok(client)
@@ -498,7 +590,7 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
             // Small packets and a four-frame window make two missing frames
             // observable without racing the real 1200-baud modem's timers.
             writeln!(File::options().append(true).open(&config)?,
-                "PACLEN 32\nMAXFRAME 4\nEMAXFRAME 4\nFRACK 5")?;
+                "PACLEN 32\nMAXFRAME 4\nEMAXFRAME {}\nFRACK {}", bell202.window(false), bell202.retry(false))?;
         }
         // Dire Wolf 1.7 truncates long -c arguments; keep the filename short
         // even when Tickbox's persistent target directory has a long path.
@@ -514,10 +606,7 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
         agw.send(&Packet::RegisterCallsign(Port(1), Call::from_bytes(b"M0TST-2")?)).await?;
         let registered = timeout(DEADLINE, agw.recv()).await.context("AGW registration timed out")??;
         ensure!(matches!(registered, Packet::RegisterCallsignReply { success: true, .. }), "registration rejected: {registered:?}");
-        harness.spawn("bell202", Command::new(bell202).args([
-            "--audio", "--audio-input", "from-direwolf", "--audio-output", "to-direwolf",
-            "--audio-rate", "48000", "--tcp-listen", &format!("127.0.0.1:{kiss_port}"),
-        ]))?;
+        harness.spawn("bell202", &mut bell202.command(kiss_port))?;
         let modem = harness.connect(kiss_port).await?;
         let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let stream = TcpStream::connect(proxy_listener.local_addr()?).await?;
@@ -531,16 +620,16 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
         let client = async {
             let mut builder = ConnectionBuilder::new(Callsign::new("M0TST-1")?, PortType::Tcp(stream))?
                 .extended(Some(extended))
-                .srt_default(Duration::from_secs(5))
+                .srt_default(Duration::from_secs(bell202.retry(false)))
                 .mtu(if srej.is_some() { 32 } else { 256 })
                 .capture(harness.dir.join("rax25.pcap"));
             if let Some(enabled) = srej {
                 // Dire Wolf 1.7 ignores XID before SABM(E), unlike rax25's
                 // original XID-first setup. Exercise the real connected MDL.
                 builder = builder.srej(enabled).xid_after_connect(rax25::XidConfig {
-                    acknowledgement_timer: Duration::from_secs(5),
-                    management_timeout: Duration::from_secs(5),
-                    receive_window_extended: 4,
+                    acknowledgement_timer: Duration::from_secs(bell202.retry(false)),
+                    management_timeout: Duration::from_secs(bell202.retry(false)),
+                    receive_window_extended: bell202.window(false),
                     ..Default::default()
                 });
             }
@@ -553,7 +642,10 @@ async fn srej_interop(extended: bool, srej: Option<bool>) -> Result<()> {
                     else { rax25::RejectMode::Rej }, "unexpected recovery: {negotiated:?}");
             }
             for expected in &payloads {
-                timeout(DEADLINE, async {
+                // Larger go-back-N bursts can exceed 30 seconds of audio
+                // during recovery, even with only 3 seconds of idle T1 time.
+                let deadline = if bell202.busy { Duration::from_secs(90) } else { DEADLINE };
+                timeout(deadline, async {
                     client.write(expected).await?.await?;
                     let mut received = Vec::new();
                     while received.len() < expected.len() {
@@ -625,7 +717,7 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
             "ADEVICE from-bell202 to-bell202\nARATE 48000\nACHANNELS 1\nCHANNEL 0\nMYCALL M0TST-2\nMODEM 1200\nAGWPORT {agw_port}\nKISSPORT 0\nTXDELAY 20\nTXTAIL 10\nPERSIST 255\nSLOTTIME 1\nFIX_BITS 0\n"
         ))?;
         if files {
-            configure_bulk_audio(&config)?;
+            configure_bulk_audio(&config, &bell202)?;
         }
         // Dire Wolf 1.7 truncates long -c arguments; keep the filename short
         // even when Tickbox's persistent target directory has a long path.
@@ -641,10 +733,7 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
         agw.send(&Packet::RegisterCallsign(Port(1), Call::from_bytes(b"M0TST-2")?)).await?;
         let registered = timeout(DEADLINE, agw.recv()).await.context("AGW registration timed out")??;
         ensure!(matches!(registered, Packet::RegisterCallsignReply { success: true, .. }), "registration rejected: {registered:?}");
-        harness.spawn("bell202", Command::new(bell202).args([
-            "--audio", "--audio-input", "from-direwolf", "--audio-output", "to-direwolf",
-            "--audio-rate", "48000", "--tcp-listen", &format!("127.0.0.1:{kiss_port}"),
-        ]))?;
+        harness.spawn("bell202", &mut bell202.command(kiss_port))?;
         let proxy_port = loop {
             let port = free_port()?;
             if port != agw_port && port != kiss_port { break port; }
@@ -666,7 +755,7 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
         let payloads = transfer_payloads(files, &harness.dir)?;
         let mut agw_log = File::create(harness.dir.join("agw.log"))?;
         let client = async {
-            let mut client = connect_interop(stream, extended, files, &harness.dir, deadline).await?;
+            let mut client = connect_interop(stream, extended, files, &harness.dir, deadline, &bell202).await?;
             for expected in &payloads {
                 timeout(deadline, async {
                     client.write(expected).await?.await?;

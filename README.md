@@ -141,7 +141,8 @@ to supply `HubEvent::ChannelBusy` alongside data frames.
 If using rustradio's `bell202`, enable its notifications with
 `--busy-threshold-db=-30`, adjusting the threshold for your receiver. Its
 receive-power detector approximates channel activity; noise can hold timers
-paused, and it does not report local TX or implement CSMA. Timer suspension
+paused. Recent audio builds also report local TX busy by default (unless
+`--full-duplex` is set), but do not implement CSMA. Timer suspension
 neither sends RNR nor inhibits transmission. See `SPEC_DIFFERENCES.md` for the
 C2a detection limitations.
 
@@ -238,7 +239,18 @@ The generated `transfer.bin` is retained with the interop artifacts.
 This slow test is excluded from pre-commit. Run it manually with
 `tests/run_direwolf_interop.sh direwolf_lossy_file_transfer`.
 GitHub Actions runs it separately after the pre-commit suite.
-The bulk case uses longer audio retry timers to accommodate modem queue airtime.
+The harness detects modem support for RX and local-TX busy reporting. With
+both available it enables `--busy-threshold-db=-30`, uses 3-second timers,
+and increases the modulo-128 bulk window from 4 to 16 (scripted tests: 8).
+Modulo-8 SREJ retains its four-frame ambiguity limit; standard bulk REJ uses
+a seven-frame Dire Wolf window. To exercise this profile with a newer modem:
+
+```shell
+BELL202_BIN="$HOME/bin/bell202" tests/run_direwolf_interop.sh direwolf_lossy_file_transfer
+```
+
+Older modems keep the conservative timers and windows, including the pinned
+release used by default in CI. No unpublished dependency is required.
 The extended file variant requires XID-negotiated multi-SREJ, retransmissions,
 and SREJ frames, and rejects unexpected REJ recovery. Both bulk cases are
 excluded from local pre-commit and selected by the CI file-transfer step.
@@ -248,9 +260,9 @@ run measured echo round trips of 1.16 s, 1.66 s, and 4.52 s for 7-, 40-, and
 256-byte payloads. Subtracting AX.25 bytes at 1200 bit/s in both directions
 leaves about 0.9 s of fixed overhead, including HDLC flags, transmit delays,
 DSP and audio buffering; this does not isolate audio-server latency.
-The long bulk-test runtime also includes 45-second retry waits (including
-setup retransmissions), not simply audio-path latency. Requesting 20 ms via
-`PULSE_LATENCY_MSEC` failed to decode packets in a control run; it is not
+With older modems, the long bulk-test runtime also includes 45-second retry
+waits (including setup retransmissions), not simply audio-path latency.
+Requesting 20 ms via `PULSE_LATENCY_MSEC` failed to decode packets in a control run; it is not
 enabled by the harness.
 
 The audio interop tests run both standard and extended AX.25 through the KISS

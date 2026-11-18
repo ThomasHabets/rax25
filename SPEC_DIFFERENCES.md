@@ -97,12 +97,8 @@ Without notifications, timers retain their normal wall-clock behavior.
 
 Busy does not set the AX.25 receiver-busy/RNR state, block application data,
 or implement channel access: the modem remains responsible for transmission
-scheduling. C2a defines busy using modem synchronization or HDLC activity,
-not merely an FM carrier, and includes local transmission in simplex busy
-time. Bell202's optional receive-power detector is only an approximation:
-noise or an inappropriate threshold can hold timers paused indefinitely,
-and receive-only detection does not cover local transmission. Full C2a
-behavior requires suitable modem activity detection and TX indications.
+scheduling. C2a defines busy using modem synchronization or HDLC activity and
+during transmit. It's up to the modem to correctly notifiy this.
 
 ### Shared AGW Packet Engine
 
