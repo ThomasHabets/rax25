@@ -1421,7 +1421,7 @@ impl Data {
         // dbg!(self.va, nr);
         // debug!("Updating ack to {} {}", self.va, nr);
         while self.va != nr {
-            assert!(!self.iframe_resend_queue.is_empty());
+            assert_ne!(self.iframe_resend_queue, VecDeque::new());
             self.iframe_resend_queue.pop_front();
             self.va = (self.va + 1) % self.modulus.as_u8();
             if self
@@ -3229,7 +3229,7 @@ mod tests {
             *expiry = std::time::Instant::now();
         }
         data.expire_pending_xid();
-        assert!(data.pending_xid.is_empty());
+        assert_eq!(data.pending_xid, VecDeque::new());
         Ok(())
     }
 
