@@ -22,7 +22,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use log::debug;
+use log::{debug, warn};
 
 use crate::state::Modulus;
 
@@ -512,12 +512,21 @@ pub struct Srej {
 }
 
 impl Srej {
+    // Multiframe SREJ allows, in addition to the frame indicated in the header,
+    // requesting re-send of further frames and even ranges of frames.
+    //
+    // This is not specified yet in the AX.25 spec, but is in [ISO/IEC 7776:1995
+    // Amendment 1, §4.3.5, Table
+    // 10](https://preview.sist.si/sist-preview/23304/942495b09eab4654a074d1312ab5ec49/ISO-IEC-7776-1995-Amd-1-1996.pdf).
+    //
+    // This is supported by Dire Wolf too.
     fn parse_additional(bytes: &[u8], extended: bool) -> Result<Vec<u8>> {
         let mut numbers = Vec::new();
         let mut bytes = bytes.iter().copied();
         while let Some(byte) = bytes.next() {
             if !extended {
                 if byte & 0x1f != 0 {
+                    // Range in mod8 is prohibited per amendment 1 page 1.
                     return Err(Error::InvalidSrej("reserved bits"));
                 }
                 numbers.push(byte >> 5);
@@ -537,8 +546,15 @@ impl Srej {
                     nr = (nr + 1) % 128;
                 }
             }
-            if numbers.len() >= if extended { 128 } else { 8 } {
-                return Err(Error::InvalidSrej("too many sequence numbers"));
+            let old_len = numbers.len();
+            let mut seen = std::collections::HashSet::new();
+            numbers.retain(|x| seen.insert(*x));
+            debug_assert!(numbers.len() < if extended { 128 } else { 8 });
+            if old_len != numbers.len() {
+                warn!(
+                    "SREJ contained {} duplicate frame indices",
+                    old_len - numbers.len()
+                );
             }
         }
         Ok(numbers)
@@ -1327,7 +1343,7 @@ impl BusKiss {
                 && let HubEvent::Frame(bytes) = rx.data
                 && let Err(e) = self.kiss.send(&bytes)
             {
-                log::warn!("Sending to KISS failed: {e}");
+                warn!("Sending to KISS failed: {e}");
                 break;
             }
             if let Ok(Some(rx)) = self.kiss.recv_event_timeout(d)
@@ -1339,7 +1355,7 @@ impl BusKiss {
                     },
                 )
             {
-                log::warn!("Failed to broadcast: {e}");
+                warn!("Failed to broadcast: {e}");
                 break;
             }
         }
