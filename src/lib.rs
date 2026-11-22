@@ -1142,6 +1142,11 @@ pub trait Hub {
         Ok(self.recv_timeout(timeout)?.map(HubEvent::Frame))
     }
 
+    /// Channel state at subscription time, before any queued events.
+    fn initial_channel_busy(&self) -> Option<bool> {
+        None
+    }
+
     /// Clone a kisser.
     /// All packets get delivered to all clones.
     fn clone(&self) -> Result<Box<dyn Hub>>;
@@ -1230,27 +1235,60 @@ impl Hub for FakeKiss {
 }
 
 #[derive(Clone)]
-pub struct BusMessage {
+struct BusMessage {
     sender: usize,
     data: HubEvent,
 }
 
-pub struct BusHub {
-    rx: bus::BusReader<BusMessage>,
-    bus: Arc<Mutex<bus::Bus<BusMessage>>>,
+/// Shared synchronous modem bus and its last reported channel state.
+pub struct ModemBus {
+    frames: bus::Bus<BusMessage>,
+    channel_busy: Option<bool>,
 }
 
-fn broadcast_to_bus(bus: &Mutex<bus::Bus<BusMessage>>, message: BusMessage) -> Result<()> {
-    bus.lock()
-        .map_err(|_| Error::MutexPoisoned)?
+impl ModemBus {
+    /// Create a modem bus with the given queue capacity.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            frames: bus::Bus::new(capacity),
+            channel_busy: None,
+        }
+    }
+}
+
+pub struct BusHub {
+    rx: bus::BusReader<BusMessage>,
+    bus: Arc<Mutex<ModemBus>>,
+    initial_channel_busy: Option<bool>,
+}
+
+fn broadcast_to_bus(bus: &Mutex<ModemBus>, message: BusMessage) -> Result<()> {
+    let mut bus = bus.lock().map_err(|_| Error::MutexPoisoned)?;
+    let busy = match message.data {
+        HubEvent::ChannelBusy(busy) => Some(busy),
+        HubEvent::Frame(_) => None,
+    };
+    bus.frames
         .try_broadcast(message)
-        .map_err(|_| Error::QueueFull)
+        .map_err(|_| Error::QueueFull)?;
+    if busy.is_some() {
+        bus.channel_busy = busy;
+    }
+    Ok(())
 }
 
 impl BusHub {
-    pub fn new(bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
-        let rx = bus.lock().map_err(|_| Error::MutexPoisoned)?.add_rx();
-        Ok(Self { rx, bus })
+    pub fn new(bus: Arc<Mutex<ModemBus>>) -> Result<Self> {
+        let (rx, initial_channel_busy) = {
+            let mut bus = bus.lock().map_err(|_| Error::MutexPoisoned)?;
+            (bus.frames.add_rx(), bus.channel_busy)
+        };
+        Ok(Self {
+            rx,
+            bus,
+            initial_channel_busy,
+        })
     }
 }
 
@@ -1259,6 +1297,7 @@ impl Hub for BusHub {
         self.bus
             .lock()
             .map_err(|_| Error::MutexPoisoned)?
+            .frames
             .try_broadcast(BusMessage {
                 sender: 0,
                 data: HubEvent::Frame(frame.to_vec()),
@@ -1280,6 +1319,10 @@ impl Hub for BusHub {
 
     fn clone(&self) -> Result<Box<dyn Hub>> {
         Ok(Box::new(Self::new(self.bus.clone())?))
+    }
+
+    fn initial_channel_busy(&self) -> Option<bool> {
+        self.initial_channel_busy
     }
 }
 
@@ -1320,14 +1363,18 @@ static BUSKISS_ID: AtomicUsize = AtomicUsize::new(1);
 #[cfg(feature = "serial")]
 pub struct BusKiss {
     rx: bus::BusReader<BusMessage>,
-    bus: Arc<Mutex<bus::Bus<BusMessage>>>,
+    bus: Arc<Mutex<ModemBus>>,
     kiss: Kiss,
     id: usize,
 }
 #[cfg(feature = "serial")]
 impl BusKiss {
-    pub fn new(port: &str, bus: Arc<Mutex<bus::Bus<BusMessage>>>) -> Result<Self> {
-        let rx = bus.lock().map_err(|_| Error::MutexPoisoned)?.add_rx();
+    pub fn new(port: &str, bus: Arc<Mutex<ModemBus>>) -> Result<Self> {
+        let rx = bus
+            .lock()
+            .map_err(|_| Error::MutexPoisoned)?
+            .frames
+            .add_rx();
         Ok(Self {
             id: BUSKISS_ID.fetch_add(1, Ordering::SeqCst),
             kiss: Kiss::new(port)?,
@@ -1537,7 +1584,7 @@ mod tests {
         ] {
             assert_eq!(kiss_channel_busy(command, &payload), None);
         }
-        let bus = Arc::new(Mutex::new(bus::Bus::new(4)));
+        let bus = Arc::new(Mutex::new(ModemBus::new(4)));
         let mut hub = BusHub::new(bus.clone())?;
         let mut other = Hub::clone(&hub)?;
         for busy in [true, false] {
@@ -1574,7 +1621,7 @@ mod tests {
 
     #[test]
     fn bus_errors_preserve_queue_and_poison_failures() -> Result<()> {
-        let bus = Arc::new(Mutex::new(bus::Bus::new(1)));
+        let bus = Arc::new(Mutex::new(ModemBus::new(1)));
         let mut hub = BusHub::new(bus.clone())?;
         broadcast_to_bus(
             &bus,

@@ -32,7 +32,7 @@
 //! use rax25::sync::Client;
 //! use rax25::{Callsign, BusHub, BusKiss, Kiss};
 //!
-//! let bus = Arc::new(Mutex::new(bus::Bus::<rax25::BusMessage>::new(10)));
+//! let bus = Arc::new(Mutex::new(rax25::ModemBus::new(10)));
 //! let mut bk = BusKiss::new("/dev/ttyS0", bus.clone())?;
 //! std::thread::spawn(move || {
 //!     bk.run();
@@ -82,10 +82,14 @@ impl Client {
     /// Create a new client with the given local address, using the given
     /// KISS interface for incoming and outgoing frames.
     pub fn new(me: Callsign, kiss: Box<dyn Hub>) -> Self {
+        let mut data = state::Data::new(me);
+        if let Some(busy) = kiss.initial_channel_busy() {
+            data.set_channel_busy(busy);
+        }
         Self {
             kiss,
             eof: false,
-            data: state::Data::new(me),
+            data,
             state: state::new(),
             incoming: std::collections::VecDeque::new(),
         }
@@ -221,6 +225,9 @@ impl Client {
                     PacketType::Sabm(_) | PacketType::Sabme(_) => {
                         let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone()?);
                         new_client.data = self.data.accepted_data(packet.src.callsign());
+                        if let Some(busy) = new_client.kiss.initial_channel_busy() {
+                            new_client.data.set_channel_busy(busy);
+                        }
                         new_client.data.peer = Some(packet.src.callsign().clone());
                         new_client.data.able_to_establish = true;
                         if matches!(&packet.packet_type, PacketType::Sabme(_)) {
@@ -453,8 +460,37 @@ mod tests {
     use crate::{Iframe, PacketType, Sabm};
 
     #[test]
+    fn accept_uses_busy_snapshot_from_new_subscription() -> Result<()> {
+        use crate::{BusHub, BusMessage, HubEvent, ModemBus, broadcast_to_bus};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        for latest_busy in [false, true] {
+            let bus = Arc::new(Mutex::new(ModemBus::new(8)));
+            let local = Callsign::new("LOCAL")?;
+            let mut listener = Client::new(local.clone(), Box::new(BusHub::new(bus.clone())?));
+            let mut sabm = Packet::ui(Callsign::new("REMOTE")?, local, []);
+            sabm.packet_type = PacketType::Sabm(Sabm {
+                poll: PollFinal::Set,
+            });
+            for data in [
+                HubEvent::ChannelBusy(!latest_busy),
+                HubEvent::Frame(sabm.serialize()),
+                HubEvent::ChannelBusy(latest_busy),
+            ] {
+                broadcast_to_bus(&bus, BusMessage { sender: 1, data })?;
+            }
+            let accepted = listener
+                .accept(Instant::now() + Duration::from_secs(1))?
+                .expect("expected accepted connection");
+            assert_eq!(accepted.data.next_timer_remaining().is_none(), latest_busy);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn connect_propagates_modem_send_failure() -> Result<()> {
-        let bus = std::sync::Arc::new(std::sync::Mutex::new(bus::Bus::new(1)));
+        let bus = std::sync::Arc::new(std::sync::Mutex::new(crate::ModemBus::new(1)));
         let mut hub = crate::BusHub::new(bus)?;
         hub.send(&[0])?;
         let mut client = Client::new(Callsign::new("LOCAL")?, Box::new(hub));

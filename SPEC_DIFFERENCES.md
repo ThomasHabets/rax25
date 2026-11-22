@@ -94,6 +94,9 @@ async clients, the shared packet engine, and synchronous KISS/bus clients
 suspend T1, T3, and the XID management timer, retaining their remaining time.
 Timers started or restarted during busy begin counting only after quiet.
 Without notifications, timers retain their normal wall-clock behavior.
+The synchronous modem bus snapshots the latest reported channel state when
+registering a subscriber, so an accepted connection cannot miss a transition
+between receipt of SABM(E) and subscription.
 
 Busy does not set the AX.25 receiver-busy/RNR state, block application data,
 or implement channel access: the modem remains responsible for transmission

@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         .verbosity(opt.v)
         .init()
         .unwrap();
-    let bus = Arc::new(Mutex::new(bus::Bus::<rax25::BusMessage>::new(10)));
+    let bus = Arc::new(Mutex::new(rax25::ModemBus::new(10)));
     let mut bk = BusKiss::new(&opt.port, bus.clone())?;
     std::thread::spawn(move || {
         bk.run();
