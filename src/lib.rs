@@ -1480,13 +1480,10 @@ impl Hub for Kiss {
                 .set_timeout(end.saturating_duration_since(std::time::Instant::now()))?;
             let mut buf = [0u8; 1];
             let buf = match self.port.read(&mut buf) {
+                Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()),
                 Ok(n) => &buf[..n],
-                Err(e) => {
-                    if false {
-                        debug!("TODO: Read error: {e}, assuming timeout");
-                    }
-                    break;
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
+                Err(e) => return Err(e.into()),
             };
             //debug!("Got {} bytes from serial", buf.len());
             self.buf.extend(buf);
@@ -1521,7 +1518,6 @@ impl Hub for Kiss {
                 }
             }
         }
-        Ok(None)
     }
 }
 
