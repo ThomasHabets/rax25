@@ -130,7 +130,7 @@ impl Client {
         self.actions(&state::Event::ConnectWithXid {
             addr: addr.clone(),
             ext,
-        });
+        })?;
         self.wait_connected(addr)
     }
 
@@ -141,7 +141,7 @@ impl Client {
         self.actions(&state::Event::ConnectThenXid {
             addr: addr.clone(),
             ext,
-        });
+        })?;
         self.wait_connected(addr)
     }
 
@@ -151,7 +151,7 @@ impl Client {
         self.actions(&state::Event::Connect {
             addr: addr.clone(),
             ext,
-        });
+        })?;
         self.wait_connected(addr)
     }
 
@@ -164,7 +164,7 @@ impl Client {
                 // dbg!(&packet);
                 // TODO: check addresses.
                 if packet.dst.callsign() == &self.data.me && packet.src.callsign() == addr {
-                    self.actions_packet(&packet);
+                    self.actions_packet(&packet)?;
                     if self.state.is_state_connected() && !self.data.confirming_xid() {
                         debug!("Connection successful");
                         return Ok(());
@@ -172,13 +172,13 @@ impl Client {
                 }
             }
             if self.data.t1_expired() {
-                self.actions(&state::Event::T1);
+                self.actions(&state::Event::T1)?;
             }
             if self.data.t3_expired() {
-                self.actions(&state::Event::T3);
+                self.actions(&state::Event::T3)?;
             }
             if self.data.management_expired() {
-                self.actions(&state::Event::ManagementTimeout);
+                self.actions(&state::Event::ManagementTimeout)?;
             }
             if self.state.is_state_disconnected() {
                 debug!("Connection timeout");
@@ -216,7 +216,7 @@ impl Client {
                 }
                 match &packet.packet_type {
                     PacketType::Xid(_) => {
-                        self.actions_packet(&packet);
+                        self.actions_packet(&packet)?;
                     }
                     PacketType::Sabm(_) | PacketType::Sabme(_) => {
                         let mut new_client = Client::new(self.data.me.clone(), self.kiss.clone()?);
@@ -226,7 +226,7 @@ impl Client {
                         if matches!(&packet.packet_type, PacketType::Sabme(_)) {
                             new_client.data.set_version_2_2();
                         }
-                        new_client.actions_packet(&packet);
+                        new_client.actions_packet(&packet)?;
                         if new_client.state.is_state_connected() {
                             return Ok(Some(new_client));
                         }
@@ -244,10 +244,10 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Currently doesn't fail, but may do so in the future.
+    /// Returns an error if sending to the modem fails.
     pub fn disconnect(&mut self) -> Result<()> {
         if !self.state.is_state_disconnected() {
-            self.actions(&state::Event::Disconnect);
+            self.actions(&state::Event::Disconnect)?;
         }
         Ok(())
     }
@@ -258,10 +258,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Currently doesn't fail, but may do so in the future.
+    /// Returns an error if sending to the modem fails.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.actions(&state::Event::Data(data.to_vec()));
-        Ok(())
+        self.actions(&state::Event::Data(data.to_vec()))
     }
 
     /// Try reading a raw packet.
@@ -338,16 +337,16 @@ impl Client {
                 return Ok(None);
             }
             if let Some(p) = self.try_read()? {
-                self.actions_packet(&p);
+                self.actions_packet(&p)?;
             }
             if self.data.t1_expired() {
-                self.actions(&state::Event::T1);
+                self.actions(&state::Event::T1)?;
             }
             if self.data.t3_expired() {
-                self.actions(&state::Event::T3);
+                self.actions(&state::Event::T3)?;
             }
             if self.data.management_expired() {
-                self.actions(&state::Event::ManagementTimeout);
+                self.actions(&state::Event::ManagementTimeout)?;
             }
         }
         let ret: Vec<_> = self.incoming.iter().copied().collect();
@@ -359,58 +358,46 @@ impl Client {
     ///
     /// If using `try_read()`, then this function should very likely be called
     /// with the received packet.
-    fn actions_packet(&mut self, packet: &Packet) {
+    fn actions_packet(&mut self, packet: &Packet) -> Result<()> {
         match &packet.packet_type {
             PacketType::Sabm(p) => self.actions(&state::Event::Sabm(
                 p.clone(),
                 packet.src.callsign().clone(),
             )),
-            PacketType::Sabme(p) => {
-                self.actions(&state::Event::Sabme(
-                    p.clone(),
-                    packet.src.callsign().clone(),
-                ));
-            }
+            PacketType::Sabme(p) => self.actions(&state::Event::Sabme(
+                p.clone(),
+                packet.src.callsign().clone(),
+            )),
             PacketType::Ua(ua) => self.actions(&state::Event::Ua(ua.clone())),
             PacketType::Disc(p) => self.actions(&state::Event::Disc(p.clone())),
             PacketType::Rnr(p) => self.actions(&state::Event::Rnr(p.clone())),
-            PacketType::Rej(p) => {
-                self.actions(&state::Event::Rej(
-                    p.clone(),
-                    CommandResponse::from(packet.command_response()),
-                ));
-            }
+            PacketType::Rej(p) => self.actions(&state::Event::Rej(
+                p.clone(),
+                CommandResponse::from(packet.command_response()),
+            )),
             PacketType::Srej(p) => self.actions(&state::Event::Srej(
                 p.clone(),
                 CommandResponse::from(packet.command_response()),
             )),
             PacketType::Frmr(p) => self.actions(&state::Event::Frmr(p.clone())),
-            PacketType::Xid(p) => {
-                self.actions(&state::Event::Xid(
-                    p.clone(),
-                    CommandResponse::from(packet.command_response()),
-                    packet.src.callsign().clone(),
-                ));
-            }
-            PacketType::Ui(p) => {
-                self.actions(&state::Event::Ui(
-                    p.clone(),
-                    CommandResponse::from(packet.command_response()),
-                ));
-            }
-            PacketType::Test(p) => {
-                self.actions(&state::Event::Test(
-                    p.clone(),
-                    CommandResponse::from(packet.command_response()),
-                ));
-            }
+            PacketType::Xid(p) => self.actions(&state::Event::Xid(
+                p.clone(),
+                CommandResponse::from(packet.command_response()),
+                packet.src.callsign().clone(),
+            )),
+            PacketType::Ui(p) => self.actions(&state::Event::Ui(
+                p.clone(),
+                CommandResponse::from(packet.command_response()),
+            )),
+            PacketType::Test(p) => self.actions(&state::Event::Test(
+                p.clone(),
+                CommandResponse::from(packet.command_response()),
+            )),
             PacketType::Dm(p) => self.actions(&state::Event::Dm(p.clone())),
-            PacketType::Rr(rr) => {
-                self.actions(&state::Event::Rr(
-                    rr.clone(),
-                    CommandResponse::from(packet.command_response()),
-                ));
-            }
+            PacketType::Rr(rr) => self.actions(&state::Event::Rr(
+                rr.clone(),
+                CommandResponse::from(packet.command_response()),
+            )),
             PacketType::Iframe(iframe) => self.actions(&state::Event::Iframe(
                 iframe.clone(),
                 CommandResponse::from(packet.command_response()),
@@ -426,7 +413,7 @@ impl Client {
     ///
     /// State machine side effects are then actioned, including possible
     /// state transitions.
-    fn actions(&mut self, event: &state::Event) {
+    fn actions(&mut self, event: &state::Event) -> Result<()> {
         let (state, actions) = state::handle(&*self.state, &mut self.data, event);
         if let Some(state) = state {
             let _ = std::mem::replace(&mut self.state, state);
@@ -452,10 +439,10 @@ impl Client {
                     .experiments
                     .contains(&Experiment::LinuxExtendedHint),
             ) {
-                self.kiss.send(&frame).unwrap();
+                self.kiss.send(&frame)?;
             }
         }
-        // TODO: check timers.
+        Ok(())
     }
 }
 
@@ -464,6 +451,19 @@ mod tests {
     use super::*;
     use crate::{Callsign, FakeKiss, PollFinal};
     use crate::{Iframe, PacketType, Sabm};
+
+    #[test]
+    fn connect_propagates_modem_send_failure() -> Result<()> {
+        let bus = std::sync::Arc::new(std::sync::Mutex::new(bus::Bus::new(1)));
+        let mut hub = crate::BusHub::new(bus)?;
+        hub.send(&[0])?;
+        let mut client = Client::new(Callsign::new("LOCAL")?, Box::new(hub));
+        assert!(matches!(
+            client.connect(&Callsign::new("REMOTE")?, false),
+            Err(Error::BroadcastFailed)
+        ));
+        Ok(())
+    }
 
     #[test]
     fn hub_busy_events_suspend_and_resume_connection_timers() -> Result<()> {
@@ -490,7 +490,7 @@ mod tests {
         client.actions(&state::Event::Connect {
             addr: Callsign::new("REMOTE")?,
             ext: false,
-        });
+        })?;
         assert!(client.data.next_timer_remaining().is_some());
         for _ in 0..2 {
             assert_eq!(client.receive_frame(std::time::Duration::ZERO)?, None);
