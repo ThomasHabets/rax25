@@ -170,12 +170,14 @@ sequence; retransmission timing can still change that sequence.
 
 ## AGW Server
 
-The `agw` example provides a single-channel packet engine over one KISS modem.
+The `agw-kiss` binary is the default target for `cargo run`. It serves one AGW
+port over one KISS modem. Library users can omit the `agw` feature by
+disabling default features.
 The existing client examples still use rax25 directly, not AGW.
 
 ```shell
-cargo run --features async --example agw -- --tcp localhost:8001 --listen 127.0.0.1:8000 --capture agw.pcap
-cargo run --features async --example agw -- --dev /dev/rfcomm0 --baud 9600 --listen 127.0.0.1:8000
+cargo run -- --tcp localhost:8001 --listen 127.0.0.1:8000 --capture agw.pcap
+cargo run -- --dev /dev/rfcomm0 --baud 9600 --listen 127.0.0.1:8000
 ```
 
 It supports multiple application sockets and AX.25 links, exclusive incoming

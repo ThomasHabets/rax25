@@ -1,5 +1,6 @@
 [package]
 name = "rax25"
+default-run = "agw-kiss"
 version = "0.3.0"
 edition = "2024"
 license = "MIT"
@@ -20,9 +21,13 @@ tokio-serial = {version="5.4.4", optional = true }
 #serialport = { path="../../src/serialport-rs"}
 tokio = { version = "1.40.0", features = ["full"], optional=true }
 clap = { version = "4.5.16", features = ["derive"] }
+agw = { version = "0.12.0", optional = true }
+anyhow = { version = "1.0.86", optional = true }
+stderrlog = { version = "0.6.0", optional = true }
 
 [features]
-default = ["serial"]
+default = ["serial", "agw"]
+agw = ["async", "dep:agw", "dep:anyhow", "dep:stderrlog"]
 async = ["dep:tokio", "dep:tokio-serial"]
 serial = ["dep:serialport"]
 
@@ -56,9 +61,9 @@ required-features = ["serial"]
 name = "client"
 required-features = ["serial"]
 
-[[example]]
-name = "agw"
-required-features = ["async"]
+[[bin]]
+name = "agw-kiss"
+required-features = ["agw"]
 
 [[example]]
 name = "kiss_loss_proxy"

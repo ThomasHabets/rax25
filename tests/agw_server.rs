@@ -1,4 +1,4 @@
-#![cfg(feature = "async")]
+#![cfg(feature = "agw")]
 use agw::r#async::AGWServer;
 use agw::{Call, Packet, Pid, Port};
 use anyhow::{Result, ensure};
@@ -221,29 +221,14 @@ async fn prepare(client: &mut AGWServer, address: std::net::SocketAddr) -> Resul
 }
 
 #[tokio::test]
-async fn agw_example_incoming_and_outgoing_native_interop() -> Result<()> {
-    ensure!(
-        Command::new("cargo")
-            .args(["build", "--features", "async", "--example", "agw"])
-            .status()?
-            .success()
-    );
-    let root = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map_or(std::env::current_dir()?, std::path::PathBuf::from);
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map_or_else(|| root.join("target"), std::path::PathBuf::from);
-    let target = if target.is_absolute() {
-        target
-    } else {
-        root.join(target)
-    };
-    let binary = target.join("debug/examples/agw");
+async fn agw_incoming_and_outgoing_native_interop() -> Result<()> {
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_agw-kiss"));
     for extended in [false, true] {
         for outgoing in [false, true] {
             for xid in [false, true] {
                 timeout(
                     Duration::from_secs(15),
-                    exchange(&binary, extended, outgoing, xid),
+                    exchange(binary, extended, outgoing, xid),
                 )
                 .await??;
             }
