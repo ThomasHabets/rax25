@@ -3,6 +3,8 @@
 //! * <https://github.com/ThomasHabets/rax25>
 //! * <https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html>
 //!
+//! Includes an AGW server for use with KISS modems.
+//!
 //! # Status
 //!
 //! * Seems to work well.
