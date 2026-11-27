@@ -236,6 +236,12 @@ impl PacketEngine {
 
     /// Enable XID negotiation for subsequently created links.
     /// Outgoing links negotiate the mode selected by [`Command::Connect`].
+    ///
+    /// This is in line with 4.3.3.7 and 6.3.2 in specs from 2017 and before,
+    /// but contradicts C5.3. But it makes more sense, so likely C5.3 should
+    /// change.
+    ///
+    /// <https://github.com/packethacking/ax25spec/issues/187>
     pub fn set_xid_config(&mut self, config: crate::XidConfig) -> Result<()> {
         config.validate()?;
         self.xid = Some(config);
@@ -244,6 +250,13 @@ impl PacketEngine {
     }
 
     /// Enable XID negotiation after link establishment for new outgoing links.
+    ///
+    /// This is in line with C5.3 (in spec 2017 and earlier), but arguably C5.3
+    /// is wrong because that doesn't make any sense.
+    /// <https://github.com/packethacking/ax25spec/issues/187>
+    ///
+    /// Prefer [`Self::set_xid_config`] instead unless interoperating with Dire
+    /// Wolf.
     ///
     /// # Errors
     /// Returns an error if the XID configuration is invalid.

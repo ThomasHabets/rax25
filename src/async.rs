@@ -208,6 +208,12 @@ impl ConnectionBuilder {
     }
 
     /// Enable XID parameter negotiation before establishing the link.
+    ///
+    /// This is in line with 4.3.3.7 and 6.3.2 in specs from 2017 and before,
+    /// but contradicts C5.3. But it makes more sense, so likely C5.3 should
+    /// change.
+    ///
+    /// <https://github.com/packethacking/ax25spec/issues/187>
     #[must_use]
     pub fn xid(mut self, config: XidConfig) -> ConnectionBuilder {
         self.xid = Some(config);
@@ -220,6 +226,12 @@ impl ConnectionBuilder {
     /// Interoperability option: Dire Wolf 1.7 ignores XID until a link exists.
     /// Unlike `xid`, this skips the pre-link exchange. SREJ remains disabled
     /// until negotiation succeeds; failure re-establishes legacy standard mode.
+    ///
+    /// This is in line with C5.3 (in spec 2017 and earlier), but arguably C5.3
+    /// is wrong because that doesn't make any sense.
+    /// <https://github.com/packethacking/ax25spec/issues/187>
+    ///
+    /// Prefer [`Self::xid`] instead unless interoperating with Dire Wolf.
     #[must_use]
     pub fn xid_after_connect(mut self, config: XidConfig) -> Self {
         self.xid = Some(config);
