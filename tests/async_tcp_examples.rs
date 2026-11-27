@@ -140,7 +140,7 @@ fn run_xid_test(
 
 #[test]
 fn async_examples_echo_over_lossy_tcp() -> TestResult {
-    for fault in [Fault::Data, Fault::FinalRr, Fault::Disc] {
+    for fault in [Fault::Data(2), Fault::FinalRr, Fault::Disc] {
         for extended in [false, true] {
             let args = if extended {
                 &["-e", "--srt", "100ms", "--t3v", "200ms"][..]
@@ -149,8 +149,8 @@ fn async_examples_echo_over_lossy_tcp() -> TestResult {
             };
             run_async_examples_echo_test(TestCase {
                 name: match (fault, extended) {
-                    (Fault::Data, false) => "recovery-data",
-                    (Fault::Data, true) => "recovery-data-extended",
+                    (Fault::Data(_), false) => "recovery-data",
+                    (Fault::Data(_), true) => "recovery-data-extended",
                     (Fault::FinalRr, false) => "recovery-final-rr",
                     (Fault::FinalRr, true) => "recovery-final-rr-extended",
                     (Fault::Disc, false) => "recovery-disc",
@@ -187,7 +187,6 @@ fn random_loss_stress() -> TestResult {
             client_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
             server_extra_args: &["--srt", "100ms", "--t3v", "200ms"],
             bridge_mode: BridgeMode::Lossy {
-                data_only: false,
                 drop_probability_percent: 50,
                 client_to_server_seed: seeds.0,
                 server_to_client_seed: seeds.1,
@@ -200,47 +199,23 @@ fn random_loss_stress() -> TestResult {
     Ok(())
 }
 
-/// This test works the retransmissions and resync harder. It doesn't drop any
-/// SABM/UA/DM, but goes really hard on I and RR frames.
-///
-/// Disabled for now since these are flaky.
+/// Release coverage: drop four I frames per direction, preserving control.
 #[test]
-#[ignore = "flaky: often fails"]
+#[ignore = "release end-to-end coverage"]
 fn async_examples_echo_over_lossy_tcp_only_data() -> TestResult {
-    let args = &[
-        "--srt",
-        "100ms",
-        "--t3v",
-        "200ms",
-        //"--experiments", "reset-retry-on-iframe-ack",
-        "--experiments",
-        "reset-retry-on-ack-update,resend-on-rr-command",
-    ];
-    #[allow(clippy::single_element_loop)]
-    for seeds in [
-        (0, 0),
-        // These are always flaky.
-        //(0x44, 0),
-        //(0, 0x44),
-        //(123, 321),
-    ] {
-        println!("Testing seed {seeds:?}");
-        run_async_examples_echo_test(TestCase {
-            name: "lossy-data",
-            client_extra_args: args,
-            server_extra_args: args,
-            bridge_mode: BridgeMode::Lossy {
-                data_only: true,
-                drop_probability_percent: 75,
-                client_to_server_seed: seeds.0,
-                server_to_client_seed: seeds.1,
-            },
-            timeout: Duration::from_secs(5),
-            expected_capture: None,
-            preserve_captures_on_failure: true,
-        })?;
-    }
-    Ok(())
+    let args = &["--srt", "100ms", "--t3v", "200ms"];
+    run_async_examples_echo_test(TestCase {
+        name: "lossy-data",
+        client_extra_args: args,
+        server_extra_args: args,
+        bridge_mode: BridgeMode::Recovery {
+            fault: Fault::Data(4),
+            extended: false,
+        },
+        timeout: Duration::from_secs(10),
+        expected_capture: None,
+        preserve_captures_on_failure: true,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -263,7 +238,6 @@ enum BridgeMode {
         extended: bool,
     },
     Lossy {
-        data_only: bool,
         drop_probability_percent: u8,
         client_to_server_seed: u64,
         server_to_client_seed: u64,
@@ -272,10 +246,20 @@ enum BridgeMode {
 
 #[derive(Clone, Copy, Debug)]
 enum Fault {
-    Data,
+    Data(usize),
     // Data loss forces polls in both directions without idle-time ordering.
     FinalRr,
     Disc,
+}
+
+impl Fault {
+    fn data_drop_budget(self) -> usize {
+        match self {
+            Self::Data(count) => count,
+            Self::FinalRr => 2,
+            Self::Disc => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -495,7 +479,8 @@ fn assert_recovery_captures(
                 io::Error::other(format!("{name}: captures do not match scripted losses")).into(),
             );
         }
-        if matches!(fault, Fault::Data | Fault::FinalRr) {
+        let budget = fault.data_drop_budget();
+        if budget > 0 {
             let first = sent
                 .iter()
                 .map(|f| recovery_frame(f, extended))
@@ -505,9 +490,9 @@ fn assert_recovery_captures(
                 .iter()
                 .filter(|f| recovery_frame(f, extended) == first)
                 .count();
-            if loss.data_dropped != 2 || copies < 3 {
+            if loss.data_dropped != budget || copies <= budget {
                 return Err(io::Error::other(format!(
-                    "{name}: must transmit the initial payload at least three times; got {copies}"
+                    "{name}: expected recovery after {budget} drops; got {copies} copies"
                 ))
                 .into());
             }
@@ -1067,18 +1052,15 @@ fn run_kiss_bridge(
             Some(LossDecision::recovery(fault, extended)),
         ),
         BridgeMode::Lossy {
-            data_only,
             drop_probability_percent,
             client_to_server_seed,
             server_to_client_seed,
         } => (
             Some(LossDecision::random(LossConfig {
-                data_only,
                 drop_probability_percent,
                 seed: client_to_server_seed,
             })),
             Some(LossDecision::random(LossConfig {
-                data_only,
                 drop_probability_percent,
                 seed: server_to_client_seed,
             })),
@@ -1101,7 +1083,6 @@ fn run_kiss_bridge(
 
 #[derive(Clone, Copy)]
 struct LossConfig {
-    data_only: bool,
     drop_probability_percent: u8,
     seed: u64,
 }
@@ -1132,19 +1113,6 @@ impl LossDecision {
                 decode_kiss_data(frame).is_some_and(|raw| loss.should_drop(&raw))
             }
             Self::Random { config, rng } => {
-                if config.data_only {
-                    let Some(raw) = decode_kiss_data(frame) else {
-                        return false;
-                    };
-                    if raw.len() < 15
-                        || matches!(
-                            control(&raw),
-                            0x2f | 0x6f | 0x63 | 0x43 | 0xaf | 0x87 | 0x0f
-                        )
-                    {
-                        return false;
-                    }
-                }
                 rng.random_range(0_u8..100) < config.drop_probability_percent
             }
         }
@@ -1234,9 +1202,7 @@ impl RecoveryLoss {
 
     fn should_drop(&mut self, raw: &[u8]) -> bool {
         match recovery_frame(raw, self.extended) {
-            RecoveryFrame::Data { .. }
-                if matches!(self.fault, Fault::Data | Fault::FinalRr) && self.data_dropped < 2 =>
-            {
+            RecoveryFrame::Data { .. } if self.data_dropped < self.fault.data_drop_budget() => {
                 self.data_dropped += 1;
                 true
             }
