@@ -6,7 +6,7 @@
 # cargo test --features async --test direwolf_interop -- --list
 # ```
 #
-# Run a single test by giving it as a command line arg.
+# Pass --release first for optimized builds, then any test harness arguments.
 set -euo pipefail
 
 RUSTRADIO_VERSION="0.21.0"
@@ -16,6 +16,13 @@ if [[ ${RAX25_PRIVATE_AUDIO:-} != 1 ]]; then
 fi
 
 cd "$(dirname "$0")/.."
+profile=debug
+cargo_flags=()
+if [[ ${1:-} == --release ]]; then
+    profile=release
+    cargo_flags+=(--release)
+    shift
+fi
 repo_dir=$PWD
 target_dir=${CARGO_TARGET_DIR:-"$repo_dir/target"}
 if [[ $target_dir != /* ]]; then target_dir="$repo_dir/$target_dir"; fi
@@ -67,8 +74,9 @@ if [[ $ready != true ]]; then
     exit 1
 fi
 printf 'Private audio logs: %s\n' "$audio_logs"
-cargo build --features async --example kiss_loss_proxy
+cargo build "${cargo_flags[@]}" --features async --example kiss_loss_proxy
+export KISS_LOSS_PROXY_BIN="$target_dir/$profile/examples/kiss_loss_proxy"
 # Each test runs two real-time audio modems. Avoid scheduler-induced audio
 # loss on small CI runners; callers can override this or --test-threads.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-1}"
-cargo test --features async --test direwolf_interop -- --ignored --nocapture "$@"
+cargo test "${cargo_flags[@]}" --features async --test direwolf_interop -- --ignored --nocapture "$@"

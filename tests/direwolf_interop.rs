@@ -741,7 +741,8 @@ async fn interop(extended: bool, drop_percent: u8, files: bool) -> Result<()> {
         let root = manifest_dir()?;
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map_or_else(|| root.join("target"), |path| root.join(path));
-        let proxy = target.join("debug/examples/kiss_loss_proxy");
+        let proxy = std::env::var_os("KISS_LOSS_PROXY_BIN")
+            .map_or_else(|| target.join("debug/examples/kiss_loss_proxy"), PathBuf::from);
         harness.spawn("loss-proxy", Command::new(proxy).args([
             "--listen", &format!("127.0.0.1:{proxy_port}"),
             "--modem", &format!("tcp://127.0.0.1:{kiss_port}"),
