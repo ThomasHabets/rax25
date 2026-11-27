@@ -25,7 +25,7 @@ enum LogLevel {
 /// AGW server over a shared KISS modem.
 #[derive(Parser)]
 #[allow(clippy::struct_excessive_bools)]
-#[command(group(ArgGroup::new("modem").required(true).args(["dev", "tcp"])))]
+#[command(version, about="AGW server for KISS modems", group(ArgGroup::new("modem").required(true).args(["dev", "tcp"])))]
 struct Opt {
     /// Disable selective reject capability for connections on this modem.
     #[arg(long)]
