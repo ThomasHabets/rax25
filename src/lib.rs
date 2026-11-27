@@ -1234,8 +1234,9 @@ impl Hub for FakeKiss {
     }
 }
 
+/// Should be deprecated, at least for external use.
 #[derive(Clone)]
-struct BusMessage {
+pub struct BusMessage {
     sender: usize,
     data: HubEvent,
 }
