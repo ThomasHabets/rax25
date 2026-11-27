@@ -22,22 +22,32 @@ fn call(s: &str) -> Call {
     Call::from_bytes(s.as_bytes()).unwrap()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum XidTiming {
+    Disabled,
+    BeforeConnect,
+    AfterConnect,
+}
+
 async fn exchange(
     binary: &std::path::Path,
     extended: bool,
     outgoing: bool,
-    xid: bool,
+    xid: XidTiming,
 ) -> Result<()> {
     let kiss = TcpListener::bind("127.0.0.1:0").await?;
     let address = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
     let mut cmd = Command::new(binary);
     let capture = binary.parent().unwrap().join(format!(
-        "agw-test-{}-{extended}-{outgoing}-{xid}.pcap",
+        "agw-test-{}-{extended}-{outgoing}-{xid:?}.pcap",
         std::process::id()
     ));
     cmd.arg("--capture").arg(&capture);
-    if xid {
+    if xid != XidTiming::Disabled {
         cmd.arg("--xid");
+    }
+    if xid == XidTiming::AfterConnect {
+        cmd.arg("--xid-after-connect");
     }
     cmd.args([
         "--tcp",
@@ -61,7 +71,7 @@ async fn exchange(
     let native = async {
         let mut builder = ConnectionBuilder::new(Callsign::new("REMOTE")?, PortType::Tcp(modem))?
             .extended(Some(extended));
-        if xid {
+        if xid != XidTiming::Disabled {
             builder = builder.xid(rax25::XidConfig::default());
         }
         let mut native = if outgoing {
@@ -92,7 +102,7 @@ async fn exchange(
             } else {
                 matches!(established, Packet::IncomingConnect { .. })
             },
-            "unexpected establishment (extended={extended}, outgoing={outgoing}, xid={xid}): {established:?}"
+            "unexpected establishment (extended={extended}, outgoing={outgoing}, xid={xid:?}): {established:?}"
         );
         let Packet::Data { src, dst, data, .. } = client.recv().await? else {
             anyhow::bail!("expected connected data");
@@ -116,7 +126,7 @@ async fn exchange(
     Ok(())
 }
 
-fn check_capture(capture: &std::path::Path, extended: bool, xid: bool) -> Result<()> {
+fn check_capture(capture: &std::path::Path, extended: bool, xid: XidTiming) -> Result<()> {
     let bytes = std::fs::read(capture)?;
     ensure!(bytes.len() >= 24 && bytes[..4] == [0xd4, 0xc3, 0xb2, 0xa1]);
     let mut frames = Vec::new();
@@ -144,10 +154,28 @@ fn check_capture(capture: &std::path::Path, extended: bool, xid: bool) -> Result
         .filter(|(_, packet)| matches!(packet.packet_type(), rax25::PacketType::Xid(_)))
         .collect();
     ensure!(
-        xid_frames.len() == if xid { 4 } else { 0 },
+        xid_frames.len()
+            == match xid {
+                XidTiming::Disabled => 0,
+                XidTiming::BeforeConnect => 4,
+                XidTiming::AfterConnect => 2,
+            },
         "unexpected XID exchange"
     );
-    if xid {
+    if xid == XidTiming::AfterConnect {
+        ensure!(matches!(
+            frames[0].1.packet_type(),
+            rax25::PacketType::Sabm(_) | rax25::PacketType::Sabme(_)
+        ));
+        ensure!(matches!(
+            frames[1].1.packet_type(),
+            rax25::PacketType::Ua(_)
+        ));
+        ensure!(matches!(
+            frames[2].1.packet_type(),
+            rax25::PacketType::Xid(_)
+        ));
+    } else if xid == XidTiming::BeforeConnect {
         ensure!(matches!(
             frames[0].1.packet_type(),
             rax25::PacketType::Xid(_)
@@ -156,12 +184,12 @@ fn check_capture(capture: &std::path::Path, extended: bool, xid: bool) -> Result
             frames[1].1.packet_type(),
             rax25::PacketType::Xid(_)
         ));
-        for (_, packet) in xid_frames {
-            ensure!(
-                matches!(packet.packet_type(), rax25::PacketType::Xid(reply) if reply.parameters.is_some()),
-                "missing XID parameters"
-            );
-        }
+    }
+    for (_, packet) in xid_frames {
+        ensure!(
+            matches!(packet.packet_type(), rax25::PacketType::Xid(reply) if reply.parameters.is_some()),
+            "missing XID parameters"
+        );
     }
     Ok(())
 }
@@ -225,7 +253,14 @@ async fn agw_incoming_and_outgoing_native_interop() -> Result<()> {
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_agw-kiss"));
     for extended in [false, true] {
         for outgoing in [false, true] {
-            for xid in [false, true] {
+            for xid in [
+                XidTiming::Disabled,
+                XidTiming::BeforeConnect,
+                XidTiming::AfterConnect,
+            ] {
+                if xid == XidTiming::AfterConnect && !outgoing {
+                    continue;
+                }
                 timeout(
                     Duration::from_secs(15),
                     exchange(binary, extended, outgoing, xid),

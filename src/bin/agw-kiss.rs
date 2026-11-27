@@ -24,6 +24,7 @@ enum LogLevel {
 
 /// AGW server over a shared KISS modem.
 #[derive(Parser)]
+#[allow(clippy::struct_excessive_bools)]
 #[command(group(ArgGroup::new("modem").required(true).args(["dev", "tcp"])))]
 struct Opt {
     /// Disable selective reject capability for connections on this modem.
@@ -53,6 +54,10 @@ struct Opt {
     /// Use --extended to request modulo-128; otherwise request modulo-8.
     #[arg(long)]
     xid: bool,
+
+    /// Establish outgoing links before XID (needed by Dire Wolf 1.7).
+    #[arg(long, requires = "xid")]
+    xid_after_connect: bool,
 
     /// Capture sent and received AX.25 packets to a new pcap file.
     #[arg(long)]
@@ -572,7 +577,9 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&opt.listen).await?;
     let (mut engine, commands, events) = PacketEngine::new();
     engine.set_srej(!opt.no_srej);
-    if opt.xid {
+    if opt.xid_after_connect {
+        engine.set_xid_after_connect(rax25::XidConfig::default())?;
+    } else if opt.xid {
         engine.set_xid_config(rax25::XidConfig::default())?;
     }
     if let Some(path) = opt.capture {

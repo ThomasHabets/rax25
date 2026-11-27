@@ -179,6 +179,7 @@ pub struct PacketEngine {
     links: HashMap<Route, Link>,
     capture: Option<crate::pcap::PcapWriter>,
     xid: Option<crate::XidConfig>,
+    xid_after_connect: bool,
 
     experiments: std::collections::HashSet<Experiment>,
 }
@@ -209,6 +210,7 @@ impl PacketEngine {
                 links: HashMap::new(),
                 capture: None,
                 xid: None,
+                xid_after_connect: false,
                 experiments: std::collections::HashSet::default(),
             },
             tx,
@@ -237,6 +239,17 @@ impl PacketEngine {
     pub fn set_xid_config(&mut self, config: crate::XidConfig) -> Result<()> {
         config.validate()?;
         self.xid = Some(config);
+        self.xid_after_connect = false;
+        Ok(())
+    }
+
+    /// Enable XID negotiation after link establishment for new outgoing links.
+    ///
+    /// # Errors
+    /// Returns an error if the XID configuration is invalid.
+    pub fn set_xid_after_connect(&mut self, config: crate::XidConfig) -> Result<()> {
+        self.set_xid_config(config)?;
+        self.xid_after_connect = true;
         Ok(())
     }
 
@@ -367,15 +380,18 @@ impl PacketEngine {
                         link.data.set_version_2();
                     }
                     self.links.insert(route.clone(), link);
-                    self.step(
-                        &route,
+                    let event = if self.xid_after_connect {
+                        state::Event::ConnectThenXid {
+                            addr: route.remote.clone(),
+                            ext: Some(extended),
+                        }
+                    } else {
                         state::Event::Connect {
                             addr: route.remote.clone(),
                             ext: extended,
-                        },
-                        port,
-                    )
-                    .await?;
+                        }
+                    };
+                    self.step(&route, event, port).await?;
                 }
             }
             Command::Write {

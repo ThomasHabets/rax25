@@ -185,7 +185,9 @@ callsign registration/unregistration, direct and connect-via establishment,
 connected binary streams, disconnects, UI transmission, discovery, capability
 and queue queries. Add `-e` for outgoing modulo-128 links; incoming links follow
 the peer's SABM/SABME. Add `--xid` to negotiate parameters before outgoing
-connections, using modulo-8 by default or modulo-128 with `-e`. Peers without
+connections, using modulo-8 by default or modulo-128 with `-e`. Use
+`--xid --xid-after-connect` to negotiate only after SABM(E)/UA, as needed
+by Dire Wolf 1.7. Peers without
 XID support use the library's standard-mode fallback. API `Port(1)` maps to
 wire port zero and KISS channel zero.
 Connected streams use PID 0xf0; monitoring, raw mode, heard lists, authentication

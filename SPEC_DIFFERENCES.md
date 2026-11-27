@@ -114,8 +114,9 @@ marked routes supplied through the Dire Wolf-compatible AGW CALL* extension.
 Incoming frames are accepted only after all digipeaters have repeated them.
 AGW connected streams use PID 0xf0. Queue reports count buffered and
 unacknowledged AX.25 frames, since KISS does not expose the hardware TX queue.
-The AGW example's `--xid` enables the library's existing XID negotiation and
-legacy fallback policy; `--extended` selects the requested outgoing mode.
+The AGW binary's `--xid` enables XID negotiation and legacy fallback.
+`--xid-after-connect` defers XID until after link setup for peers such as
+Dire Wolf 1.7; `--extended` selects the requested outgoing mode.
 
 ### Linux Extended-Sequence Indicator
 
