@@ -34,7 +34,7 @@ jobs:
     - name: Rustup install nightly clippy
       run:  rustup component add --toolchain nightly clippy
     - name: Cargo install deps
-      run:  cargo install tickbox
+      run:  cargo install --locked tickbox cargo-deny
     - name: Build
       run: cargo build --verbose
     - name: Run tests
