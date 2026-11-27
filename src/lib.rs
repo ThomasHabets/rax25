@@ -8,10 +8,9 @@
 //! * Seems to work well.
 //! * Both 8 and 128 modulus supported.
 //! * Basic REJ retransmission is supported.
-//! * SREJ untested / mostly broken.
+//! * Negotiated single- and multi-frame SREJ, with per-connection opt-out.
 //! * Segmentation: not implemented.
 //! * The sync API is not great.
-//! * The Async API works well as long as you only need one connection active.
 //!
 //! ## Interoperability tested regularly
 //!

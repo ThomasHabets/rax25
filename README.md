@@ -12,7 +12,7 @@ https://blog.habets.se/2024/09/An-AX.25-implementation-in-Rust.html
 * Basic REJ retransmission is supported.
 * Negotiated single- and multi-frame SREJ, with per-connection opt-out.
 * Segmentation: not implemented.
-* The sync API is not great. Async API may also need some work
+* The sync API is not great.
 
 Interoperability with linux kernel stack is lightly tested on every
 push to github.
