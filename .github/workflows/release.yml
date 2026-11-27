@@ -50,6 +50,8 @@ jobs:
   release:
     needs: checks
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v6
@@ -72,6 +74,7 @@ jobs:
             libjack-jackd2-dev pkg-config
 
       - name: Run release
+        id: publish
         env:
           MANUAL_VERSION: ${{ inputs.version }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -79,6 +82,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           CLEANUP=true tickbox --dir tickbox/bump_version --disable-tui --max-concurrency=1
+          tag="$(bash tickbox/bump_version/81-tag.sh --print)"
+          git check-ref-format "refs/tags/$tag"
+          git show-ref --verify "refs/tags/$tag"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
   github-release:
     needs: release
     runs-on: ubuntu-latest
@@ -89,7 +96,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          test -n "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" \
             --verify-tag \
             --generate-notes
