@@ -9,7 +9,7 @@
 # Run a single test by giving it as a command line arg.
 set -euo pipefail
 
-RUSTRADIO_VERSION="0.20.2"
+RUSTRADIO_VERSION="0.21.0"
 
 if [[ ${RAX25_PRIVATE_AUDIO:-} != 1 ]]; then
     exec dbus-run-session -- env RAX25_PRIVATE_AUDIO=1 bash "$0" "$@"
