@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 
 use agw::r#async::AGWServer;
 use agw::{Baud, Packet, Pid, Port, PortCaps, PortInfo, PortsInfo};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Parser};
 use log::info;
 use rax25::{
@@ -567,7 +567,8 @@ async fn main() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("non-UTF8 device"))?,
                 opt.baud,
             )
-            .open_native_async()?,
+            .open_native_async()
+            .context(format!("opening {}", dev.display()))?,
         )
     } else {
         rax25::r#async::PortType::Tcp(
